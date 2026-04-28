@@ -1,0 +1,194 @@
+openapi: 3.0.3
+info:
+  title: Infinite Buying Strategy Assistant MVP API
+  version: 0.1.0
+  description: Read-only market data, strategy evaluation, and virtual order API. Real broker orders are excluded.
+servers:
+  - url: http://localhost:4000
+paths:
+  /api/strategies:
+    get:
+      summary: List strategies
+      responses:
+        '200':
+          description: Strategy list
+    post:
+      summary: Create a strategy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyInput'
+      responses:
+        '201':
+          description: Created strategy
+  /api/strategies/{id}:
+    get:
+      summary: Get strategy
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Strategy detail
+        '404':
+          description: Strategy not found
+    put:
+      summary: Update strategy
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyInput'
+      responses:
+        '200':
+          description: Updated strategy
+    delete:
+      summary: Delete strategy
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204':
+          description: Deleted
+  /api/strategies/{id}/holding:
+    get:
+      summary: Get holding for a strategy
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Holding
+  /api/strategies/{id}/evaluate:
+    post:
+      summary: Evaluate a strategy and optionally create a virtual order
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currentPrice:
+                  type: number
+                  minimum: 1
+                  description: Manual or externally fetched current price
+      responses:
+        '200':
+          description: Evaluation result
+  /api/market/{stockCode}/price:
+    get:
+      summary: Get current stock price from selected market-data provider
+      parameters:
+        - $ref: '#/components/parameters/StockCode'
+      responses:
+        '200':
+          description: Current price
+        '503':
+          description: Provider unavailable; manual fallback should be used
+  /api/market/{stockCode}/daily:
+    get:
+      summary: Get daily price history from selected market-data provider
+      parameters:
+        - $ref: '#/components/parameters/StockCode'
+      responses:
+        '200':
+          description: Daily price list
+        '503':
+          description: Provider unavailable
+  /api/strategies/{id}/orders:
+    get:
+      summary: List virtual orders for a strategy
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Virtual order list
+  /api/orders/{id}/fill:
+    post:
+      summary: Mark pending virtual order as filled
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Filled virtual order and updated holding
+        '409':
+          description: Order is not pending
+  /api/orders/{id}/cancel:
+    post:
+      summary: Mark pending virtual order as canceled
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Canceled virtual order
+        '409':
+          description: Order is not pending
+  /api/strategies/{id}/logs:
+    get:
+      summary: List decision logs for a strategy
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Decision log list
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    StockCode:
+      name: stockCode
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    StrategyInput:
+      type: object
+      required:
+        - name
+        - stockCode
+        - stockName
+        - totalBudget
+      properties:
+        name:
+          type: string
+        stockCode:
+          type: string
+        stockName:
+          type: string
+        totalBudget:
+          type: integer
+          minimum: 1
+        splitCount:
+          type: integer
+          minimum: 1
+          default: 40
+        targetProfitRate:
+          type: number
+          minimum: 0.0001
+          default: 0.1
+        status:
+          type: string
+          enum: [ACTIVE, PAUSED]
+          default: ACTIVE
+    EvaluationResult:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [BUY, SELL, HOLD, PAUSE]
+        reason:
+          type: string
+        virtualOrder:
+          nullable: true
+          type: object

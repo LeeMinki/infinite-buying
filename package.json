@@ -1,0 +1,15 @@
+{
+  "name": "infinite-buying",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm --workspace backend run dev & npm --workspace frontend run dev; wait",
+    "test": "npm --workspace backend test",
+    "build": "npm --workspace frontend run build",
+    "migrate": "npm --workspace backend run migrate"
+  }
+}
