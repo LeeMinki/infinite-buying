@@ -1,18 +1,36 @@
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:4000' : '');
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    },
-    ...options
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      },
+      ...options
+    });
+  } catch {
+    throw new Error('서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+  }
+
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+  }
+
   if (!response.ok) {
-    const error = new Error(data?.error || `Request failed: ${response.status}`);
+    const message =
+      data?.error ||
+      (typeof data?.raw === 'string' && !data.raw.startsWith('<') ? data.raw : null) ||
+      `요청에 실패했습니다. (${response.status})`;
+    const error = new Error(message);
     error.data = data;
     throw error;
   }

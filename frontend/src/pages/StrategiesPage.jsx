@@ -29,7 +29,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
       <div className="brand">
         <div className="brand-logo" aria-hidden="true">∞</div>
         <div className="brand-text">
-          <h1>무한매수 보조</h1>
+          <h1>무한매수 해죠</h1>
           <span>가상 거래 시뮬레이터</span>
         </div>
       </div>
