@@ -6,6 +6,7 @@ import authRoutes from './routes/authRoutes.js';
 import kiwoomSettingsRoutes from './routes/kiwoomSettingsRoutes.js';
 import strategiesRoutes from './routes/strategiesRoutes.js';
 import marketRoutes from './routes/marketRoutes.js';
+import accountRoutes from './routes/accountRoutes.js';
 import ordersRoutes from './routes/ordersRoutes.js';
 
 export function createApp() {
@@ -25,6 +26,7 @@ export function createApp() {
   app.use('/api/settings/kiwoom', kiwoomSettingsRoutes);
   app.use('/api/strategies', strategiesRoutes);
   app.use('/api/market', marketRoutes);
+  app.use('/api/account', accountRoutes);
   app.use('/api/orders', ordersRoutes);
 
   app.use((err, req, res, next) => {

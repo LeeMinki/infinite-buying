@@ -59,6 +59,8 @@ export const evaluateStrategy = (id, currentPrice) => request(`/api/strategies/$
 });
 export const getCurrentPrice = (stockCode) => request(`/api/market/${stockCode}/price`);
 export const getDailyPrices = (stockCode) => request(`/api/market/${stockCode}/daily`);
+export const searchStocks = (query) => request(`/api/market/stocks/search?q=${encodeURIComponent(query)}`);
+export const getAccountDeposit = () => request('/api/account/deposit');
 export const listOrders = (id) => request(`/api/strategies/${id}/orders`);
 export const listLogs = (id) => request(`/api/strategies/${id}/logs`);
 export const fillOrder = (id) => request(`/api/orders/${id}/fill`, { method: 'POST' });
