@@ -53,6 +53,81 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
     })).filter((row) => row.date && row.open && row.high && row.low && row.close);
   }
 
+  async searchStocks(query) {
+    const normalized = String(query || '').trim();
+    if (!normalized) return [];
+
+    const stocks = await this.getStockList();
+    const keyword = normalized.toLowerCase();
+    const matched = stocks
+      .filter((stock) =>
+        stock.stockCode.toLowerCase().includes(keyword) ||
+        stock.stockName.toLowerCase().includes(keyword)
+      )
+      .slice(0, 10);
+
+    if (matched.length > 0 || !/^\d{4,6}$/.test(normalized)) {
+      return matched;
+    }
+
+    const data = await this.requestJson('/api/dostk/stkinfo', 'ka10001', {
+      stk_cd: normalized
+    });
+    const stockCode = normalizeStockCode(data.stk_cd ?? data.stock_code ?? data.code ?? normalized);
+    const stockName = String(data.stk_nm ?? data.stock_name ?? data.name ?? '').trim();
+    if (!stockCode || !stockName) return [];
+    return [{
+      stockCode,
+      stockName,
+      source: 'KIWOOM'
+    }];
+  }
+
+  async getStockList() {
+    const now = Date.now();
+    if (stockListCache.items && now - stockListCache.fetchedAt < STOCK_LIST_TTL_MS) {
+      return stockListCache.items;
+    }
+
+    const lists = await Promise.all(KOREA_MARKET_TYPES.map(async (marketType) => {
+      const data = await this.requestJson('/api/dostk/stkinfo', 'ka10099', {
+        mrkt_tp: marketType
+      });
+      const rows = data.list ?? data.output ?? data.output1 ?? data.output2 ?? [];
+      return Array.isArray(rows) ? rows.map(normalizeStockListRow).filter(Boolean) : [];
+    }));
+    const items = dedupeStocks(lists.flat());
+    stockListCache = { items, fetchedAt: now };
+    return items;
+  }
+
+  async getAccountDeposit() {
+    const data = await this.requestJson('/api/dostk/acnt', 'kt00001', {
+      qry_tp: '3'
+    });
+    const deposit = normalizeNumber(
+      data.d2_entra ??
+      data.deposit ??
+      data.entr ??
+      data.dps_amt ??
+      data.output?.d2_entra ??
+      data.output?.deposit
+    );
+    const availableOrderAmount = normalizeNumber(
+      data.ord_psbl_cash ??
+      data.orderable_amount ??
+      data.use_amt ??
+      data.output?.ord_psbl_cash ??
+      data.output?.orderable_amount
+    ) || deposit;
+    return {
+      deposit,
+      availableOrderAmount,
+      source: 'KIWOOM',
+      fetchedAt: new Date().toISOString()
+    };
+  }
+
   async requestJson(path, apiId, body) {
     const token = await this.tokenSupplier();
     const controller = new AbortController();
@@ -63,7 +138,9 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
         headers: {
           'Content-Type': 'application/json;charset=UTF-8',
           Authorization: `Bearer ${token}`,
-          'api-id': apiId
+          'api-id': apiId,
+          'cont-yn': 'N',
+          'next-key': ''
         },
         body: JSON.stringify(body),
         signal: controller.signal
@@ -78,6 +155,34 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
     }
   }
 
+}
+
+const KOREA_MARKET_TYPES = ['0', '10', '8'];
+const STOCK_LIST_TTL_MS = 24 * 60 * 60 * 1000;
+let stockListCache = { items: null, fetchedAt: 0 };
+
+function normalizeStockListRow(row) {
+  const stockCode = normalizeStockCode(row.code ?? row.stk_cd ?? row.stock_code);
+  const stockName = String(row.name ?? row.stk_nm ?? row.stock_name ?? '').trim();
+  if (!stockCode || !stockName) return null;
+  return {
+    stockCode,
+    stockName,
+    marketName: row.marketName ?? row.mrkt_nm ?? row.market_name,
+    source: 'KIWOOM'
+  };
+}
+
+function dedupeStocks(items) {
+  const byCode = new Map();
+  for (const item of items) {
+    if (!byCode.has(item.stockCode)) byCode.set(item.stockCode, item);
+  }
+  return Array.from(byCode.values());
+}
+
+function normalizeStockCode(value) {
+  return String(value || '').replace(/^A/i, '').trim();
 }
 
 function normalizeNumber(value) {

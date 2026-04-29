@@ -21,6 +21,16 @@ export async function getDailyPrices(userId, stockCode, options = {}) {
   }
 }
 
+export async function searchStocks(userId, query) {
+  const provider = createMarketDataProvider(userId);
+  return provider.searchStocks(String(query || '').trim());
+}
+
+export async function getAccountDeposit(userId) {
+  const provider = createMarketDataProvider(userId);
+  return provider.getAccountDeposit();
+}
+
 function normalizeStockCode(stockCode) {
   return String(stockCode || '').trim();
 }

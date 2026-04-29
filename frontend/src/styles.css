@@ -531,6 +531,72 @@ tbody tr:last-child td {
   pointer-events: none;
 }
 
+.stock-search {
+  position: relative;
+}
+
+.stock-results {
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  left: 0;
+  max-height: 220px;
+  overflow: auto;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+}
+
+.stock-results button {
+  align-items: center;
+  background: #ffffff;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  display: grid;
+  gap: 2px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: auto;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.stock-results button:last-child {
+  border-bottom: 0;
+}
+
+.stock-results button:hover {
+  background: #f8fafc;
+}
+
+.stock-results span {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.stock-results em {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.selected-stock {
+  background: var(--success-soft);
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius-sm);
+  color: #065f46;
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.budget-actions {
+  margin-top: 2px;
+}
+
 .stack {
   display: grid;
   gap: 10px;
