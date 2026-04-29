@@ -1095,3 +1095,104 @@ button.danger-button:hover:not(:disabled) {
     radial-gradient(farthest-side at 100% 50%, rgba(15,23,42,0.12), rgba(0,0,0,0)) right center / 12px 100% no-repeat;
   background-attachment: local, local, scroll, scroll;
 }
+
+.auth-screen {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: grid;
+  gap: 16px;
+  max-width: 420px;
+  padding: 28px;
+  width: 100%;
+}
+
+.brand.compact {
+  margin-bottom: 8px;
+}
+
+.form-error,
+.error-note {
+  background: var(--danger-soft);
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.success-note {
+  background: var(--success-soft);
+  border: 1px solid #bbf7d0;
+  color: #065f46;
+}
+
+.account-bar {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 12px;
+}
+
+.account-bar > span {
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.button-row.compact {
+  gap: 6px;
+}
+
+.setup-page {
+  margin: 0 auto;
+  max-width: 920px;
+}
+
+.setup-guidance {
+  background: var(--info-soft);
+  border: 1px solid #bae6fd;
+  border-radius: var(--radius-md);
+  color: #075985;
+  display: grid;
+  gap: 8px;
+  font-size: 13.5px;
+  margin: 18px 0;
+  padding: 16px;
+}
+
+.settings-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.settings-summary span {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.setup-form {
+  display: grid;
+  gap: 14px;
+}

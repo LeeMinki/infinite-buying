@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import { AuthProvider, useAuth } from './auth/AuthContext.jsx';
+import { LoginPage } from './auth/LoginPage.jsx';
+import { RegisterPage } from './auth/RegisterPage.jsx';
 import { StrategiesPage } from './pages/StrategiesPage.jsx';
 import { StrategyDetailPage } from './pages/StrategyDetailPage.jsx';
+import { KiwoomSetupPage } from './pages/KiwoomSetupPage.jsx';
 import { listStrategies } from './api/client.js';
 
 const SIDEBAR_KEY = 'ib.sidebarOpen';
@@ -18,9 +22,20 @@ function getInitialSidebarState() {
 }
 
 export default function App() {
+  return (
+    <AuthProvider>
+      <AuthenticatedApp />
+    </AuthProvider>
+  );
+}
+
+function AuthenticatedApp() {
+  const auth = useAuth();
+  const [authMode, setAuthMode] = useState('login');
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
+  const [view, setView] = useState('strategies');
 
   async function refreshStrategies(nextSelectedId = selectedId) {
     const items = await listStrategies();
@@ -34,8 +49,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    refreshStrategies().catch(console.error);
-  }, []);
+    if (auth.user) refreshStrategies().catch(console.error);
+  }, [auth.user]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -65,6 +80,20 @@ export default function App() {
     if (isNarrow()) setSidebar(false);
   }
 
+  if (auth.loading) {
+    return <section className="auth-screen"><div className="auth-panel">로딩 중...</div></section>;
+  }
+
+  if (!auth.user) {
+    return authMode === 'login'
+      ? <LoginPage onSwitch={() => setAuthMode('register')} />
+      : <RegisterPage onSwitch={() => setAuthMode('login')} />;
+  }
+
+  if (view === 'kiwoom') {
+    return <KiwoomSetupPage onBack={() => setView('strategies')} />;
+  }
+
   return (
     <main className={`app-shell ${sidebarOpen ? '' : 'collapsed'}`}>
       <button
@@ -87,6 +116,9 @@ export default function App() {
         onSelect={handleSelect}
         onChanged={refreshStrategies}
         onClose={() => setSidebar(false)}
+        onOpenKiwoom={() => setView('kiwoom')}
+        user={auth.user}
+        onLogout={auth.logout}
       />
       <StrategyDetailPage strategyId={selectedId} onChanged={refreshStrategies} />
     </main>

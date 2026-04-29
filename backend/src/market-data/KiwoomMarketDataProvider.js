@@ -4,15 +4,12 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
   constructor(options) {
     super();
     this.baseUrl = options.baseUrl;
-    this.appKey = options.appKey;
-    this.secretKey = options.secretKey;
     this.timeoutMs = options.timeoutMs;
-    this.token = null;
-    this.tokenExpiresAt = 0;
+    this.tokenSupplier = options.tokenSupplier;
   }
 
   isConfigured() {
-    return Boolean(this.baseUrl && this.appKey && this.secretKey);
+    return Boolean(this.baseUrl && this.tokenSupplier);
   }
 
   async getCurrentPrice(stockCode) {
@@ -28,15 +25,15 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
     return {
       stockCode,
       price,
-      source: 'kiwoom',
+      source: 'KIWOOM',
       fetchedAt: new Date().toISOString()
     };
   }
 
-  async getDailyPrices(stockCode) {
+  async getDailyPrices(stockCode, options = {}) {
     const data = await this.requestJson('/api/dostk/chart', 'ka10081', {
       stk_cd: stockCode,
-      base_dt: currentDate(),
+      base_dt: (options.to || currentDate()).replaceAll('-', ''),
       upd_stkpc_tp: '1'
     });
     const rows = data.output ?? data.output1 ?? data.output2 ?? data.list ?? data;
@@ -51,12 +48,13 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
       high: normalizeNumber(row.high_pric ?? row.high ?? row.stck_hgpr),
       low: normalizeNumber(row.low_pric ?? row.low ?? row.stck_lwpr),
       close: normalizeNumber(row.cur_prc ?? row.close ?? row.stck_clpr),
-      volume: normalizeNumber(row.trde_qty ?? row.volume ?? row.acml_vol) || 0
+      volume: normalizeNumber(row.trde_qty ?? row.volume ?? row.acml_vol) || 0,
+      source: 'KIWOOM'
     })).filter((row) => row.date && row.open && row.high && row.low && row.close);
   }
 
   async requestJson(path, apiId, body) {
-    const token = await this.getAccessToken();
+    const token = await this.tokenSupplier();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -80,33 +78,6 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
     }
   }
 
-  async getAccessToken() {
-    if (this.token && Date.now() < this.tokenExpiresAt) {
-      return this.token;
-    }
-    const response = await fetch(`${this.baseUrl}/oauth2/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8'
-      },
-      body: JSON.stringify({
-        grant_type: 'client_credentials',
-        appkey: this.appKey,
-        secretkey: this.secretKey
-      })
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(data.return_msg || data.message || 'Kiwoom OAuth failed');
-    }
-    this.token = data.token || data.access_token;
-    if (!this.token) {
-      throw new Error('Kiwoom OAuth response did not include a token');
-    }
-    const expiresIn = Number(data.expires_in || 3600);
-    this.tokenExpiresAt = Date.now() + Math.max(60, expiresIn - 60) * 1000;
-    return this.token;
-  }
 }
 
 function normalizeNumber(value) {

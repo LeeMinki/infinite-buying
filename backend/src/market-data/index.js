@@ -1,19 +1,23 @@
 import { env } from '../config/env.js';
 import { KiwoomMarketDataProvider } from './KiwoomMarketDataProvider.js';
 import { MockMarketDataProvider } from './MockMarketDataProvider.js';
+import * as kiwoomAuthService from '../services/kiwoomAuthService.js';
+import * as credentialsRepository from '../repositories/kiwoomCredentialsRepository.js';
 
-export function createMarketDataProvider() {
-  const mockProvider = new MockMarketDataProvider();
+export function createMarketDataProvider(userId) {
   if (env.marketDataProvider !== 'kiwoom') {
-    return mockProvider;
+    return new MockMarketDataProvider();
+  }
+  const credential = credentialsRepository.getByUserId(userId);
+  if (!credential) {
+    const error = new Error('Kiwoom credential is not configured. 수동 현재가 입력은 계속 사용할 수 있습니다.');
+    error.status = 400;
+    throw error;
   }
 
-  const provider = new KiwoomMarketDataProvider({
-    baseUrl: env.kiwoomUseMock ? env.kiwoomMockBaseUrl : env.kiwoomBaseUrl,
-    appKey: env.kiwoomAppKey,
-    secretKey: env.kiwoomSecretKey,
-    timeoutMs: env.kiwoomTimeoutMs
+  return new KiwoomMarketDataProvider({
+    baseUrl: kiwoomAuthService.baseUrl(credential),
+    timeoutMs: env.kiwoomTimeoutMs,
+    tokenSupplier: () => kiwoomAuthService.getAccessToken(userId)
   });
-
-  return provider.isConfigured() ? provider : mockProvider;
 }

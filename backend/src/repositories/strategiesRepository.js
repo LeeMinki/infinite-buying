@@ -1,22 +1,23 @@
 import { getDb } from '../db/connection.js';
 
-export function listStrategies() {
-  return getDb().prepare('SELECT * FROM strategies ORDER BY id DESC').all().map(toStrategy);
+export function listStrategies(userId) {
+  return getDb().prepare('SELECT * FROM strategies WHERE user_id = ? ORDER BY id DESC').all(userId).map(toStrategy);
 }
 
-export function getStrategy(id) {
-  const row = getDb().prepare('SELECT * FROM strategies WHERE id = ?').get(id);
+export function getStrategy(userId, id) {
+  const row = getDb().prepare('SELECT * FROM strategies WHERE user_id = ? AND id = ?').get(userId, id);
   return row ? toStrategy(row) : null;
 }
 
-export function createStrategy(input) {
+export function createStrategy(userId, input) {
   const buyAmountPerRound = Math.floor(input.totalBudget / input.splitCount);
   const result = getDb().prepare(`
     INSERT INTO strategies (
-      name, stock_code, stock_name, total_budget, split_count,
+      user_id, name, stock_code, stock_name, total_budget, split_count,
       buy_amount_per_round, target_profit_rate, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
+    userId,
     input.name,
     input.stockCode,
     input.stockName,
@@ -26,16 +27,16 @@ export function createStrategy(input) {
     input.targetProfitRate,
     input.status
   );
-  return getStrategy(result.lastInsertRowid);
+  return getStrategy(userId, result.lastInsertRowid);
 }
 
-export function updateStrategy(id, input) {
+export function updateStrategy(userId, id, input) {
   const buyAmountPerRound = Math.floor(input.totalBudget / input.splitCount);
   getDb().prepare(`
     UPDATE strategies
     SET name = ?, stock_code = ?, stock_name = ?, total_budget = ?, split_count = ?,
         buy_amount_per_round = ?, target_profit_rate = ?, status = ?, updated_at = datetime('now')
-    WHERE id = ?
+    WHERE user_id = ? AND id = ?
   `).run(
     input.name,
     input.stockCode,
@@ -45,26 +46,28 @@ export function updateStrategy(id, input) {
     buyAmountPerRound,
     input.targetProfitRate,
     input.status,
+    userId,
     id
   );
-  return getStrategy(id);
+  return getStrategy(userId, id);
 }
 
-export function deleteStrategy(id) {
-  return getDb().prepare('DELETE FROM strategies WHERE id = ?').run(id).changes > 0;
+export function deleteStrategy(userId, id) {
+  return getDb().prepare('DELETE FROM strategies WHERE user_id = ? AND id = ?').run(userId, id).changes > 0;
 }
 
-export function incrementRound(strategyId) {
+export function incrementRound(userId, strategyId) {
   getDb().prepare(`
     UPDATE strategies
     SET current_round = current_round + 1, updated_at = datetime('now')
-    WHERE id = ?
-  `).run(strategyId);
+    WHERE user_id = ? AND id = ?
+  `).run(userId, strategyId);
 }
 
 function toStrategy(row) {
   return {
     id: row.id,
+    userId: row.user_id,
     name: row.name,
     stockCode: row.stock_code,
     stockName: row.stock_name,

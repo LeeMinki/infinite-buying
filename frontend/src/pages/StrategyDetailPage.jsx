@@ -29,6 +29,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
   const [logs, setLogs] = useState([]);
   const [daily, setDaily] = useState([]);
   const [currentPrice, setCurrentPrice] = useState('');
+  const [currentPriceSource, setCurrentPriceSource] = useState('');
   const [decision, setDecision] = useState(null);
   const [error, setError] = useState('');
 
@@ -74,6 +75,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
   async function fetchPrice() {
     const result = await getCurrentPrice(strategy.stockCode);
     setCurrentPrice(result.price);
+    setCurrentPriceSource(`${result.source} ${new Date(result.fetchedAt).toLocaleString('ko-KR')}`);
   }
 
   async function evaluate() {
@@ -155,6 +157,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
             onFetchPrice={fetchPrice}
             onEvaluate={evaluate}
             decision={decision}
+            priceSource={currentPriceSource}
           />
 
           <DailyChart data={daily} stockCode={strategy.stockCode} />

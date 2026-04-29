@@ -24,7 +24,6 @@
 - 키움 주문 API를 호출하지 않습니다.
 - 자동매매를 하지 않습니다.
 - LIVE 모드를 제공하지 않습니다.
-- 로그인이나 다중 사용자 기능을 제공하지 않습니다.
 - 배포 자동화를 포함하지 않습니다.
 - 복잡한 백테스트를 제공하지 않습니다.
 
@@ -64,6 +63,8 @@ Backend는 Node.js, Express, SQLite로 구현되어 있습니다.
 - `MockMarketDataProvider`: 키움 인증정보가 없어도 동작하는 mock provider
 - `KiwoomMarketDataProvider`: 키움 REST API 기반 현재가/일봉 조회 provider
 - `strategyCalculator`: 전략 판단을 담당하는 순수 계산 함수
+- `auth`: 회원가입, 로그인, httpOnly session cookie 인증
+- `kiwoomCredentialService`: 사용자별 App Key / Secret Key 암호화 저장
 - `repositories`: SQLite 테이블별 데이터 접근 계층
 - `services`: 전략 생성, 평가, 가상 주문 체결/취소 로직
 
@@ -74,6 +75,8 @@ Frontend는 React, Vite, Recharts로 구현되어 있습니다.
 주요 화면은 다음과 같습니다.
 
 - 전략 목록 및 전략 생성 화면
+- 회원가입/로그인 화면
+- 키움 REST API 설정 화면
 - 전략 상세 화면
 - Holding 상태 패널
 - 현재가 조회 및 수동 입력 영역
@@ -104,6 +107,8 @@ SQLite에는 다음 테이블이 생성됩니다.
 - `holdings`: 전략별 가상 보유 상태
 - `virtual_orders`: 가상 주문
 - `decision_logs`: 평가 판단 로그
+- `users`: 로그인 사용자
+- `kiwoom_credentials`: 사용자별 키움 App Key / Secret Key 암호화 저장
 - `market_price_cache`: 일봉 가격 캐시
 
 DB 스키마는 [backend/src/db/schema.sql](/home/hyerin/speckit/infinite-buying/backend/src/db/schema.sql)에 있습니다.
@@ -148,9 +153,37 @@ cp .env.example .env
 
 ```text
 MARKET_DATA_PROVIDER=mock
+ENABLE_LIVE_ORDER=false
 ```
 
 mock mode에서는 키움 인증정보 없이 현재가와 일봉 차트 데이터를 테스트할 수 있습니다.
+
+운영 배포에서는 다음 값을 반드시 설정합니다.
+
+```text
+EC2_ELASTIC_IP=<backend EC2 Elastic IP>
+KIWOOM_API_BASE_URL=https://api.kiwoom.com
+KIWOOM_MOCK_API_BASE_URL=https://mockapi.kiwoom.com
+SECRET_ENCRYPTION_KEY=<base64 32-byte key>
+SESSION_SECRET=<32 chars or longer random string>
+ENABLE_LIVE_ORDER=false
+```
+
+`SECRET_ENCRYPTION_KEY`는 Secret Key와 access token 암호화에 사용합니다. 다음처럼 32바이트 키를 base64로 만들 수 있습니다.
+
+```bash
+openssl rand -base64 32
+```
+
+`SESSION_SECRET`은 session cookie 서명에 사용하는 긴 난수 문자열입니다. 운영에서는 반드시 별도 값으로 설정하고 커밋하지 않습니다.
+
+Kubernetes 배포에서는 backend pod가 `infinite-buying-secrets` Secret에서 두 값을 읽습니다.
+
+```bash
+kubectl -n infinite-buying create secret generic infinite-buying-secrets \
+  --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  --from-literal=SESSION_SECRET="$(openssl rand -base64 48)"
+```
 
 ### 4. DB 초기화
 
@@ -254,34 +287,70 @@ cd frontend
 VITE_API_BASE=http://localhost:4001 npm run dev
 ```
 
+## 회원가입/로그인
+
+처음 접속하면 회원가입 또는 로그인 화면이 표시됩니다.
+
+1. 이메일과 8자 이상 비밀번호로 회원가입합니다.
+2. 로그인 후 전략 화면을 사용할 수 있습니다.
+3. 모든 전략, 보유, 가상 주문, 판단 로그, 키움 credential, 일봉 cache는 현재 로그인한 사용자 `userId` 기준으로 분리됩니다.
+4. 다른 사용자의 데이터 id를 직접 요청해도 조회, 수정, 삭제할 수 없습니다.
+
+비밀번호는 bcrypt hash로만 저장하며 평문으로 저장하지 않습니다.
+
 ## 키움 REST API 설정
 
-키움 REST API를 사용하려면 `backend/.env`에 인증정보를 설정합니다.
+키움 REST API를 사용하려면 사용자가 키움 REST API 사이트에서 App Key / Secret Key를 미리 직접 발급받아야 합니다. 이 값은 frontend가 키움 API를 직접 호출하는 데 사용하지 않고, EC2 backend가 사용자의 credential을 복호화한 뒤 키움 REST API를 호출하는 구조입니다.
+
+사용 흐름은 다음과 같습니다.
+
+1. 로그인 후 `키움 설정` 화면을 엽니다.
+2. 키움 REST API 사용 신청과 App Key / Secret Key 발급을 완료합니다.
+3. 키움 REST API 사이트의 계좌 App Key 관리 화면에서 IP를 등록합니다.
+4. 등록할 IP는 브라우저 사용자 PC IP가 아니라 EC2 backend 서버의 outbound public IP, 즉 `EC2_ELASTIC_IP`입니다.
+5. 앱 화면에 표시되는 `현재 등록해야 할 서버 IP`를 키움에 등록합니다.
+6. App Key / Secret Key를 저장하고 연결 테스트를 실행합니다.
+
+Secret Key와 access token은 frontend로 반환하지 않습니다. 저장 후 Secret Key 원문도 다시 화면에 표시하지 않으며, App Key는 masked 형태로만 표시합니다.
+
+backend 환경변수 예시는 다음과 같습니다.
 
 ```text
 PORT=4000
 DB_PATH=data/app.db
 MARKET_DATA_PROVIDER=kiwoom
-KIWOOM_BASE_URL=https://api.kiwoom.com
-KIWOOM_MOCK_BASE_URL=https://mockapi.kiwoom.com
-KIWOOM_APP_KEY=<your app key>
-KIWOOM_SECRET_KEY=<your app secret>
+EC2_ELASTIC_IP=<backend EC2 Elastic IP>
+KIWOOM_API_BASE_URL=https://api.kiwoom.com
+KIWOOM_MOCK_API_BASE_URL=https://mockapi.kiwoom.com
 KIWOOM_TIMEOUT_MS=5000
 KIWOOM_USE_MOCK=false
+SECRET_ENCRYPTION_KEY=<base64 32-byte key>
+SESSION_SECRET=<32 chars or longer random string>
+SESSION_COOKIE_SECURE=true
+ENABLE_LIVE_ORDER=false
 ```
 
 주의할 점:
 
-- `KIWOOM_APP_KEY`와 `KIWOOM_SECRET_KEY`는 절대 커밋하지 않습니다.
+- 사용자의 App Key와 Secret Key는 `.env`가 아니라 로그인 후 키움 설정 화면에서 등록합니다.
 - `.env` 파일은 `.gitignore`에 포함되어 있습니다.
 - 키움 연동은 현재가 조회와 일봉 차트 조회까지만 사용합니다.
 - 키움 주문 API는 구현하지 않습니다.
-- 키움 인증정보가 없거나 provider 설정이 mock이면 mock 데이터로 동작합니다.
+- 실주문은 아직 지원하지 않습니다. `ENABLE_LIVE_ORDER=false`를 유지해야 합니다.
+- 키움 access token 발급이 실패하면 키움 사이트에서 EC2 Elastic IP 등록 여부를 확인해야 합니다.
 
 ## 주요 API
 
 ```text
 GET    /api/health
+POST   /api/auth/register
+POST   /api/auth/login
+POST   /api/auth/logout
+GET    /api/auth/me
+GET    /api/settings/kiwoom
+POST   /api/settings/kiwoom
+DELETE /api/settings/kiwoom
+POST   /api/settings/kiwoom/test
 GET    /api/strategies
 POST   /api/strategies
 GET    /api/strategies/:id
@@ -300,16 +369,18 @@ GET    /api/strategies/:id/logs
 ## 기본 사용 흐름
 
 1. 웹앱에 접속합니다.
-2. 전략명을 입력합니다.
-3. 종목코드와 종목명을 입력합니다.
-4. 총 투자금, 분할 회차, 목표수익률을 입력합니다.
-5. 전략을 저장합니다.
-6. 전략 상세 화면에서 현재가 조회를 실행합니다.
-7. 현재가 조회가 실패하면 현재가를 직접 입력합니다.
-8. `Evaluate`를 실행합니다.
-9. 판단 결과와 가상 주문 생성 여부를 확인합니다.
-10. 생성된 가상 주문을 체결 또는 취소합니다.
-11. Holding, 주문 이력, 판단 로그를 확인합니다.
+2. 회원가입 또는 로그인을 합니다.
+3. 키움 설정 화면에서 EC2 Elastic IP 안내를 확인하고 App Key / Secret Key를 등록합니다.
+4. 전략명을 입력합니다.
+5. 종목코드와 종목명을 입력합니다.
+6. 총 투자금, 분할 회차, 목표수익률을 입력합니다.
+7. 전략을 저장합니다.
+8. 전략 상세 화면에서 현재가 조회를 실행합니다.
+9. 현재가 조회가 실패하면 현재가를 직접 입력합니다.
+10. `Evaluate`를 실행합니다.
+11. 판단 결과와 가상 주문 생성 여부를 확인합니다.
+12. 생성된 가상 주문을 체결 또는 취소합니다.
+13. Holding, 주문 이력, 판단 로그를 확인합니다.
 
 ## 개발 원칙
 

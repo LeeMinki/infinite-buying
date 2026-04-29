@@ -1,6 +1,9 @@
 import { createApp } from './app.js';
-import { env } from './config/env.js';
+import { env, validateEnv } from './config/env.js';
+import { runMigrations } from './db/migrate.js';
 
+validateEnv();
+runMigrations();
 const app = createApp();
 
 const server = app.listen(env.port, () => {

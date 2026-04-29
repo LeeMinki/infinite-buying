@@ -7,8 +7,11 @@ data:
   NODE_ENV: production
   PORT: "3001"
   DB_PATH: /var/lib/infinite-buying/backend/app.db
-  MARKET_DATA_PROVIDER: mock
-  KIWOOM_BASE_URL: https://api.kiwoom.com
-  KIWOOM_MOCK_BASE_URL: https://mockapi.kiwoom.com
+  MARKET_DATA_PROVIDER: kiwoom
+  EC2_ELASTIC_IP: "3.39.3.103"
+  KIWOOM_API_BASE_URL: https://api.kiwoom.com
+  KIWOOM_MOCK_API_BASE_URL: https://mockapi.kiwoom.com
   KIWOOM_TIMEOUT_MS: "5000"
   KIWOOM_USE_MOCK: "false"
+  SESSION_COOKIE_SECURE: "true"
+  ENABLE_LIVE_ORDER: "false"

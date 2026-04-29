@@ -2,7 +2,7 @@ import React from 'react';
 import { createStrategy, deleteStrategy } from '../api/client.js';
 import { StrategyForm } from '../components/StrategyForm.jsx';
 
-export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose }) {
+export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKiwoom, user, onLogout }) {
   async function create(payload) {
     const strategy = await createStrategy(payload);
     await onChanged(strategy.id);
@@ -31,6 +31,14 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         <div className="brand-text">
           <h1>무한매수 보조</h1>
           <span>가상 거래 시뮬레이터</span>
+        </div>
+      </div>
+
+      <div className="account-bar">
+        <span>{user?.email}</span>
+        <div className="button-row compact">
+          <button type="button" className="sm" onClick={onOpenKiwoom}>키움 설정</button>
+          <button type="button" className="ghost sm" onClick={onLogout}>로그아웃</button>
         </div>
       </div>
 

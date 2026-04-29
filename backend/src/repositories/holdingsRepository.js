@@ -1,20 +1,20 @@
 import { getDb } from '../db/connection.js';
 
-export function createHolding(strategyId, totalBudget) {
+export function createHolding(userId, strategyId, totalBudget) {
   getDb().prepare(`
-    INSERT INTO holdings (strategy_id, remaining_budget)
-    VALUES (?, ?)
-  `).run(strategyId, totalBudget);
-  return getHoldingByStrategy(strategyId);
+    INSERT INTO holdings (user_id, strategy_id, remaining_budget)
+    VALUES (?, ?, ?)
+  `).run(userId, strategyId, totalBudget);
+  return getHoldingByStrategy(userId, strategyId);
 }
 
-export function getHoldingByStrategy(strategyId) {
-  const row = getDb().prepare('SELECT * FROM holdings WHERE strategy_id = ?').get(strategyId);
+export function getHoldingByStrategy(userId, strategyId) {
+  const row = getDb().prepare('SELECT * FROM holdings WHERE user_id = ? AND strategy_id = ?').get(userId, strategyId);
   return row ? toHolding(row) : null;
 }
 
-export function updateHoldingAfterBuy(strategyId, order) {
-  const holding = getHoldingByStrategy(strategyId);
+export function updateHoldingAfterBuy(userId, strategyId, order) {
+  const holding = getHoldingByStrategy(userId, strategyId);
   const quantity = holding.quantity + order.quantity;
   const investedAmount = holding.investedAmount + order.amount;
   const averagePrice = quantity > 0 ? investedAmount / quantity : 0;
@@ -22,13 +22,13 @@ export function updateHoldingAfterBuy(strategyId, order) {
   getDb().prepare(`
     UPDATE holdings
     SET quantity = ?, average_price = ?, invested_amount = ?, remaining_budget = ?, updated_at = datetime('now')
-    WHERE strategy_id = ?
-  `).run(quantity, averagePrice, investedAmount, remainingBudget, strategyId);
-  return getHoldingByStrategy(strategyId);
+    WHERE user_id = ? AND strategy_id = ?
+  `).run(quantity, averagePrice, investedAmount, remainingBudget, userId, strategyId);
+  return getHoldingByStrategy(userId, strategyId);
 }
 
-export function updateHoldingAfterSell(strategyId, order) {
-  const holding = getHoldingByStrategy(strategyId);
+export function updateHoldingAfterSell(userId, strategyId, order) {
+  const holding = getHoldingByStrategy(userId, strategyId);
   if (order.quantity > holding.quantity) {
     const error = new Error('Sell quantity exceeds holding quantity');
     error.status = 409;
@@ -43,14 +43,15 @@ export function updateHoldingAfterSell(strategyId, order) {
     UPDATE holdings
     SET quantity = ?, average_price = ?, invested_amount = ?, remaining_budget = ?,
         realized_profit = ?, updated_at = datetime('now')
-    WHERE strategy_id = ?
-  `).run(quantity, averagePrice, investedAmount, remainingBudget, realizedProfit, strategyId);
-  return getHoldingByStrategy(strategyId);
+    WHERE user_id = ? AND strategy_id = ?
+  `).run(quantity, averagePrice, investedAmount, remainingBudget, realizedProfit, userId, strategyId);
+  return getHoldingByStrategy(userId, strategyId);
 }
 
 function toHolding(row) {
   return {
     id: row.id,
+    userId: row.user_id,
     strategyId: row.strategy_id,
     quantity: row.quantity,
     averagePrice: row.average_price,
