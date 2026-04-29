@@ -1,20 +1,21 @@
 import { getDb } from '../db/connection.js';
 
-export function listLogs(strategyId) {
+export function listLogs(userId, strategyId) {
   return getDb().prepare(`
     SELECT * FROM decision_logs
-    WHERE strategy_id = ?
+    WHERE user_id = ? AND strategy_id = ?
     ORDER BY id DESC
     LIMIT 100
-  `).all(strategyId).map(toLog);
+  `).all(userId, strategyId).map(toLog);
 }
 
 export function createDecisionLog(input) {
   const result = getDb().prepare(`
     INSERT INTO decision_logs (
-      strategy_id, input_price, average_price, quantity, decision, reason
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      user_id, strategy_id, input_price, average_price, quantity, decision, reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
+    input.userId,
     input.strategyId,
     input.inputPrice,
     input.averagePrice,
@@ -29,6 +30,7 @@ export function createDecisionLog(input) {
 function toLog(row) {
   return {
     id: row.id,
+    userId: row.user_id,
     strategyId: row.strategy_id,
     inputPrice: row.input_price,
     averagePrice: row.average_price,

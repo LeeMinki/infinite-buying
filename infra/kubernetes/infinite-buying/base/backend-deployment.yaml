@@ -25,6 +25,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: infinite-buying-config
+            - secretRef:
+                name: infinite-buying-secrets
           readinessProbe:
             httpGet:
               path: /api/health

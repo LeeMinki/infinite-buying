@@ -21,7 +21,7 @@ const LEGEND = [
   { key: 'pause', label: '일시정지 (PAUSE)', desc: '전략 상태가 PAUSED일 때' }
 ];
 
-export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFetchPrice, onEvaluate, decision }) {
+export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFetchPrice, onEvaluate, decision, priceSource }) {
   const [error, setError] = useState('');
   const [fetching, setFetching] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
@@ -90,6 +90,12 @@ export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFet
         <div className="note" style={{ background: '#fef2f2', borderColor: '#fecaca', color: '#991b1b', marginTop: 12 }}>
           <span className="note-icon" style={{ background: '#fee2e2', color: '#b91c1c' }}>!</span>
           <span>{error}</span>
+        </div>
+      )}
+
+      {priceSource && !error && (
+        <div className="note" style={{ marginTop: 12 }}>
+          <span>현재가 출처: {priceSource}</span>
         </div>
       )}
 

@@ -6,7 +6,7 @@ export class MockMarketDataProvider extends MarketDataProvider {
     return {
       stockCode,
       price,
-      source: 'mock',
+      source: 'MOCK',
       fetchedAt: new Date().toISOString()
     };
   }
@@ -29,7 +29,8 @@ export class MockMarketDataProvider extends MarketDataProvider {
         high,
         low,
         close,
-        volume: 1000000 + index * 12000
+        volume: 1000000 + index * 12000,
+        source: 'MOCK'
       };
     });
   }

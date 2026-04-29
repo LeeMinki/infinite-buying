@@ -1,11 +1,30 @@
 import { createMarketDataProvider } from '../market-data/index.js';
+import * as marketPriceCacheRepository from '../repositories/marketPriceCacheRepository.js';
 
-const provider = createMarketDataProvider();
-
-export async function getCurrentPrice(stockCode) {
-  return provider.getCurrentPrice(stockCode);
+export async function getCurrentPrice(userId, stockCode) {
+  const provider = createMarketDataProvider(userId);
+  return provider.getCurrentPrice(normalizeStockCode(stockCode));
 }
 
-export async function getDailyPrices(stockCode) {
-  return provider.getDailyPrices(stockCode);
+export async function getDailyPrices(userId, stockCode, options = {}) {
+  const normalized = normalizeStockCode(stockCode);
+  const cached = marketPriceCacheRepository.listDailyPrices(userId, normalized, options);
+  try {
+    const provider = createMarketDataProvider(userId);
+    const fetched = await provider.getDailyPrices(normalized, options);
+    const filtered = filterByRange(fetched, options);
+    marketPriceCacheRepository.upsertDailyPrices(userId, filtered);
+    return marketPriceCacheRepository.listDailyPrices(userId, normalized, options);
+  } catch (error) {
+    if (cached.length > 0) return cached;
+    throw error;
+  }
+}
+
+function normalizeStockCode(stockCode) {
+  return String(stockCode || '').trim();
+}
+
+function filterByRange(rows, { from, to } = {}) {
+  return rows.filter((row) => (!from || row.date >= from) && (!to || row.date <= to));
 }

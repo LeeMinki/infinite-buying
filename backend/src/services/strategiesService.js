@@ -2,12 +2,12 @@ import { getDb } from '../db/connection.js';
 import * as strategiesRepository from '../repositories/strategiesRepository.js';
 import * as holdingsRepository from '../repositories/holdingsRepository.js';
 
-export function listStrategies() {
-  return strategiesRepository.listStrategies();
+export function listStrategies(userId) {
+  return strategiesRepository.listStrategies(userId);
 }
 
-export function getStrategyOrThrow(id) {
-  const strategy = strategiesRepository.getStrategy(id);
+export function getStrategyOrThrow(userId, id) {
+  const strategy = strategiesRepository.getStrategy(userId, id);
   if (!strategy) {
     const error = new Error('Strategy not found');
     error.status = 404;
@@ -16,33 +16,33 @@ export function getStrategyOrThrow(id) {
   return strategy;
 }
 
-export function createStrategy(input) {
+export function createStrategy(userId, input) {
   const normalized = normalizeStrategyInput(input);
   return getDb().transaction(() => {
-    const strategy = strategiesRepository.createStrategy(normalized);
-    holdingsRepository.createHolding(strategy.id, strategy.totalBudget);
+    const strategy = strategiesRepository.createStrategy(userId, normalized);
+    holdingsRepository.createHolding(userId, strategy.id, strategy.totalBudget);
     return strategy;
   })();
 }
 
-export function updateStrategy(id, input) {
-  getStrategyOrThrow(id);
+export function updateStrategy(userId, id, input) {
+  getStrategyOrThrow(userId, id);
   const normalized = normalizeStrategyInput(input);
-  const strategy = strategiesRepository.updateStrategy(id, normalized);
+  const strategy = strategiesRepository.updateStrategy(userId, id, normalized);
   return strategy;
 }
 
-export function deleteStrategy(id) {
-  if (!strategiesRepository.deleteStrategy(id)) {
+export function deleteStrategy(userId, id) {
+  if (!strategiesRepository.deleteStrategy(userId, id)) {
     const error = new Error('Strategy not found');
     error.status = 404;
     throw error;
   }
 }
 
-export function getHolding(strategyId) {
-  getStrategyOrThrow(strategyId);
-  return holdingsRepository.getHoldingByStrategy(strategyId);
+export function getHolding(userId, strategyId) {
+  getStrategyOrThrow(userId, strategyId);
+  return holdingsRepository.getHoldingByStrategy(userId, strategyId);
 }
 
 function normalizeStrategyInput(input) {
