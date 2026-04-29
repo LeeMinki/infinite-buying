@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: study-note-config
-  namespace: study-note
+  name: infinite-buying-config
+  namespace: infinite-buying
 data:
   NODE_ENV: production
   PORT: "3001"
-  DB_PATH: /var/lib/study-note/backend/app.db
+  DB_PATH: /var/lib/infinite-buying/backend/app.db
   MARKET_DATA_PROVIDER: mock
   KIWOOM_BASE_URL: https://api.kiwoom.com
   KIWOOM_MOCK_BASE_URL: https://mockapi.kiwoom.com

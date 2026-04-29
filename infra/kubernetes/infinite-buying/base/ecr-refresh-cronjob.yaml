@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: ecr-secret-refresh
-  namespace: study-note
+  namespace: infinite-buying
 spec:
   schedule: "0 */6 * * *"
   concurrencyPolicy: Forbid

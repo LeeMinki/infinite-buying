@@ -1,8 +1,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: study-note-ip-fallback
-  namespace: study-note
+  name: infinite-buying-ip-fallback
+  namespace: infinite-buying
 spec:
   ingressClassName: traefik
   rules:
@@ -12,13 +12,13 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: study-note-backend
+                name: infinite-buying-backend
                 port:
                   number: 3001
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: study-note-frontend
+                name: infinite-buying-frontend
                 port:
                   number: 80
