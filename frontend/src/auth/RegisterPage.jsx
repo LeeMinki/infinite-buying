@@ -5,12 +5,17 @@ export function RegisterPage({ onSwitch }) {
   const auth = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
     setError('');
+    if (password !== confirmPassword) {
+      setError('비밀번호 확인이 일치하지 않습니다.');
+      return;
+    }
     setSubmitting(true);
     try {
       await auth.register({ email, password });
@@ -27,7 +32,7 @@ export function RegisterPage({ onSwitch }) {
         <div className="brand compact">
           <div className="brand-logo" aria-hidden="true">∞</div>
           <div className="brand-text">
-            <h1>무한매수 보조</h1>
+            <h1>무한매수 해죠</h1>
             <span>회원가입</span>
           </div>
         </div>
@@ -39,6 +44,17 @@ export function RegisterPage({ onSwitch }) {
           <span>비밀번호</span>
           <input type="password" minLength="8" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
           <small className="helper">8자 이상</small>
+        </label>
+        <label>
+          <span>비밀번호 확인</span>
+          <input
+            type="password"
+            minLength="8"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
         </label>
         {error && <div className="form-error">{error}</div>}
         <button className="primary wide" type="submit" disabled={submitting}>{submitting ? '가입 중...' : '회원가입'}</button>
