@@ -54,20 +54,78 @@ export function KiwoomSetupPage({ onBack }) {
         <div className="panel-heading">
           <div>
             <h2>키움 REST API 설정</h2>
-            <p>사용자별 키움 인증정보를 backend에 암호화 저장합니다.</p>
+            <p>현재가와 일봉 차트를 키움에서 가져오기 위한 연결 설정입니다.</p>
           </div>
           <button type="button" className="ghost" onClick={onBack}>전략으로</button>
         </div>
 
         <div className="setup-guidance" role="note">
-          <p>처음 설정하신다면 아래 순서대로 진행해 주세요.</p>
-          <p>1) 키움 REST API 사이트에서 App Key / Secret Key를 발급받습니다.</p>
-          <p>2) 키움 사이트의 <b>계좌 App Key 관리</b> 화면에 서버 IP를 등록합니다.</p>
-          <p>3) 이 화면에서 App Key / Secret Key를 저장하고 <b>연결 테스트</b>를 누릅니다.</p>
-          <p>중요: 등록해야 하는 IP는 내 PC IP가 아니라, 이 서비스 서버 IP입니다.</p>
-          <p><b>지금 등록해야 할 서버 IP: {settings?.ec2ElasticIp || '(EC2_ELASTIC_IP 미설정)'}</b></p>
-          <p>연결이 실패하면 키움 사이트에 위 서버 IP가 정확히 등록됐는지 먼저 확인해 주세요.</p>
-          <p>이 앱은 실주문을 하지 않으며, 시세 조회와 가상 주문 기록만 제공합니다.</p>
+          <h3>키움 REST API 설정이 뭔가요?</h3>
+          <p>
+            키움 REST API는 이 앱이 키움 서버에 “이 종목 현재가 알려줘”, “일봉 차트 데이터 알려줘”라고
+            요청할 수 있게 해주는 통로입니다.
+          </p>
+          <p>
+            이 앱은 키움에 실주문을 보내지 않습니다. 저장한 키는 현재가/차트 조회에만 사용하고,
+            App Key와 Secret Key는 서버에 암호화해서 저장합니다.
+          </p>
+        </div>
+
+        <div className="setup-steps" aria-label="키움 REST API 설정 순서">
+          <div className="setup-step">
+            <span className="step-badge">1</span>
+            <div>
+              <h3>키움 사이트에서 먼저 할 일</h3>
+              <p>
+                아래 버튼으로 키움 REST API 사이트에 들어가 로그인합니다. 계좌가 없다면 키움 계좌 개설과
+                REST API 사용 신청을 먼저 진행해야 합니다.
+              </p>
+              <a className="external-link" href="https://openapi.kiwoom.com/simpleAuthLoginView" target="_blank" rel="noreferrer">
+                키움 REST API 사이트 열기
+              </a>
+            </div>
+          </div>
+
+          <div className="setup-step">
+            <span className="step-badge">2</span>
+            <div>
+              <h3>키움에서 App Key / Secret Key 발급</h3>
+              <p>
+                키움 사이트 안의 App Key 관리 화면에서 REST API용 App Key와 Secret Key를 발급받습니다.
+                이 두 값은 비밀번호처럼 다뤄야 하므로 다른 곳에 공개하지 마세요.
+              </p>
+            </div>
+          </div>
+
+          <div className="setup-step">
+            <span className="step-badge">3</span>
+            <div>
+              <h3>키움 사이트에 이 앱 서버 IP 등록</h3>
+              <p>
+                키움은 등록된 IP에서 오는 요청만 허용합니다. 여기서 말하는 IP는 내 PC나 휴대폰 IP가 아니라,
+                이 앱이 실행되는 서버 IP입니다.
+              </p>
+              <div className="server-ip-card">
+                <span>키움 사이트에 등록할 서버 IP</span>
+                <strong>{settings?.ec2ElasticIp || '(EC2_ELASTIC_IP 미설정)'}</strong>
+              </div>
+              <p>
+                키움 사이트의 <b>계좌 App Key 관리</b> 화면에서 위 IP를 등록해 주세요. 이 IP가 빠지면
+                연결 테스트나 현재가 조회가 실패할 수 있습니다.
+              </p>
+            </div>
+          </div>
+
+          <div className="setup-step">
+            <span className="step-badge">4</span>
+            <div>
+              <h3>마지막으로 이 화면에 키 입력</h3>
+              <p>
+                키움에서 발급받은 App Key와 Secret Key를 아래 입력칸에 붙여넣고 저장합니다.
+                저장 후에는 Secret Key 원문을 다시 보여주지 않습니다.
+              </p>
+            </div>
+          </div>
         </div>
 
         <div className="settings-summary">
@@ -82,14 +140,29 @@ export function KiwoomSetupPage({ onBack }) {
               <option value="production">운영 REST API</option>
               <option value="mock">키움 Mock API</option>
             </select>
+            <small className="helper">실제 키움 계정으로 조회하려면 운영 REST API를 선택하세요.</small>
           </label>
           <label>
             <span>App Key</span>
-            <input value={appKey} onChange={(e) => setAppKey(e.target.value)} autoComplete="off" required />
+            <input
+              value={appKey}
+              onChange={(e) => setAppKey(e.target.value)}
+              autoComplete="off"
+              placeholder="키움 사이트에서 발급받은 App Key"
+              required
+            />
           </label>
           <label>
             <span>Secret Key</span>
-            <input type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} autoComplete="off" required />
+            <input
+              type="password"
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              autoComplete="off"
+              placeholder="키움 사이트에서 발급받은 Secret Key"
+              required
+            />
+            <small className="helper">저장 후에는 보안을 위해 Secret Key를 다시 보여주지 않습니다.</small>
           </label>
           <div className="button-row">
             <button className="primary" type="submit">저장</button>
