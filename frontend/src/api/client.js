@@ -1,9 +1,19 @@
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:4000' : '');
+const rawApiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:4000' : '');
+
+function normalizeApiBase(value) {
+  if (!value || value === '/') return '';
+  return value.endsWith('/') ? value.slice(0, -1) : value;
+}
+
+function toApiUrl(path) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${normalizeApiBase(rawApiBase)}${normalizedPath}`;
+}
 
 async function request(path, options = {}) {
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await fetch(toApiUrl(path), {
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
