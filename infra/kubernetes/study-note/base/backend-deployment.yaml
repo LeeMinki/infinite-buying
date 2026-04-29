@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: study-note-backend
+  namespace: study-note
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: study-note-backend
+  template:
+    metadata:
+      labels:
+        app: study-note-backend
+    spec:
+      imagePullSecrets:
+        - name: ecr-registry
+      containers:
+        - name: backend
+          image: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/study-note-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: study-note-config
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: backend-data
+              mountPath: /var/lib/study-note/backend
+      volumes:
+        - name: backend-data
+          hostPath:
+            path: /var/lib/study-note/backend
+            type: DirectoryOrCreate

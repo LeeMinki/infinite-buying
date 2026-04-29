@@ -1,0 +1,121 @@
+name: Deploy Main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  check-env:
+    name: Check required variables
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip deploy]') }}
+    steps:
+      - name: Verify AWS variables are set
+        run: |
+          if [[ -z "${{ vars.AWS_REGION }}" || -z "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]]; then
+            echo "AWS_REGION or AWS_DEPLOY_ROLE_ARN repository variable is missing."
+            exit 1
+          fi
+
+  deploy:
+    name: Publish images and update GitOps state
+    runs-on: ubuntu-latest
+    needs: check-env
+    if: ${{ !contains(github.event.head_commit.message, '[skip deploy]') }}
+    timeout-minutes: 25
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      BACKEND_REPOSITORY: study-note-backend
+      FRONTEND_REPOSITORY: study-note-frontend
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repositories
+        run: |
+          aws ecr describe-repositories --repository-names "$BACKEND_REPOSITORY" >/dev/null 2>&1 || aws ecr create-repository --repository-name "$BACKEND_REPOSITORY" >/dev/null
+          aws ecr describe-repositories --repository-names "$FRONTEND_REPOSITORY" >/dev/null 2>&1 || aws ecr create-repository --repository-name "$FRONTEND_REPOSITORY" >/dev/null
+
+      - name: Build backend image
+        run: |
+          docker build -t "$BACKEND_REPOSITORY:$IMAGE_TAG" -f backend/Dockerfile backend
+          docker tag "$BACKEND_REPOSITORY:$IMAGE_TAG" "${{ steps.ecr.outputs.registry }}/$BACKEND_REPOSITORY:$IMAGE_TAG"
+
+      - name: Build frontend image
+        run: |
+          docker build --build-arg VITE_API_BASE=/ -t "$FRONTEND_REPOSITORY:$IMAGE_TAG" -f frontend/Dockerfile frontend
+          docker tag "$FRONTEND_REPOSITORY:$IMAGE_TAG" "${{ steps.ecr.outputs.registry }}/$FRONTEND_REPOSITORY:$IMAGE_TAG"
+
+      - name: Push images
+        run: |
+          docker push "${{ steps.ecr.outputs.registry }}/$BACKEND_REPOSITORY:$IMAGE_TAG"
+          docker push "${{ steps.ecr.outputs.registry }}/$FRONTEND_REPOSITORY:$IMAGE_TAG"
+
+      - name: Update GitOps image tags
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("infra/kubernetes/study-note/overlays/mvp/kustomization.yaml")
+          registry = "${{ steps.ecr.outputs.registry }}"
+          image_tag = "${{ env.IMAGE_TAG }}"
+          lines = path.read_text().splitlines()
+          current_image = None
+          next_lines = []
+
+          for line in lines:
+              stripped = line.strip()
+              if (stripped.startswith("name: ") or stripped.startswith("- name: ")) and "study-note-backend" in stripped:
+                  current_image = "backend"
+              elif (stripped.startswith("name: ") or stripped.startswith("- name: ")) and "study-note-frontend" in stripped:
+                  current_image = "frontend"
+
+              if stripped.startswith("newName: ") and current_image == "backend":
+                  next_lines.append(f"    newName: {registry}/study-note-backend")
+                  continue
+
+              if stripped.startswith("newName: ") and current_image == "frontend":
+                  next_lines.append(f"    newName: {registry}/study-note-frontend")
+                  continue
+
+              if stripped.startswith("newTag: ") and current_image in {"backend", "frontend"}:
+                  next_lines.append(f"    newTag: {image_tag}")
+                  continue
+
+              next_lines.append(line)
+
+          path.write_text("\n".join(next_lines) + "\n")
+          PY
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Validate rendered manifests
+        run: kubectl kustomize infra/kubernetes/study-note/overlays/mvp > /tmp/study-note-mvp.yaml
+
+      - name: Commit GitOps update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add infra/kubernetes/study-note/overlays/mvp/kustomization.yaml
+          git commit -m "chore: update mvp image tags [skip deploy]" || exit 0
+          git push

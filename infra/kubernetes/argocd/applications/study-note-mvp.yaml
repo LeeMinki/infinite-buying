@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: argocd
+spec:
+  sourceRepos:
+    - "*"
+  destinations:
+    - namespace: "*"
+      server: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: study-note-mvp
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/LeeMinki/infinite-buying.git
+    targetRevision: main
+    path: infra/kubernetes/study-note/overlays/mvp
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: study-note
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

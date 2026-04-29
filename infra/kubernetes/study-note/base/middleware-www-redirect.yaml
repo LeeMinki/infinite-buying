@@ -1,0 +1,10 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: study-note-www-redirect
+  namespace: study-note
+spec:
+  redirectRegex:
+    regex: ^https://www\.study-note\.yuna-pa\.com/(.*)
+    replacement: https://study-note.yuna-pa.com/${1}
+    permanent: true
