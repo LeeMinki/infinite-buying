@@ -1,14 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext.jsx';
 import { LoginPage } from './auth/LoginPage.jsx';
 import { RegisterPage } from './auth/RegisterPage.jsx';
-import { StrategiesPage } from './pages/StrategiesPage.jsx';
-import { StrategyDetailPage } from './pages/StrategyDetailPage.jsx';
-import { KiwoomSetupPage } from './pages/KiwoomSetupPage.jsx';
 import { listStrategies } from './api/client.js';
 
 const SIDEBAR_KEY = 'ib.sidebarOpen';
 const NARROW_QUERY = '(max-width: 1100px)';
+const StrategiesPage = lazy(() => import('./pages/StrategiesPage.jsx').then((module) => ({ default: module.StrategiesPage })));
+const StrategyDetailPage = lazy(() => import('./pages/StrategyDetailPage.jsx').then((module) => ({ default: module.StrategyDetailPage })));
+const KiwoomSetupPage = lazy(() => import('./pages/KiwoomSetupPage.jsx').then((module) => ({ default: module.KiwoomSetupPage })));
 
 function isNarrow() {
   return typeof window !== 'undefined' && window.matchMedia(NARROW_QUERY).matches;
@@ -91,37 +91,43 @@ function AuthenticatedApp() {
   }
 
   if (view === 'kiwoom') {
-    return <KiwoomSetupPage onBack={() => setView('strategies')} />;
+    return (
+      <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
+        <KiwoomSetupPage onBack={() => setView('strategies')} />
+      </Suspense>
+    );
   }
 
   return (
-    <main className={`app-shell ${sidebarOpen ? '' : 'collapsed'}`}>
-      <button
-        type="button"
-        className="sidebar-toggle"
-        onClick={toggleSidebar}
-        aria-label={sidebarOpen ? '사이드바 접기' : '사이드바 펼치기'}
-        title={sidebarOpen ? '사이드바 접기' : '사이드바 펼치기'}
-      >
-        <ChevronIcon direction={sidebarOpen ? 'left' : 'right'} />
-      </button>
-      <div
-        className="sidebar-backdrop"
-        onClick={() => setSidebar(false)}
-        aria-hidden="true"
-      />
-      <StrategiesPage
-        strategies={strategies}
-        selectedId={selectedId}
-        onSelect={handleSelect}
-        onChanged={refreshStrategies}
-        onClose={() => setSidebar(false)}
-        onOpenKiwoom={() => setView('kiwoom')}
-        user={auth.user}
-        onLogout={auth.logout}
-      />
-      <StrategyDetailPage strategyId={selectedId} onChanged={refreshStrategies} />
-    </main>
+    <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
+      <main className={`app-shell ${sidebarOpen ? '' : 'collapsed'}`}>
+        <button
+          type="button"
+          className="sidebar-toggle"
+          onClick={toggleSidebar}
+          aria-label={sidebarOpen ? '사이드바 접기' : '사이드바 펼치기'}
+          title={sidebarOpen ? '사이드바 접기' : '사이드바 펼치기'}
+        >
+          <ChevronIcon direction={sidebarOpen ? 'left' : 'right'} />
+        </button>
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setSidebar(false)}
+          aria-hidden="true"
+        />
+        <StrategiesPage
+          strategies={strategies}
+          selectedId={selectedId}
+          onSelect={handleSelect}
+          onChanged={refreshStrategies}
+          onClose={() => setSidebar(false)}
+          onOpenKiwoom={() => setView('kiwoom')}
+          user={auth.user}
+          onLogout={auth.logout}
+        />
+        <StrategyDetailPage strategyId={selectedId} onChanged={refreshStrategies} />
+      </main>
+    </Suspense>
   );
 }
 
