@@ -36,28 +36,36 @@ export class MockMarketDataProvider extends MarketDataProvider {
   }
 
   async searchStocks(query) {
-    const keyword = String(query || '').trim().toLowerCase();
-    if (!keyword) return [];
-    return MOCK_STOCKS
-      .filter((stock) =>
-        stock.stockCode.toLowerCase().includes(keyword) ||
-        stock.stockName.toLowerCase().includes(keyword)
-      )
-      .slice(0, 10)
-      .map((stock) => ({ ...stock, source: 'MOCK' }));
+    return searchMockStocks(query);
   }
 
   async getAccountDeposit() {
-    return {
-      deposit: 5000000,
-      availableOrderAmount: 4500000,
-      source: 'MOCK',
-      fetchedAt: new Date().toISOString()
-    };
+    return getMockAccountDeposit();
   }
 }
 
-const MOCK_STOCKS = [
+export function searchMockStocks(query) {
+  const keyword = String(query || '').trim().toLowerCase();
+  if (!keyword) return [];
+  return MOCK_STOCKS
+    .filter((stock) =>
+      stock.stockCode.toLowerCase().includes(keyword) ||
+      stock.stockName.toLowerCase().includes(keyword)
+    )
+    .slice(0, 10)
+    .map((stock) => ({ ...stock, source: 'MOCK' }));
+}
+
+export function getMockAccountDeposit() {
+  return {
+    deposit: 5000000,
+    availableOrderAmount: 4500000,
+    source: 'MOCK',
+    fetchedAt: new Date().toISOString()
+  };
+}
+
+export const MOCK_STOCKS = [
   { stockCode: '005930', stockName: '삼성전자' },
   { stockCode: '000660', stockName: 'SK하이닉스' },
   { stockCode: '035420', stockName: 'NAVER' },

@@ -18,6 +18,7 @@ export function createMarketDataProvider(userId) {
   return new KiwoomMarketDataProvider({
     baseUrl: kiwoomAuthService.baseUrl(credential),
     timeoutMs: env.kiwoomTimeoutMs,
+    useMockData: env.kiwoomUseMock || credential.environment === 'mock',
     tokenSupplier: () => kiwoomAuthService.getAccessToken(userId)
   });
 }
