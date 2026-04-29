@@ -1,0 +1,13 @@
+.git
+.github
+.specify
+.agents
+node_modules
+dist
+build
+*.log
+.env
+.env.*
+backend/data
+**/*.db
+**/*.db-*

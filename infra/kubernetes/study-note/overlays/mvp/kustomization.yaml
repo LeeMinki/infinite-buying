@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: study-note
+resources:
+  - ../../base
+patches:
+  - path: patches/ingress-tls.yaml
+    target:
+      kind: Ingress
+      name: study-note
+  - path: patches/ingress-www-tls.yaml
+    target:
+      kind: Ingress
+      name: study-note-www
+images:
+  - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/study-note-backend
+    newName: 107015853205.dkr.ecr.ap-northeast-2.amazonaws.com/study-note-backend
+    newTag: latest
+  - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/study-note-frontend
+    newName: 107015853205.dkr.ecr.ap-northeast-2.amazonaws.com/study-note-frontend
+    newTag: latest

@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: study-note-www
+  namespace: study-note
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: study-note-https-redirect@kubernetescrd,study-note-www-redirect@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - www.DOMAIN_PLACEHOLDER
+      secretName: study-note-tls-secret
+  rules:
+    - host: www.DOMAIN_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: study-note-frontend
+                port:
+                  number: 80

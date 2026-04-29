@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ecr-secret-refresh
+  namespace: study-note
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ecr-refresher
+          restartPolicy: OnFailure
+          containers:
+            - name: refresh
+              image: public.ecr.aws/aws-cli/aws-cli:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  REGION="ap-northeast-2"
+                  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                  REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
+                  TOKEN=$(aws ecr get-login-password --region "${REGION}")
+                  DOCKER_CONFIG=$(printf '{"auths":{"%s":{"username":"AWS","password":"%s"}}}' "${REGISTRY}" "${TOKEN}" | base64 | tr -d '\n')
+
+                  SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  K8S="https://kubernetes.default.svc"
+                  NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+                  STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                    -H "Authorization: Bearer ${SA_TOKEN}" \
+                    --cacert "${CA}" \
+                    "${K8S}/api/v1/namespaces/${NS}/secrets/ecr-registry")
+
+                  if [ "${STATUS}" = "200" ]; then
+                    curl -s -X PATCH \
+                      -H "Authorization: Bearer ${SA_TOKEN}" \
+                      -H "Content-Type: application/strategic-merge-patch+json" \
+                      --cacert "${CA}" \
+                      "${K8S}/api/v1/namespaces/${NS}/secrets/ecr-registry" \
+                      -d "{\"data\":{\".dockerconfigjson\":\"${DOCKER_CONFIG}\"}}"
+                  else
+                    curl -s -X POST \
+                      -H "Authorization: Bearer ${SA_TOKEN}" \
+                      -H "Content-Type: application/json" \
+                      --cacert "${CA}" \
+                      "${K8S}/api/v1/namespaces/${NS}/secrets" \
+                      -d "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"ecr-registry\",\"namespace\":\"${NS}\"},\"type\":\"kubernetes.io/dockerconfigjson\",\"data\":{\".dockerconfigjson\":\"${DOCKER_CONFIG}\"}}"
+                  fi
