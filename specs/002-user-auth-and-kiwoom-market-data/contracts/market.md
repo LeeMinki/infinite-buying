@@ -28,6 +28,29 @@ Fetch the latest current price for a stock using the signed-in user's Kiwoom cre
 
 ---
 
+## GET `/api/market/stocks/search`
+
+Search stocks for strategy creation. The browser never calls Kiwoom directly; it sends the query to the backend, and the backend uses the signed-in user's Kiwoom environment.
+
+**Query params**:
+- `q`: required free-text query. Can be a stock code fragment (`005930`) or stock-name fragment (`삼성`).
+
+**Responses**:
+
+| Status | Body | When |
+|---|---|---|
+| `200 OK` | `{ "items": [{ "stockCode": "005930", "stockName": "삼성전자", "source": "KIWOOM" }] }` | Production Kiwoom search succeeded |
+| `200 OK` | `{ "items": [{ "stockCode": "005930", "stockName": "삼성전자", "source": "MOCK" }] }` | Mock environment uses app-owned mock stock data |
+| `401 Unauthorized` | `{ "error": "로그인이 필요합니다." }` | No session |
+| `503 Service Unavailable` | `{ "error": "..." }` | Production Kiwoom stock-list lookup failed |
+
+**Behavior notes**:
+- Production mode uses Kiwoom stock-information list data and filters by `stockCode` or `stockName` on the backend.
+- Mock mode MUST NOT forward stock search to an unsupported external mock endpoint; it returns app-owned mock results.
+- Response bodies never include App Key, Secret Key, or access token.
+
+---
+
 ## GET `/api/market/:stockCode/daily`
 
 Fetch a daily OHLCV series for a stock. Backed by `market_price_cache` plus on-demand Kiwoom calls for missing dates.

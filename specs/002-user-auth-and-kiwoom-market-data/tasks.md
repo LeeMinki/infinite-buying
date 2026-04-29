@@ -72,6 +72,16 @@
   - 수정 파일: `backend/tests/auth.test.js`, `backend/tests/crossUserIsolation.test.js`, `backend/tests/kiwoomCredential.test.js`, `backend/tests/kiwoomAuthService.test.js`, `backend/tests/marketRoutes.test.js`, `frontend/dist/`, `specs/002-user-auth-and-kiwoom-market-data/quickstart.md`
   - 완료 조건: `npm test`, `npm run build`, frontend bundle secret grep, route inventory check가 통과하고, backend route table에 Kiwoom 주문 API나 실주문 endpoint가 없으며, 이메일 인증/비밀번호 찾기/소셜 로그인/백테스트/실주문은 구현되지 않는다.
 
+- [X] T011 전략 생성 폼에 종목 검색 dropdown과 키움 예수금 불러오기를 추가한다 in `backend/src/routes/marketRoutes.js`, `backend/src/routes/accountRoutes.js`, `frontend/src/components/StrategyForm.jsx`
+  - 목적: 사용자가 종목코드/종목명을 직접 따로 입력하지 않고 검색 결과를 선택하게 하며, read-only 계좌 예수금/주문가능금액을 총 투자금 입력값으로 가져올 수 있게 한다.
+  - 수정 파일: `backend/src/market-data/MarketDataProvider.js`, `backend/src/market-data/KiwoomMarketDataProvider.js`, `backend/src/market-data/MockMarketDataProvider.js`, `backend/src/market-data/index.js`, `backend/src/services/marketDataService.js`, `backend/src/routes/marketRoutes.js`, `backend/src/routes/accountRoutes.js`, `backend/src/app.js`, `frontend/src/api/client.js`, `frontend/src/components/StrategyForm.jsx`, `frontend/src/styles.css`
+  - 완료 조건: `GET /api/market/stocks/search?q=...`와 `GET /api/account/deposit`이 auth 필요/userId scoped로 동작하고, 전략 생성 UI는 검색 결과 선택을 요구하며, Mock 환경에서는 외부 mock endpoint 404 대신 앱 내부 mock 종목/예수금 데이터를 반환한다.
+
+- [X] T012 Argo CD poll 기반 GitOps 동기화 지연 설정을 문서화하고 클러스터에 반영한다 in `infra/kubernetes/argocd/*.yaml`
+  - 목적: GitHub webhook 없는 Argo CD core 설치에서 GitOps image tag commit 감지 지연을 줄이고, hard refresh에 의존하지 않는 운영 절차를 남긴다.
+  - 수정 파일: `infra/kubernetes/argocd/README.md`, `infra/kubernetes/argocd/runtime-tuning.yaml`
+  - 완료 조건: `timeout.reconciliation=30s`, `timeout.reconciliation.jitter=5s`, `reposerver.repo.cache.expiration=30s`, `controller.app.state.cache.expiration=30s` 설정이 문서화되고, 설정 변경 시 `argocd-application-controller`와 `argocd-repo-server` 재시작이 필요하다는 운영 메모가 남는다.
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -81,6 +91,7 @@
 - US1: T001-T003 이후 T004 → T005 순서.
 - US2: T001-T004 이후 가능. T006 이후 T007.
 - US3: T001-T007 이후 가능. T008 이후 T009의 시장 데이터 연결 부분 완료.
+- 전략 생성 종목 검색/예수금 조회: T006-T008 이후 가능. 사용자 credential/environment 선택과 provider factory가 선행되어야 한다.
 - Final: T004-T009 이후 T010.
 
 ### User Story Dependencies
@@ -101,7 +112,9 @@
 2. **Credential slice**: T006-T007로 Kiwoom credential 저장과 연결 테스트를 만든다.
 3. **Market data slice**: T008로 backend-only Kiwoom 현재가/일봉/cache를 만든다.
 4. **UI slice**: T009로 auth, setup, strategy detail 연결을 완성한다.
-5. **Validation**: T010으로 보안/회귀 검증 후 다음 단계(`/speckit-implement`)로 넘긴다.
+5. **Strategy creation helpers**: T011로 종목 검색 dropdown과 예수금 불러오기를 붙인다.
+6. **GitOps hardening**: T012로 Argo CD poll/cache 설정을 운영 문서와 클러스터에 반영한다.
+7. **Validation**: T010으로 보안/회귀 검증 후 다음 단계(`/speckit-implement`)로 넘긴다.
 
 ## Deferred Specs
 
