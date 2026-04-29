@@ -532,21 +532,17 @@ tbody tr:last-child td {
 }
 
 .stock-search {
-  position: relative;
+  display: grid;
+  gap: 8px;
 }
 
 .stock-results {
   background: #ffffff;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-lg);
-  left: 0;
   max-height: 220px;
   overflow: auto;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 20;
+  position: static;
 }
 
 .stock-results button {

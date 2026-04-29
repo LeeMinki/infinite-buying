@@ -1,4 +1,5 @@
 import { MarketDataProvider } from './MarketDataProvider.js';
+import { getMockAccountDeposit, searchMockStocks } from './MockMarketDataProvider.js';
 
 export class KiwoomMarketDataProvider extends MarketDataProvider {
   constructor(options) {
@@ -6,6 +7,7 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
     this.baseUrl = options.baseUrl;
     this.timeoutMs = options.timeoutMs;
     this.tokenSupplier = options.tokenSupplier;
+    this.useMockData = options.useMockData;
   }
 
   isConfigured() {
@@ -54,6 +56,10 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
   }
 
   async searchStocks(query) {
+    if (this.useMockData) {
+      return searchMockStocks(query);
+    }
+
     const normalized = String(query || '').trim();
     if (!normalized) return [];
 
@@ -102,6 +108,10 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
   }
 
   async getAccountDeposit() {
+    if (this.useMockData) {
+      return getMockAccountDeposit();
+    }
+
     const data = await this.requestJson('/api/dostk/acnt', 'kt00001', {
       qry_tp: '3'
     });
