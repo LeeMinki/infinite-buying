@@ -1,8 +1,8 @@
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: study-note-https-redirect
-  namespace: study-note
+  name: infinite-buying-https-redirect
+  namespace: infinite-buying
 spec:
   redirectScheme:
     scheme: https

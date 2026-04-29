@@ -1,18 +1,18 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: study-note
-  namespace: study-note
+  name: infinite-buying
+  namespace: infinite-buying
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    traefik.ingress.kubernetes.io/router.middlewares: study-note-https-redirect@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: infinite-buying-https-redirect@kubernetescrd
 spec:
   ingressClassName: traefik
   tls:
     - hosts:
         - DOMAIN_PLACEHOLDER
         - www.DOMAIN_PLACEHOLDER
-      secretName: study-note-tls-secret
+      secretName: infinite-buying-tls-secret
   rules:
     - host: DOMAIN_PLACEHOLDER
       http:
@@ -21,13 +21,13 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: study-note-backend
+                name: infinite-buying-backend
                 port:
                   number: 3001
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: study-note-frontend
+                name: infinite-buying-frontend
                 port:
                   number: 80

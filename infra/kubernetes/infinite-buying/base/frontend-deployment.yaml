@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: study-note-frontend
-  namespace: study-note
+  name: infinite-buying-frontend
+  namespace: infinite-buying
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: study-note-frontend
+      app: infinite-buying-frontend
   template:
     metadata:
       labels:
-        app: study-note-frontend
+        app: infinite-buying-frontend
     spec:
       imagePullSecrets:
         - name: ecr-registry
       containers:
         - name: frontend
-          image: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/study-note-frontend:latest
+          image: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

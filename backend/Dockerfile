@@ -11,7 +11,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY src ./src
-RUN mkdir -p /var/lib/study-note/backend
+RUN mkdir -p /var/lib/infinite-buying/backend
 
 EXPOSE 3001
 

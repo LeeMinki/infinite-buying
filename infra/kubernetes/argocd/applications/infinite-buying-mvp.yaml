@@ -16,17 +16,17 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: study-note-mvp
+  name: infinite-buying-mvp
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/LeeMinki/infinite-buying.git
     targetRevision: main
-    path: infra/kubernetes/study-note/overlays/mvp
+    path: infra/kubernetes/infinite-buying/overlays/mvp
   destination:
     server: https://kubernetes.default.svc
-    namespace: study-note
+    namespace: infinite-buying
   syncPolicy:
     automated:
       prune: true

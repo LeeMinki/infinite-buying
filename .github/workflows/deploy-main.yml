@@ -31,8 +31,8 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-      BACKEND_REPOSITORY: study-note-backend
-      FRONTEND_REPOSITORY: study-note-frontend
+      BACKEND_REPOSITORY: infinite-buying-backend
+      FRONTEND_REPOSITORY: infinite-buying-frontend
       IMAGE_TAG: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -75,7 +75,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("infra/kubernetes/study-note/overlays/mvp/kustomization.yaml")
+          path = Path("infra/kubernetes/infinite-buying/overlays/mvp/kustomization.yaml")
           registry = "${{ steps.ecr.outputs.registry }}"
           image_tag = "${{ env.IMAGE_TAG }}"
           lines = path.read_text().splitlines()
@@ -84,17 +84,17 @@ jobs:
 
           for line in lines:
               stripped = line.strip()
-              if (stripped.startswith("name: ") or stripped.startswith("- name: ")) and "study-note-backend" in stripped:
+              if (stripped.startswith("name: ") or stripped.startswith("- name: ")) and "infinite-buying-backend" in stripped:
                   current_image = "backend"
-              elif (stripped.startswith("name: ") or stripped.startswith("- name: ")) and "study-note-frontend" in stripped:
+              elif (stripped.startswith("name: ") or stripped.startswith("- name: ")) and "infinite-buying-frontend" in stripped:
                   current_image = "frontend"
 
               if stripped.startswith("newName: ") and current_image == "backend":
-                  next_lines.append(f"    newName: {registry}/study-note-backend")
+                  next_lines.append(f"    newName: {registry}/infinite-buying-backend")
                   continue
 
               if stripped.startswith("newName: ") and current_image == "frontend":
-                  next_lines.append(f"    newName: {registry}/study-note-frontend")
+                  next_lines.append(f"    newName: {registry}/infinite-buying-frontend")
                   continue
 
               if stripped.startswith("newTag: ") and current_image in {"backend", "frontend"}:
@@ -110,12 +110,12 @@ jobs:
         uses: azure/setup-kubectl@v4
 
       - name: Validate rendered manifests
-        run: kubectl kustomize infra/kubernetes/study-note/overlays/mvp > /tmp/study-note-mvp.yaml
+        run: kubectl kustomize infra/kubernetes/infinite-buying/overlays/mvp > /tmp/infinite-buying-mvp.yaml
 
       - name: Commit GitOps update
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add infra/kubernetes/study-note/overlays/mvp/kustomization.yaml
+          git add infra/kubernetes/infinite-buying/overlays/mvp/kustomization.yaml
           git commit -m "chore: update mvp image tags [skip deploy]" || exit 0
           git push

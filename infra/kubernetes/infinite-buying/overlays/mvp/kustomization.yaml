@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: infinite-buying
+resources:
+  - ../../base
+patches:
+  - path: patches/ingress-tls.yaml
+    target:
+      kind: Ingress
+      name: infinite-buying
+  - path: patches/ingress-www-tls.yaml
+    target:
+      kind: Ingress
+      name: infinite-buying-www
+images:
+  - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend
+    newName: 107015853205.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend
+    newTag: 6a8c3e61cbd6c39ce49085381a3cf2636472973c
+  - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend
+    newName: 107015853205.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend
+    newTag: 6a8c3e61cbd6c39ce49085381a3cf2636472973c
