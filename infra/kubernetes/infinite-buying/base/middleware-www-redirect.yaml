@@ -5,6 +5,6 @@ metadata:
   namespace: infinite-buying
 spec:
   redirectRegex:
-    regex: ^https://www\.study-note\.yuna-pa\.com/(.*)
-    replacement: https://study-note.yuna-pa.com/${1}
+    regex: ^https://www\.infinite-buying\.yuna-pa\.com/(.*)
+    replacement: https://infinite-buying.yuna-pa.com/${1}
     permanent: true
