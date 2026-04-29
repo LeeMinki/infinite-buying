@@ -108,14 +108,14 @@ export function StrategyForm({ onSubmit }) {
           <div className="input-with-unit">
             <input
               type="number"
-              min="0.01"
-              step="0.1"
+              min="0"
+              step="0.01"
               value={form.targetProfitPercent}
               onChange={(e) => update('targetProfitPercent', e.target.value)}
             />
             <em>%</em>
           </div>
-          <p className="helper">평균단가 대비 이 수익률에 닿으면 매도 신호가 떠요.</p>
+          <p className="helper">평균단가 대비 이 수익률에 닿으면 매도 신호가 떠요. 예: 10 = 10%</p>
         </label>
       </div>
 

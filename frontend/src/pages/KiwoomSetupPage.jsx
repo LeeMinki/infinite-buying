@@ -140,7 +140,9 @@ export function KiwoomSetupPage({ onBack }) {
               <option value="production">운영 REST API</option>
               <option value="mock">키움 Mock API</option>
             </select>
-            <small className="helper">실제 키움 계정으로 조회하려면 운영 REST API를 선택하세요.</small>
+            <small className="helper">
+              운영 REST API는 실제 키움 token 발급을 확인합니다. Mock API는 개발 확인용이며 실제 키움 계정 연결을 검증하지 않습니다.
+            </small>
           </label>
           <label>
             <span>App Key</span>
@@ -169,6 +171,9 @@ export function KiwoomSetupPage({ onBack }) {
             <button type="button" onClick={test} disabled={!settings?.configured}>연결 테스트</button>
             <button type="button" className="ghost danger-button" onClick={remove} disabled={!settings?.configured}>삭제</button>
           </div>
+          <p className="helper">
+            연결 테스트는 현재 저장된 환경 기준으로 실행됩니다. 운영 REST API로 저장되어 있으면 키움 서버에 실제 access token 발급 요청을 보냅니다.
+          </p>
         </form>
 
         {message && <div className="note success-note">{message}</div>}
