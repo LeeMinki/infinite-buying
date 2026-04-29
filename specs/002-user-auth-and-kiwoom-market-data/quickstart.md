@@ -208,7 +208,36 @@ sqlite3 backend/data/app.db \
 
 ---
 
-## 6. Manual fallback when Kiwoom is unavailable (FR-031)
+## 6. Stock search and account deposit helpers (User Story 4)
+
+These are read-only helpers for strategy creation. They do not place orders.
+
+```bash
+# Stock search in production or mock mode
+curl -s -b jarA.txt "http://localhost:4000/api/market/stocks/search?q=005930" | jq
+# Expect: {"items":[{"stockCode":"005930","stockName":"삼성전자","source":"KIWOOM" or "MOCK"}]}
+
+curl -s -b jarA.txt "http://localhost:4000/api/market/stocks/search?q=삼성" | jq
+# Expect: a visible 삼성전자 result when production stock-list lookup succeeds or when using Mock environment
+
+# Account deposit / orderable cash
+curl -s -b jarA.txt http://localhost:4000/api/account/deposit | jq
+# Expect: {"deposit":<number>,"availableOrderAmount":<number>,"source":"KIWOOM" or "MOCK","fetchedAt":"..."}
+```
+
+Browser check:
+
+1. Open the strategy creation form.
+2. Type `삼성` or `005930` in `종목 검색`.
+3. Confirm results render as a visible list inside the form, not as a clipped overlay.
+4. Select `삼성전자`; confirm the selected stock is shown as `005930 · 삼성전자`.
+5. Click `키움 예수금 불러오기`; confirm `총 투자금` is populated.
+
+✅ Pass criteria: stock search works in both production Kiwoom and Mock environment, Mock does not show `요청에 실패했습니다. (404)`, and account lookup never returns keys/tokens/order payloads.
+
+---
+
+## 7. Manual fallback when Kiwoom is unavailable (FR-031)
 
 In the browser:
 1. Sign in as Alice.
@@ -222,7 +251,7 @@ In the browser:
 
 ---
 
-## 7. Frontend bundle audit (FR-032)
+## 8. Frontend bundle audit (FR-032)
 
 ```bash
 cd frontend
@@ -239,7 +268,7 @@ grep -REn '"Bearer ' dist/ || echo "✅ no Bearer strings"
 
 ---
 
-## 8. Automated tests
+## 9. Automated tests
 
 From `backend/`:
 ```bash
@@ -252,13 +281,23 @@ Should run, and pass the current automated backend suite. The suite currently in
 
 ---
 
-## 9. Production smoke (after EC2 deploy)
+## 10. Production smoke (after EC2 deploy)
 
 1. `curl -i https://infinite-buying.yuna-pa.com/api/health` → `{ "ok": true }`
 2. Open the public URL in a private browser window. Expect the login screen first.
 3. Register, log in, open Kiwoom Setup. Verify the displayed EC2 Elastic IP matches `EC2_ELASTIC_IP` in the EC2 env file.
 4. Save the credential, run "연결 테스트", confirm success.
-5. Open a strategy, click "현재가 조회", confirm the price auto-fills.
+5. In the strategy creation form, search for a stock and select it.
+6. Click "키움 예수금 불러오기", confirm total budget fills.
+7. Save the strategy, open it, click "현재가 조회", confirm the price auto-fills.
+8. Confirm Argo CD is synced to the latest GitOps commit:
+   ```bash
+   kubectl -n argocd get application infinite-buying-mvp \
+     -o jsonpath='{.status.sync.status} {.status.health.status} {.status.sync.revision}'
+   kubectl -n infinite-buying get deploy \
+     -o jsonpath='{range .items[*]}{.metadata.name} {.spec.template.spec.containers[0].image}{"\n"}{end}'
+   ```
+   Expect `Synced Healthy` and backend/frontend images tagged with the merge commit SHA referenced by the latest GitOps image-tag commit.
 
 ✅ Pass criterion: the entire flow works without any console errors and without a single network response containing `appKey`, `secretKey`, `accessToken`, or `Authorization: Bearer …`.
 

@@ -5,7 +5,7 @@
 
 ## Summary
 
-Add fast-MVP email/password authentication, strict per-user data isolation, and per-user Kiwoom REST market-data integration to the existing virtual trading MVP. The browser talks only to the Express backend with an httpOnly session cookie. The backend owns password hashing, credential encryption, Kiwoom token issuance/cache, current-price lookup, daily OHLCV lookup, and per-user SQLite cache writes. The frontend never calls Kiwoom directly and never receives a Secret Key, access token, plaintext password, or unmasked App Key. Existing manual current-price evaluation remains available when Kiwoom fails.
+Add fast-MVP email/password authentication, strict per-user data isolation, and per-user Kiwoom REST market-data integration to the existing virtual trading MVP. The browser talks only to the Express backend with an httpOnly session cookie. The backend owns password hashing, credential encryption, Kiwoom token issuance/cache, current-price lookup, daily OHLCV lookup, stock search, read-only account deposit lookup, and per-user SQLite cache writes. The frontend never calls Kiwoom directly and never receives a Secret Key, access token, plaintext password, or unmasked App Key. Existing manual current-price evaluation remains available when Kiwoom fails.
 
 ## Technical Context
 
@@ -16,7 +16,7 @@ Add fast-MVP email/password authentication, strict per-user data isolation, and 
 **Target Platform**: Single EC2 instance running k3s, Traefik, cert-manager, backend/frontend containers, public URL `https://infinite-buying.yuna-pa.com/`.
 **Project Type**: Web application with `backend/`, `frontend/`, and `infra/` directories.
 **Performance Goals**: Current price returns within 3 seconds median under normal Kiwoom availability; first six-month daily chart load returns within 5 seconds median; repeated cached daily chart load returns within 1 second median.
-**Constraints**: No real order API or Kiwoom order endpoint; frontend does not call Kiwoom; no password/App Key/Secret Key/access token in logs, responses, or bundle; Secret Key and access token encrypted at rest; App Key displayed only masked; every data read/write scoped by session userId; no `DEFAULT_USER_ID`; manual price input fallback remains.
+**Constraints**: No real order API or Kiwoom order endpoint; account integration is read-only deposit/orderable-cash lookup only; frontend does not call Kiwoom; no password/App Key/Secret Key/access token in logs, responses, or bundle; Secret Key and access token encrypted at rest; App Key displayed only masked; every data read/write scoped by session userId; no `DEFAULT_USER_ID`; manual price input fallback remains.
 **Scale/Scope**: Small MVP with single-digit concurrent users, one Kiwoom credential per user, SQLite storage, and per-user daily cache keyed by `(user_id, stock_code, date)`.
 
 ## Constitution Check
@@ -62,6 +62,8 @@ Kiwoom REST API
 
 The Kiwoom site must allowlist the backend server's outbound public IP, not the user's browser IP, because every Kiwoom REST call is made by the EC2 backend. Browser requests terminate at the app backend; the browser never contacts Kiwoom and therefore the user's PC IP is irrelevant to Kiwoom's IP whitelist.
 
+Stock search and account deposit lookup follow the same backend-only rule. Production Kiwoom mode uses Kiwoom read-only endpoints for stock information and account deposit/orderable cash. Kiwoom Mock mode uses app-owned mock stock/deposit data because the external mock domain may not expose every stock-list or account endpoint needed by the MVP.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -76,6 +78,7 @@ specs/002-user-auth-and-kiwoom-market-data/
 │   ├── auth.md
 │   ├── kiwoom-settings.md
 │   ├── market.md
+│   ├── account.md
 │   └── strategies-userid.md
 └── tasks.md              # created later by /speckit.tasks
 ```
@@ -157,7 +160,8 @@ See [research.md](./research.md). Key decisions:
 
 - `KiwoomAuthService` decrypts user keys only inside backend memory, reuses valid cached tokens, reissues on expiry or Kiwoom token rejection, and retries once.
 - Token failures produce sanitized Korean messages and mention EC2 Elastic IP registration when likely.
-- `KiwoomMarketDataProvider` normalizes current price and daily OHLCV responses into app-internal shapes.
+- `KiwoomMarketDataProvider` normalizes current price, daily OHLCV, stock-list, and account-deposit responses into app-internal shapes.
+- Mock Kiwoom environment returns app-owned mock stock/deposit data for strategy creation flows instead of forwarding unsupported calls to the external mock host.
 - Daily data is upserted into SQLite with `unique(user_id, stock_code, date)`.
 - Frontend receives `source: KIWOOM | CACHE | MOCK` but never token/key material.
 
@@ -166,6 +170,8 @@ See [research.md](./research.md). Key decisions:
 - Add registration and login screens.
 - Add logout control and auth bootstrap using `/api/auth/me`.
 - Add Kiwoom Setup page with EC2 Elastic IP guide, environment selector, masked App Key view, save/delete/test actions.
+- Replace manual stock code/name entry in strategy creation with a stock search field and visible result list.
+- Add "키움 예수금 불러오기" to fill total budget from read-only account deposit/orderable cash.
 - Add "현재가 조회" to strategy detail and keep manual price input.
 - Wire daily chart to backend daily endpoint using existing Recharts component.
 
@@ -176,6 +182,7 @@ Contracts are generated under [contracts/](./contracts/):
 - [Auth API](./contracts/auth.md)
 - [Kiwoom Settings API](./contracts/kiwoom-settings.md)
 - [Market API](./contracts/market.md)
+- [Account API](./contracts/account.md)
 - [Per-user Strategy/Order/Log Scoping](./contracts/strategies-userid.md)
 
 ## Testing Strategy
@@ -183,7 +190,7 @@ Contracts are generated under [contracts/](./contracts/):
 - Auth integration: register, login, me, logout, duplicate email, generic login failure.
 - Cross-user isolation: two cookie jars; one user's strategies/holdings/orders/logs invisible and unreachable to another.
 - Secret/token exposure: API response audit for auth/settings/market; built frontend bundle grep for secret names and known key values.
-- Kiwoom mock tests: mocked `fetch` for token success, expiry, invalid token retry, network failure, malformed body.
+- Kiwoom mock tests: mocked `fetch` for token success, expiry, invalid token retry, network failure, malformed body, app-owned mock stock search, and app-owned mock deposit lookup.
 - Market cache tests: first daily request writes rows, second serves cache, uniqueness query returns no duplicates.
 - Fallback test: invalid/missing Kiwoom credential leaves manual current-price evaluation usable.
 - Route inventory check: no Kiwoom order endpoint exists.
@@ -200,7 +207,8 @@ Contracts are generated under [contracts/](./contracts/):
 8. Add frontend auth shell, login/register/logout, and protected screen handling.
 9. Add Kiwoom Setup page with EC2 Elastic IP instructions, save/delete/test actions, and no secret echoing.
 10. Wire strategy detail "현재가 조회" and daily chart to new backend endpoints.
-11. Run full backend tests, frontend build, bundle secret audit, route inventory, and manual quickstart on deployed environment.
+11. Add strategy-creation stock search dropdown and read-only account deposit lookup.
+12. Run full backend tests, frontend build, bundle secret audit, route inventory, and manual quickstart on deployed environment.
 
 This order keeps the app functional after each backend slice: authentication lands first, then data ownership, then credential storage, then Kiwoom read-only market data, then UI wiring.
 

@@ -2,7 +2,7 @@
 
 **Feature Branch**: `002-user-auth-and-kiwoom-market-data`
 **Created**: 2026-04-29
-**Status**: Draft
+**Status**: Implemented
 **Input**: User description: "001 MVP에 회원가입/로그인, 사용자별 데이터 분리, 사용자별 키움 REST API 설정, 키움 시장 데이터 조회 기능을 추가한다."
 
 ## User Scenarios & Testing *(mandatory)*
@@ -69,6 +69,26 @@ On the strategy detail screen, the signed-in user clicks "현재가 조회" and 
 
 ---
 
+### User Story 4 - Search Stocks and Use Kiwoom Deposit for Strategy Creation (Priority: P3)
+
+On the strategy creation form, the signed-in user searches by stock code or stock name, sees matching results in a dropdown-style list, and selects one result. The selected stock fills both `stockCode` and `stockName` so the user does not need to manually type both fields. The user may also click "키움 예수금 불러오기" to fetch their account deposit/orderable amount through the backend and use it as the strategy's total budget. In Mock mode, the same UI works with app-owned mock stock/deposit data instead of failing when Kiwoom's external mock endpoint does not support the requested API.
+
+**Why this priority**: Strategy creation is the user's first meaningful workflow after login. Reducing manual stock-code/name entry errors and making total budget entry easier improves the MVP without changing the virtual-trading safety boundary.
+
+**Independent Test**: Can be fully tested by signing in, configuring Kiwoom settings in production or mock mode, typing `005930` or `삼성` in the stock search field, selecting `삼성전자`, confirming both code and name are selected, clicking "키움 예수금 불러오기", and confirming total budget is populated without any real order call.
+
+**Acceptance Scenarios**:
+
+1. **Given** a signed-in user on the strategy creation form, **When** they type at least two characters in the stock search field, **Then** the frontend calls the backend search endpoint and renders matching stock results in a visible list inside the form.
+2. **Given** a stock result is displayed, **When** the user selects it, **Then** both `stockCode` and `stockName` are saved into the form and shown back to the user as the selected stock.
+3. **Given** a user is using production Kiwoom credentials, **When** they search for a Korean stock by code or name, **Then** the backend uses Kiwoom's stock-information list API, filters results server-side, and returns only normalized stock code/name values plus a source label.
+4. **Given** a user selected the Kiwoom Mock environment, **When** they search for a stock, **Then** the backend returns app-owned mock stock data instead of calling an unsupported external mock stock-list endpoint and surfacing a `404`.
+5. **Given** a signed-in user clicks "키움 예수금 불러오기", **When** the account lookup succeeds, **Then** the form's total budget is populated from `availableOrderAmount` when present or `deposit` otherwise.
+6. **Given** a signed-in user clicks "키움 예수금 불러오기" in Mock mode, **When** the request is handled, **Then** the backend returns app-owned mock deposit/orderable amounts so the UI workflow can be tested.
+7. **Given** any stock search or deposit API response, **When** it is inspected, **Then** it never contains App Key, Secret Key, access token, account password, or any order-capable payload.
+
+---
+
 ### Edge Cases
 
 - A user submits the registration form with an email that differs only in casing from an existing one ("USER@x.com" vs "user@x.com"); the system MUST treat email uniqueness case-insensitively to prevent silent duplicates.
@@ -81,6 +101,8 @@ On the strategy detail screen, the signed-in user clicks "현재가 조회" and 
 - The user manipulates a request body to set `userId` to another account's id; the backend MUST ignore client-supplied user identifiers and use the session-bound user only.
 - The user attempts to save an empty Secret Key (e.g., just whitespace); the system MUST reject the input rather than store an unusable credential.
 - The deployment is missing one of the required environment values (e.g., `EC2_ELASTIC_IP`, `SECRET_ENCRYPTION_KEY`, or `SESSION_SECRET`); the backend MUST refuse to start rather than silently fall back to defaults that would weaken security.
+- The user types a stock name that has no match; the frontend MUST show an empty-result hint and MUST require selecting a result before strategy save.
+- The external Kiwoom mock domain returns `404` for stock list or account endpoints; the backend MUST use app-owned mock stock/deposit data for Mock environment flows.
 
 ## Requirements *(mandatory)*
 
@@ -127,6 +149,11 @@ On the strategy detail screen, the signed-in user clicks "현재가 조회" and 
 - **FR-025**: The system MUST persist retrieved daily OHLCV rows in a per-user cache keyed by `(userId, stockCode, date)` so the same `(userId, stockCode, date)` row is stored at most once.
 - **FR-026**: The system MUST satisfy daily-price requests from the cache for any date already present and MUST fetch only the missing dates from Kiwoom; rows returned to the frontend MUST be tagged with a source of `KIWOOM`, `CACHE`, or `MOCK`.
 - **FR-027**: The system MUST translate Kiwoom's response shape into the app's internal OHLCV shape so frontend code is independent of Kiwoom's payload format.
+- **FR-037**: The system MUST expose a stock search capability that takes a free-text query and returns normalized `{ stockCode, stockName, source }` results for the signed-in user.
+- **FR-038**: In production Kiwoom mode, stock search MUST use Kiwoom's stock-information list capability and filter by stock code or stock name on the backend.
+- **FR-039**: In Kiwoom Mock mode, stock search MUST use app-owned mock stock data and MUST NOT fail just because the external Kiwoom mock host lacks a matching endpoint.
+- **FR-040**: The system MUST expose an account deposit capability that returns deposit/orderable cash values for the signed-in user without exposing any credential, token, or real order capability.
+- **FR-041**: In Kiwoom Mock mode, account deposit lookup MUST return app-owned mock deposit/orderable cash values so the strategy creation UI can be tested without real Kiwoom account data.
 
 #### Frontend behavior
 
@@ -135,6 +162,8 @@ On the strategy detail screen, the signed-in user clicks "현재가 조회" and 
 - **FR-030**: The strategy detail screen MUST add a "현재가 조회" button that fills the evaluate input with the backend-returned current price and labels its source (KIWOOM / CACHE / MOCK).
 - **FR-031**: The strategy detail screen MUST keep the manual current-price input as a fallback that the user can use even when Kiwoom retrieval has failed.
 - **FR-032**: The frontend bundle MUST NOT contain App Keys, Secret Keys, Kiwoom access tokens, or `SECRET_ENCRYPTION_KEY` / `SESSION_SECRET` values.
+- **FR-042**: The strategy creation screen MUST provide a stock search field and visible result list; saving a strategy MUST require selecting a normalized stock result rather than manually typing inconsistent stock code/name values.
+- **FR-043**: The strategy creation screen SHOULD offer a "키움 예수금 불러오기" action that fills the total-budget field from the account deposit endpoint while preserving the user's ability to type a budget manually.
 
 #### Security & operational guarantees
 
@@ -167,6 +196,9 @@ On the strategy detail screen, the signed-in user clicks "현재가 조회" and 
 - **SC-008**: Inspecting the built frontend bundle reveals no App Key, Secret Key, or Kiwoom access token strings; verified by a build-output grep gate in the release process.
 - **SC-009**: When the connection test fails because the EC2 Elastic IP is not yet registered on Kiwoom, 100% of users see a message that names the EC2 IP and instructs them to register it, rather than a generic error.
 - **SC-010**: After this feature ships, no Kiwoom order endpoint exists in the backend route table; verified by a route inventory check.
+- **SC-011**: In Mock environment, typing `삼성` or `005930` in the stock search field returns a visible `삼성전자` result and does not surface a `404`.
+- **SC-012**: In Mock environment, clicking "키움 예수금 불러오기" fills total budget from mock account values and does not call any real Kiwoom order API.
+- **SC-013**: In production Kiwoom environment, a valid stock search returns normalized stock code/name results through the backend only; the browser never calls Kiwoom directly.
 
 ## Assumptions
 
@@ -180,3 +212,4 @@ On the strategy detail screen, the signed-in user clicks "현재가 조회" and 
 - Kiwoom REST API behavior (token endpoint, current-price endpoint, daily-price endpoint, error shapes, IP whitelist behavior) follows the public Kiwoom REST API documentation; the planning phase will pin exact endpoint paths and request shapes.
 - The deployment continues to use SQLite as the primary store, hosted on the same EC2 instance as the Node.js backend; per-user concurrency expectations remain modest (single-digit concurrent users).
 - Real ordering is permanently disabled in this feature: `ENABLE_LIVE_ORDER=false` is the only supported value, and no Kiwoom order endpoint is implemented.
+- Kiwoom account integration in this feature is read-only and limited to deposit/orderable cash lookup for convenience in virtual strategy setup. It does not imply any order authority.
