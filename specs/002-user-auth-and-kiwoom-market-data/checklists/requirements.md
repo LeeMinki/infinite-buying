@@ -31,6 +31,6 @@
 
 ## Notes
 
-- The spec intentionally references several user-supplied environment-variable names (e.g., `EC2_ELASTIC_IP`, `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, `KIWOOM_API_BASE_URL`, `KIWOOM_MOCK_API_BASE_URL`, `ENABLE_LIVE_ORDER`) and the `(userId, stockCode, date)` cache key. These were explicit constraints in the user's brief, not implementation drift, so they are kept as named contracts inside FRs and Assumptions rather than rewritten.
+- The spec intentionally references the required environment-variable names (`EC2_ELASTIC_IP`, `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, `KIWOOM_API_BASE_URL`, `ENABLE_LIVE_ORDER`) and the `(userId, stockCode, date)` price key. The current MVP supports only production Kiwoom market data.
 - The spec also names a few user-facing strings in Korean (e.g., "현재가 조회", "연결 테스트", "이미 가입된 이메일입니다.") because the deployed app's UI is Korean and copy precision is part of acceptance. These are user-experience facts, not implementation details.
 - Items marked incomplete require spec updates before `/speckit.clarify` or `/speckit.plan`.

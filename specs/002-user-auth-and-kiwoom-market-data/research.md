@@ -142,13 +142,13 @@ The exact Kiwoom error shapes are not 100 % stable in their docs, so the auth se
 
 **Decision**: One row per `(user_id, stock_code, date)` in `market_price_cache`. `INSERT … ON CONFLICT(user_id, stock_code, date) DO UPDATE` to upsert. Daily endpoint logic:
 1. Compute the requested `[from, to]` range (default = last 6 months ending today, in KST trading days).
-2. Read all existing rows in that range from cache → mark them `source='CACHE'`.
-3. If any trading day in the range is missing, call Kiwoom for the full range and upsert the returned rows (overwriting OHLCV but flagging `source='KIWOOM'` on the just-fetched rows).
-4. Return the merged set sorted ascending by date, with per-row source.
+2. Read existing user-scoped rows for that stock/date range.
+3. If the stored rows do not cover the range, call Kiwoom for the full range and upsert the returned rows with `source='KIWOOM'`.
+4. Return the stored set sorted ascending by date.
 
 **Why per-user cache, not global**:
 - The brief explicitly mandates per-user cache (`stockCode + date + userId unique 처리`).
-- Different users may use PROD vs MOCK environments and get different OHLCV — keeping caches isolated avoids cross-environment leakage.
+- Different users own different credentials and stored price rows, so keeping prices user-scoped avoids cross-account leakage.
 - The cost (a tiny duplication for popular stocks) is negligible at MVP scale.
 
 **Why upsert overwrites OHLCV**:
@@ -213,13 +213,13 @@ The exact Kiwoom error shapes are not 100 % stable in their docs, so the auth se
 1. **Auth integration test** (`tests/auth.test.js`): register → login → me → logout flow returns expected statuses; password is never echoed back.
 2. **Cross-user isolation test** (`tests/crossUserIsolation.test.js`): User A creates a strategy; User B's session cannot read/update/delete it; User B's `GET /api/strategies` does not include it.
 3. **Credential masking test** (`tests/kiwoomCredential.test.js`): POST a credential with a 36-char App Key, GET the credential settings → response contains `appKeyMasked` only, no plaintext `appKey`, no `secretKey`, no `token`.
-4. **Kiwoom auth service test** (`tests/kiwoomAuthService.test.js`): with `fetch` mocked, simulate token issuance success, expiration + reissue, 401 → retry once, network failure → sanitized message containing the EC2 IP.
-5. **Market routes test** (`tests/marketRoutes.test.js`): `/api/market/005930/daily` calls Kiwoom on first hit, serves from cache on second hit (no second `fetch` call), and `(user_id, stock_code, date)` rows are unique after both calls.
+4. **Kiwoom auth service test** (`tests/kiwoomAuthService.test.js`): with `fetch` replaced by a test double, simulate token issuance success, expiration + reissue, 401 → retry once, network failure → sanitized message containing the EC2 IP.
+5. **Market routes test** (`tests/marketRoutes.test.js`): `/api/market/005930/daily` calls Kiwoom when stored data is missing, reuses stored rows when the requested range is already covered, and `(user_id, stock_code, date)` rows are unique after both calls.
 6. **Bundle audit (CI gate, not a test file)**: `npm run build` then `grep -E '(KIWOOM|Bearer|appkey|secretkey)' frontend/dist/assets/*` must return zero matches. Documented in `quickstart.md`; can be turned into a script later.
 
 **No frontend automated tests for MVP** — we rely on the `quickstart.md` manual E2E walkthrough plus a build-output grep gate. Adding Vitest is a follow-up.
 
-**`fetch` mocking**: Node 22's built-in `fetch` is replaced inside tests via `globalThis.fetch = mockedFn`; restored in `afterEach`. No `nock`, no `msw`.
+**`fetch` test doubles**: Node 22's built-in `fetch` is replaced inside tests via `globalThis.fetch = testFn`; restored in `afterEach`. No `nock`, no `msw`.
 
 ---
 

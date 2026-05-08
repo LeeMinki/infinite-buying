@@ -59,7 +59,7 @@ One row per user, holding their Kiwoom REST credential plus the most-recent toke
 | `secret_key_encrypted` | TEXT | NOT NULL | Same format. |
 | `token_encrypted` | TEXT | NULL | Same format; null until first token issuance. |
 | `token_expires_at` | TEXT | NULL | ISO datetime; null when no token. |
-| `environment` | TEXT | NOT NULL DEFAULT `'PROD'`, CHECK IN (`'PROD'`,`'MOCK'`) | Selects between `KIWOOM_API_BASE_URL` and `KIWOOM_MOCK_API_BASE_URL`. |
+| `environment` | TEXT | NOT NULL DEFAULT `'PROD'` | Historical column retained for compatibility; current MVP supports only production Kiwoom. |
 | `status` | TEXT | NOT NULL DEFAULT `'CONFIGURED'`, CHECK IN (`'NOT_CONFIGURED'`,`'CONFIGURED'`,`'TOKEN_VALID'`,`'TOKEN_ERROR'`) | Lifecycle state; `'NOT_CONFIGURED'` is implied by absence of a row, but the value is reserved for an explicit "credential cleared" sentinel if needed. |
 | `last_token_issued_at` | TEXT | NULL | Updated on each successful token issuance. |
 | `last_token_error_message` | TEXT | NULL | Sanitized, user-safe message (Korean). Cleared on next success. |
@@ -88,7 +88,7 @@ The "configured" tier is what the UI shows when keys are saved but no token has 
 
 **Validation rules**:
 - App Key, Secret Key: required, trimmed, must be non-empty after trim.
-- Environment: enum.
+- Environment: always `PROD` in the current MVP.
 - The repository never accepts a row whose `app_key_encrypted` or `secret_key_encrypted` is empty.
 
 **Security rules** (FRs 014–017):
@@ -116,7 +116,7 @@ The 001 MVP table is replaced by a per-user version. Migration `0004` drops the 
 | `low` | REAL | NOT NULL | |
 | `close` | REAL | NOT NULL | |
 | `volume` | INTEGER | NOT NULL DEFAULT 0 | |
-| `source` | TEXT | NOT NULL DEFAULT `'KIWOOM'`, CHECK IN (`'KIWOOM'`,`'CACHE'`,`'MOCK'`) | What the row was when first written. Reads relabel as needed. |
+| `source` | TEXT | NOT NULL DEFAULT `'KIWOOM'` | Current MVP stores only actual Kiwoom daily rows. |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` | |
 | `updated_at` | TEXT | NOT NULL DEFAULT `datetime('now')` | Touched on upsert. |
 

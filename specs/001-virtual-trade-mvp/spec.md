@@ -2,8 +2,11 @@
 
 **Feature Branch**: `001-virtual-trade-mvp`  
 **Created**: 2026-04-28  
-**Status**: Draft  
+**Updated**: 2026-05-08
+**Status**: Superseded by 002 auth/Kiwoom integration and 003 real-price backtest
 **Input**: User description: "React + Node.js + SQLite 기반의 무한매수 스타일 전략 보조 웹앱 MVP를 만든다."
+
+> Current implementation note: This document is the historical baseline for the first MVP. The deployed app is now multi-user, Kiwoom-only for market data, and centered on actual-price backtesting. Use [README.md](../../README.md), [002](../002-user-auth-and-kiwoom-market-data/spec.md), and [003](../003-trading-modes-simulator-backtest/spec.md) for current behavior.
 
 ## User Scenarios & Testing *(mandatory)*
 

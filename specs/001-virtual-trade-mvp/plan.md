@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build a fast single-user web MVP for creating infinite-buying-style strategies, retrieving market price/chart data, evaluating BUY / SELL / HOLD / PAUSE decisions, and storing only virtual orders. The implementation uses a React frontend, Node.js + Express backend, SQLite persistence, a small pure strategy-calculation module, and a `MarketDataProvider` abstraction with `KiwoomMarketDataProvider` and `MockMarketDataProvider`.
+Build a fast single-user web MVP for creating infinite-buying-style strategies, retrieving market price/chart data, evaluating BUY / SELL / HOLD / PAUSE decisions, and storing only virtual orders. The current implementation has since moved to multi-user auth and Kiwoom-only market data; this 001 plan remains historical baseline context.
 
 Kiwoom integration is limited to current-price and daily-chart reads. Real orders, Kiwoom order APIs, automatic trading, login, and deployment are excluded.
 
@@ -66,7 +66,6 @@ backend/
 │   ├── market-data/
 │   │   ├── MarketDataProvider.js
 │   │   ├── KiwoomMarketDataProvider.js
-│   │   ├── MockMarketDataProvider.js
 │   │   └── index.js
 │   ├── repositories/
 │   │   ├── strategiesRepository.js
@@ -193,16 +192,15 @@ CREATE TABLE IF NOT EXISTS market_price_cache (
 ## Kiwoom API Environment Variables
 
 ```text
-MARKET_DATA_PROVIDER=mock | kiwoom
+MARKET_DATA_PROVIDER=kiwoom
 KIWOOM_BASE_URL=https://api.kiwoom.com
-KIWOOM_MOCK_BASE_URL=https://mockapi.kiwoom.com
 KIWOOM_APP_KEY=
 KIWOOM_SECRET_KEY=
 KIWOOM_TIMEOUT_MS=5000
-KIWOOM_USE_MOCK=false
+ENABLE_LIVE_ORDER=false
 ```
 
-Use `MARKET_DATA_PROVIDER=mock` by default. Enable Kiwoom only when app key and secret key are present. The backend must fail closed to mock/manual fallback if credentials are missing or a Kiwoom response cannot be normalized.
+Use `MARKET_DATA_PROVIDER=kiwoom`. If credentials are missing or a Kiwoom response cannot be normalized, the backend returns a clear failure and the UI keeps manual current-price input available.
 
 ## MarketDataProvider Structure
 
@@ -223,9 +221,6 @@ class MarketDataProvider {
   - reads only stock basic/current-price and daily-chart TRs
   - normalizes provider-specific field names into app-owned shapes
   - never imports or calls Kiwoom order TRs
-- `MockMarketDataProvider`
-  - returns deterministic current prices and daily candles
-  - supports development when credentials are unavailable
 - `marketDataService`
   - selects provider by env
   - catches provider failures
@@ -316,7 +311,7 @@ The UI must not include a real-order button. If any broker-order affordance appe
 4. Implement strategy CRUD and holding initialization.
 5. Implement virtual order creation, fill, cancel, and holding updates in a transaction.
 6. Implement decision logging for every evaluation attempt.
-7. Implement `MarketDataProvider`, `MockMarketDataProvider`, and provider selection.
+7. Implement `MarketDataProvider`, `KiwoomMarketDataProvider`, and provider selection.
 8. Add `KiwoomMarketDataProvider` as read-only market-data integration guarded by env vars.
 9. Implement Express routes matching the contract.
 10. Build React list/detail screens, manual current-price fallback, chart, virtual orders, and decision logs.

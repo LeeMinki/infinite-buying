@@ -14,7 +14,6 @@
   DB_PATH=data/app.db
   EC2_ELASTIC_IP=<the EC2 instance's stable outbound public IP>
   KIWOOM_API_BASE_URL=https://api.kiwoom.com
-  KIWOOM_MOCK_API_BASE_URL=https://mockapi.kiwoom.com
   SECRET_ENCRYPTION_KEY=<base64 of 32 random bytes>
   SESSION_SECRET=<32+ random chars>
   ENABLE_LIVE_ORDER=false
@@ -151,9 +150,9 @@ curl -i -b jarA.txt http://localhost:4000/api/settings/kiwoom
 
 # Save credential
 curl -i -b jarA.txt -H 'Content-Type: application/json' \
-  -d '{"appKey":"<real App Key>","secretKey":"<real Secret Key>","environment":"production"}' \
+  -d '{"appKey":"<real App Key>","secretKey":"<real Secret Key>"}' \
   http://localhost:4000/api/settings/kiwoom
-# Expect: 200, configured=true, status="NOT_TESTED", appKeyMasked="UKnw****fan6", NO secretKey, NO plain appKey
+# Expect: 200, configured=true, status="CONFIGURED", appKeyMasked="UKnw****fan6", NO secretKey, NO plain appKey
 
 # Re-GET settings — Secret Key MUST NOT appear
 curl -i -b jarA.txt http://localhost:4000/api/settings/kiwoom \
@@ -196,7 +195,7 @@ curl -s -b jarA.txt "http://localhost:4000/api/market/005930/daily" | jq '.[0]'
 
 # Second load (same range)
 curl -s -b jarA.txt "http://localhost:4000/api/market/005930/daily" | jq 'length'
-# Expect: rows are returned from the user-scoped SQLite cache if Kiwoom is unavailable; successful Kiwoom calls refresh the cache.
+# Expect: rows are stored per user in SQLite; later requests may reuse stored Kiwoom rows when the range is already covered.
 
 # Cache row uniqueness check
 sqlite3 backend/data/app.db \
@@ -204,7 +203,7 @@ sqlite3 backend/data/app.db \
 # Expect: zero rows
 ```
 
-✅ Pass criteria: first load is mostly Kiwoom-sourced; second load is fully cache-served; SQL group-by check returns zero duplicate `(user_id, stock_code, date)` triples.
+✅ Pass criteria: daily rows are Kiwoom-sourced and the SQL group-by check returns zero duplicate `(user_id, stock_code, date)` triples.
 
 ---
 
@@ -213,16 +212,16 @@ sqlite3 backend/data/app.db \
 These are read-only helpers for strategy creation. They do not place orders.
 
 ```bash
-# Stock search in production or mock mode
+# Stock search through backend Kiwoom lookup
 curl -s -b jarA.txt "http://localhost:4000/api/market/stocks/search?q=005930" | jq
-# Expect: {"items":[{"stockCode":"005930","stockName":"삼성전자","source":"KIWOOM" or "MOCK"}]}
+# Expect: {"items":[{"stockCode":"005930","stockName":"삼성전자","source":"KIWOOM"}]}
 
 curl -s -b jarA.txt "http://localhost:4000/api/market/stocks/search?q=삼성" | jq
-# Expect: a visible 삼성전자 result when production stock-list lookup succeeds or when using Mock environment
+# Expect: a visible 삼성전자 result when Kiwoom stock-list lookup succeeds
 
 # Account deposit / orderable cash
 curl -s -b jarA.txt http://localhost:4000/api/account/deposit | jq
-# Expect: {"deposit":<number>,"availableOrderAmount":<number>,"source":"KIWOOM" or "MOCK","fetchedAt":"..."}
+# Expect: {"deposit":<number>,"availableOrderAmount":<number>,"source":"KIWOOM","fetchedAt":"..."}
 ```
 
 Browser check:
@@ -233,7 +232,7 @@ Browser check:
 4. Select `삼성전자`; confirm the selected stock is shown as `005930 · 삼성전자`.
 5. Click `키움 예수금 불러오기`; confirm `총 투자금` is populated.
 
-✅ Pass criteria: stock search works in both production Kiwoom and Mock environment, Mock does not show `요청에 실패했습니다. (404)`, and account lookup never returns keys/tokens/order payloads.
+✅ Pass criteria: stock search and account lookup work through the backend Kiwoom provider, and account lookup never returns keys/tokens/order payloads.
 
 ---
 

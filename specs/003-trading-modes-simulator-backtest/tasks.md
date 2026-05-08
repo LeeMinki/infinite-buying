@@ -25,7 +25,7 @@
   - 수정 파일: `README.md`, `specs/003-trading-modes-simulator-backtest/*`, `backend/tests/*`.
   - 완료 조건: `npm test`, `npm run build`가 통과한다.
 
-- [X] T006 Cache-first daily price lookup and chart rendering fix.
-  - 목적: 백테스트가 매번 키움 API를 호출하지 않고 사용자별 일봉 캐시를 우선 사용하도록 한다. 또한 백테스트 결과 화면에서 평균단가 vs 종가 차트가 X축 데이터 키 불일치로 비어 보이던 문제를 수정한다.
+- [X] T006 User-scoped Kiwoom daily price storage and chart rendering fix.
+  - 목적: 백테스트 실행 전에 실제 키움 일봉을 사용자별 저장소에 확보하고, 이미 충분한 Kiwoom 행이 있으면 재사용한다. 또한 백테스트 결과 화면에서 평균단가 vs 종가 차트가 X축 데이터 키 불일치로 비어 보이던 문제를 수정한다.
   - 수정 파일: `backend/src/services/marketDataService.js`, `backend/tests/marketDataServiceCache.test.js`, `frontend/src/pages/BacktestPage.jsx`.
-  - 완료 조건: 캐시가 요청 범위를 덮으면 Kiwoom 호출 없이 캐시 행을 반환하고, 덮지 못하면 Kiwoom 으로 폴백한 뒤 결과를 cache에 저장한다. `refresh=true` 는 캐시를 우회한다. 백테스트 결과 화면의 두 차트가 동일한 `chartData` (`date`, `totalAsset`, `price`, `averagePrice`)를 사용한다.
+  - 완료 조건: 저장된 사용자별 Kiwoom 행이 요청 범위를 덮으면 그 행을 반환하고, 덮지 못하면 Kiwoom 으로 폴백한 뒤 결과를 저장한다. `refresh=true` 는 저장된 행을 우회한다. 백테스트 결과 화면의 두 차트가 동일한 `chartData` (`date`, `totalAsset`, `price`, `averagePrice`)를 사용한다.

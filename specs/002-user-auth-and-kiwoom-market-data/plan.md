@@ -62,7 +62,7 @@ Kiwoom REST API
 
 The Kiwoom site must allowlist the backend server's outbound public IP, not the user's browser IP, because every Kiwoom REST call is made by the EC2 backend. Browser requests terminate at the app backend; the browser never contacts Kiwoom and therefore the user's PC IP is irrelevant to Kiwoom's IP whitelist.
 
-Stock search and account deposit lookup follow the same backend-only rule. Production Kiwoom mode uses Kiwoom read-only endpoints for stock information and account deposit/orderable cash. Kiwoom Mock mode uses app-owned mock stock/deposit data because the external mock domain may not expose every stock-list or account endpoint needed by the MVP.
+Stock search and account deposit lookup follow the same backend-only rule. The current MVP supports only production Kiwoom read-only endpoints for stock information and account deposit/orderable cash.
 
 ## Project Structure
 
@@ -99,7 +99,7 @@ backend/
 │   ├── crypto/                   # encryptSecret/decryptSecret, maskAppKey, redaction
 │   ├── repositories/             # user-scoped repositories
 │   ├── services/                 # auth, strategies, Kiwoom credential/auth/market services
-│   ├── market-data/              # stateless Kiwoom provider + mock provider
+│   ├── market-data/              # stateless Kiwoom provider
 │   └── routes/                   # auth, settings, market, scoped strategy/order routes
 └── tests/
     ├── auth.test.js
@@ -154,22 +154,21 @@ See [research.md](./research.md). Key decisions:
 - `app_key_masked` is display-only.
 - `app_key_encrypted`, `secret_key_encrypted`, and optional `token_encrypted` use AES-256-GCM.
 - `token_expires_at`, `status`, `last_token_issued_at`, and `last_token_error_message` drive the setup UI.
-- Backend refuses startup if `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, `EC2_ELASTIC_IP`, `KIWOOM_API_BASE_URL`, `KIWOOM_MOCK_API_BASE_URL`, or `ENABLE_LIVE_ORDER` is missing; live order must remain false.
+- Backend refuses startup in production if `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, `EC2_ELASTIC_IP`, `KIWOOM_API_BASE_URL`, or `ENABLE_LIVE_ORDER` is missing or invalid; live order must remain false.
 
 ### Kiwoom Token and Market Data
 
 - `KiwoomAuthService` decrypts user keys only inside backend memory, reuses valid cached tokens, reissues on expiry or Kiwoom token rejection, and retries once.
 - Token failures produce sanitized Korean messages and mention EC2 Elastic IP registration when likely.
 - `KiwoomMarketDataProvider` normalizes current price, daily OHLCV, stock-list, and account-deposit responses into app-internal shapes.
-- Mock Kiwoom environment returns app-owned mock stock/deposit data for strategy creation flows instead of forwarding unsupported calls to the external mock host.
 - Daily data is upserted into SQLite with `unique(user_id, stock_code, date)`.
-- Frontend receives `source: KIWOOM | CACHE | MOCK` but never token/key material.
+- Frontend receives market-data rows from the backend but never token/key material.
 
 ### Frontend
 
 - Add registration and login screens.
 - Add logout control and auth bootstrap using `/api/auth/me`.
-- Add Kiwoom Setup page with EC2 Elastic IP guide, environment selector, masked App Key view, save/delete/test actions.
+- Add Kiwoom Setup page with EC2 Elastic IP guide, masked App Key view, save/delete/test actions.
 - Replace manual stock code/name entry in strategy creation with a stock search field and visible result list.
 - Add "키움 예수금 불러오기" to fill total budget from read-only account deposit/orderable cash.
 - Add "현재가 조회" to strategy detail and keep manual price input.
@@ -190,7 +189,7 @@ Contracts are generated under [contracts/](./contracts/):
 - Auth integration: register, login, me, logout, duplicate email, generic login failure.
 - Cross-user isolation: two cookie jars; one user's strategies/holdings/orders/logs invisible and unreachable to another.
 - Secret/token exposure: API response audit for auth/settings/market; built frontend bundle grep for secret names and known key values.
-- Kiwoom mock tests: mocked `fetch` for token success, expiry, invalid token retry, network failure, malformed body, app-owned mock stock search, and app-owned mock deposit lookup.
+- Kiwoom integration tests: test-double `fetch` for token success, expiry, invalid token retry, network failure, malformed body, stock search, and deposit lookup.
 - Market cache tests: first daily request writes rows, second serves cache, uniqueness query returns no duplicates.
 - Fallback test: invalid/missing Kiwoom credential leaves manual current-price evaluation usable.
 - Route inventory check: no Kiwoom order endpoint exists.
@@ -201,7 +200,7 @@ Contracts are generated under [contracts/](./contracts/):
 2. Add migrations for `users` and `user_id` columns. Backfill existing data through an explicit seed owner or wipe path. Then protect existing strategy/order/market routes and pass `req.userId` through repositories.
 3. Add cross-user isolation tests and update repositories/services until every protected endpoint scopes by session user.
 4. Add AES-GCM helper, masking/redaction helper, `kiwoom_credentials` table, settings routes, and credential masking/exposure tests.
-5. Refactor Kiwoom token issuance into `KiwoomAuthService`; add token cache, expiry/reissue, sanitized failure messages, and mocked token tests.
+5. Refactor Kiwoom token issuance into `KiwoomAuthService`; add token cache, expiry/reissue, sanitized failure messages, and token tests with fetch test doubles.
 6. Refactor market data provider to accept per-user token supplier; update current price endpoint and preserve manual fallback UI.
 7. Replace daily cache with per-user cache, implement daily range fetch/upsert/cache merge, and add market route tests.
 8. Add frontend auth shell, login/register/logout, and protected screen handling.
