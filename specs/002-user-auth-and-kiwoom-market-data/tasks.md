@@ -7,7 +7,7 @@
 ## Phase 1: Setup (Shared Infrastructure)
 
 - [X] T001 환경변수/의존성/시작 검증을 추가한다 in `backend/package.json`, `backend/src/config/env.js`, `backend/src/server.js`, `backend/.env.example`, `infra/kubernetes/infinite-buying/base/configmap.yaml`
-  - 목적: `EC2_ELASTIC_IP`, `KIWOOM_API_BASE_URL`, `KIWOOM_MOCK_API_BASE_URL`, `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, `ENABLE_LIVE_ORDER=false`를 앱의 필수 설정으로 만든다.
+  - 목적: `EC2_ELASTIC_IP`, `KIWOOM_API_BASE_URL`, `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, `ENABLE_LIVE_ORDER=false`를 앱의 필수 설정으로 만든다.
   - 수정 파일: `backend/package.json`, `backend/package-lock.json`, `backend/src/config/env.js`, `backend/src/server.js`, `backend/.env.example`, `infra/kubernetes/infinite-buying/base/configmap.yaml`
   - 완료 조건: bcrypt/session 의존성이 설치되고, 필수 env 누락/약한 encryption key/`ENABLE_LIVE_ORDER !== false`면 backend가 시작하지 않으며, Kiwoom 주문 API 설정은 추가되지 않는다.
 
@@ -68,14 +68,14 @@
 ## Final Phase: Validation & Deployment Readiness
 
 - [X] T010 전체 MVP 보안/회귀 검증을 수행하고 누락을 보완한다 in `backend/tests/*.test.js`, `frontend/dist/`, `specs/002-user-auth-and-kiwoom-market-data/quickstart.md`
-  - 목적: 빠른 MVP가 깨지지 않게 auth, user isolation, secret 노출 방지, Kiwoom mock, manual fallback, 주문 API 부재를 한 번에 검증한다.
+  - 목적: 빠른 MVP가 깨지지 않게 auth, user isolation, secret 노출 방지, Kiwoom read-only market data, manual fallback, 주문 API 부재를 한 번에 검증한다.
   - 수정 파일: `backend/tests/auth.test.js`, `backend/tests/crossUserIsolation.test.js`, `backend/tests/kiwoomCredential.test.js`, `backend/tests/kiwoomAuthService.test.js`, `backend/tests/marketRoutes.test.js`, `frontend/dist/`, `specs/002-user-auth-and-kiwoom-market-data/quickstart.md`
   - 완료 조건: `npm test`, `npm run build`, frontend bundle secret grep, route inventory check가 통과하고, backend route table에 Kiwoom 주문 API나 실주문 endpoint가 없으며, 이메일 인증/비밀번호 찾기/소셜 로그인/백테스트/실주문은 구현되지 않는다.
 
 - [X] T011 전략 생성 폼에 종목 검색 dropdown과 키움 예수금 불러오기를 추가한다 in `backend/src/routes/marketRoutes.js`, `backend/src/routes/accountRoutes.js`, `frontend/src/components/StrategyForm.jsx`
-  - 목적: 사용자가 종목코드/종목명을 직접 따로 입력하지 않고 검색 결과를 선택하게 하며, read-only 계좌 예수금/주문가능금액을 총 투자금 입력값으로 가져올 수 있게 한다.
-  - 수정 파일: `backend/src/market-data/MarketDataProvider.js`, `backend/src/market-data/KiwoomMarketDataProvider.js`, `backend/src/market-data/MockMarketDataProvider.js`, `backend/src/market-data/index.js`, `backend/src/services/marketDataService.js`, `backend/src/routes/marketRoutes.js`, `backend/src/routes/accountRoutes.js`, `backend/src/app.js`, `frontend/src/api/client.js`, `frontend/src/components/StrategyForm.jsx`, `frontend/src/styles.css`
-  - 완료 조건: `GET /api/market/stocks/search?q=...`와 `GET /api/account/deposit`이 auth 필요/userId scoped로 동작하고, 전략 생성 UI는 검색 결과 선택을 요구하며, Mock 환경에서는 외부 mock endpoint 404 대신 앱 내부 mock 종목/예수금 데이터를 반환한다.
+  - 목적: 사용자가 종목코드/종목명을 직접 따로 입력하지 않고 키움 종목 검색 결과를 선택하게 하며, read-only 계좌 예수금/주문가능금액을 총 투자금 입력값으로 가져올 수 있게 한다.
+  - 수정 파일: `backend/src/market-data/MarketDataProvider.js`, `backend/src/market-data/KiwoomMarketDataProvider.js`, `backend/src/market-data/index.js`, `backend/src/services/marketDataService.js`, `backend/src/routes/marketRoutes.js`, `backend/src/routes/accountRoutes.js`, `backend/src/app.js`, `frontend/src/api/client.js`, `frontend/src/components/StrategyForm.jsx`, `frontend/src/styles.css`
+  - 완료 조건: `GET /api/market/stocks/search?q=...`와 `GET /api/account/deposit`이 auth 필요/userId scoped로 동작하고, 전략 생성 UI는 키움 검색 결과 선택을 요구한다.
 
 - [X] T012 Argo CD poll 기반 GitOps 동기화 지연 설정을 문서화하고 클러스터에 반영한다 in `infra/kubernetes/argocd/*.yaml`
   - 목적: GitHub webhook 없는 Argo CD core 설치에서 GitOps image tag commit 감지 지연을 줄이고, hard refresh에 의존하지 않는 운영 절차를 남긴다.

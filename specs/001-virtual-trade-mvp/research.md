@@ -20,19 +20,19 @@
 
 ## Decision: Market data is accessed through a provider interface
 
-**Rationale**: Kiwoom credentials may be unavailable during implementation, and Kiwoom response shape can differ by TR. A `MarketDataProvider` interface lets the app ship with deterministic mock data while Kiwoom read-only integration is added behind the same methods.
+**Rationale**: Kiwoom credentials may be unavailable during initial implementation, and Kiwoom response shape can differ by TR. A `MarketDataProvider` interface let the first MVP isolate market-data access while Kiwoom read-only integration was added behind the same methods. Current implementation uses Kiwoom only.
 
 **Alternatives considered**: Direct Kiwoom calls from route handlers were rejected because they would couple UI-critical flows to credentials and make fallback behavior harder to test.
 
 ## Decision: Kiwoom REST API is read-only in MVP
 
-**Rationale**: Official Kiwoom REST docs identify OAuth token issuance through `POST /oauth2/token` with app key and secret key, production and mock domains, market-data categories, stock basic info `ka10001`, and daily chart `ka10081`. The same menu also lists stock order TRs such as `kt10000` through `kt10003`; these are explicitly excluded from this MVP.
+**Rationale**: Official Kiwoom REST docs identify OAuth token issuance through `POST /oauth2/token` with app key and secret key, production domains, market-data categories, stock basic info `ka10001`, and daily chart `ka10081`. The same menu also lists stock order TRs such as `kt10000` through `kt10003`; these are explicitly excluded from this MVP.
 
 **Alternatives considered**: Live order integration and account-balance integration were rejected because the feature scope requires virtual orders only.
 
-## Decision: Default to mock market data unless Kiwoom credentials are configured
+## Decision: Current market data uses Kiwoom only
 
-**Rationale**: The success condition requires manual fallback when current-price lookup fails. Starting with mock data lets frontend, strategy evaluation, and persistence be completed before external credentials exist.
+**Rationale**: The success condition requires manual fallback when current-price lookup fails. The current app uses backend-only Kiwoom market data and keeps manual current-price input as the fallback.
 
 **Alternatives considered**: Blocking the MVP on Kiwoom credentials was rejected because it slows delivery and does not improve the virtual-order workflow.
 

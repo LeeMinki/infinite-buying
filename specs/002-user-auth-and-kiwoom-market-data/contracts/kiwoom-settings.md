@@ -24,10 +24,9 @@ Read the current user's Kiwoom credential status. **Never** returns the raw App 
 {
   "status": "TOKEN_VALID",
   "appKeyMasked": "UKnw…fan6",
-  "environment": "PROD",
+  "environment": "production",
   "ec2ElasticIp": "13.124.x.x",
-  "lastTokenIssuedAt": "2026-04-29T05:12:33.000Z",
-  "lastTokenErrorMessage": null
+  "lastTokenErrorMessage": ""
 }
 ```
 
@@ -35,11 +34,10 @@ Read the current user's Kiwoom credential status. **Never** returns the raw App 
 ```json
 {
   "status": "NOT_CONFIGURED",
-  "appKeyMasked": null,
-  "environment": null,
+  "appKeyMasked": "",
+  "environment": "production",
   "ec2ElasticIp": "13.124.x.x",
-  "lastTokenIssuedAt": null,
-  "lastTokenErrorMessage": null
+  "lastTokenErrorMessage": ""
 }
 ```
 
@@ -55,21 +53,20 @@ Create or replace the current user's Kiwoom credential. Replacing a credential c
 ```json
 {
   "appKey": "UKnwhBdg8BkHF4JYrNY2XVKmse3Ofan6mDffqMqT8bI",
-  "secretKey": "K4ru6WKAUs-1iSyAQVHl5hwWPYAtNDs_vUTUNCHgN7U",
-  "environment": "PROD"
+  "secretKey": "K4ru6WKAUs-1iSyAQVHl5hwWPYAtNDs_vUTUNCHgN7U"
 }
 ```
 
 **Validation**:
 - `appKey`: required, trimmed, non-empty.
 - `secretKey`: required, trimmed, non-empty.
-- `environment`: required, must be `"PROD"` or `"MOCK"`.
+- Only production Kiwoom REST market data is supported in the current MVP. The request does not need an environment selector; responses keep `environment: "production"` for backward-compatible UI state.
 
 **Responses**:
 
 | Status | Body | When |
 |---|---|---|
-| `200 OK` | Same shape as `GET /api/settings/kiwoom` configured response, with `status: "CONFIGURED"` and `lastTokenIssuedAt: null`, `lastTokenErrorMessage: null` | Saved |
+| `200 OK` | Same shape as `GET /api/settings/kiwoom` configured response, with `status: "CONFIGURED"` and `lastTokenErrorMessage: ""` | Saved |
 | `400 Bad Request` | `{ "error": "App Key를 입력해 주세요." }` etc. | Validation failure |
 | `401 Unauthorized` | `{ "error": "로그인이 필요합니다." }` | No session |
 

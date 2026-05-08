@@ -20,17 +20,16 @@ Fetch the latest current price for a stock using the signed-in user's Kiwoom cre
 | Status | Body | When |
 |---|---|---|
 | `200 OK` | `{ "stockCode": "005930", "price": 70900, "source": "KIWOOM", "fetchedAt": "2026-04-29T05:12:33.000Z" }` | Kiwoom call succeeded |
-| `400 Bad Request` | `{ "error": "키움 설정이 저장되어 있지 않습니다. 먼저 키움 설정을 등록해 주세요." }` | No credential — frontend should redirect to Kiwoom Setup |
 | `401 Unauthorized` | `{ "error": "로그인이 필요합니다." }` | No session |
-| `502 Bad Gateway` | `{ "error": "Kiwoom 시세 조회에 실패했어요. 잠시 후 다시 시도하거나 수동으로 가격을 입력해 주세요." }` | Kiwoom call failed |
+| `503 Service Unavailable` | `{ "error": "...", "manualFallback": true }` | Kiwoom credential is missing or the Kiwoom call failed |
 
-`source` is always `"KIWOOM"` for current-price (no caching). On `502`, the frontend keeps the manual current-price input enabled (FR-031).
+`source` is always `"KIWOOM"` for current-price (no caching). On failure, the frontend keeps the manual current-price input enabled (FR-031).
 
 ---
 
 ## GET `/api/market/stocks/search`
 
-Search stocks for strategy creation. The browser never calls Kiwoom directly; it sends the query to the backend, and the backend uses the signed-in user's Kiwoom environment.
+Search stocks for strategy creation. The browser never calls Kiwoom directly; it sends the query to the backend, and the backend uses the signed-in user's production Kiwoom credential.
 
 **Query params**:
 - `q`: required free-text query. Can be a stock code fragment (`005930`) or stock-name fragment (`삼성`).
@@ -39,21 +38,19 @@ Search stocks for strategy creation. The browser never calls Kiwoom directly; it
 
 | Status | Body | When |
 |---|---|---|
-| `200 OK` | `{ "items": [{ "stockCode": "005930", "stockName": "삼성전자", "source": "KIWOOM" }] }` | Production Kiwoom search succeeded |
-| `200 OK` | `{ "items": [{ "stockCode": "005930", "stockName": "삼성전자", "source": "MOCK" }] }` | Mock environment uses app-owned mock stock data |
+| `200 OK` | `{ "items": [{ "stockCode": "005930", "stockName": "삼성전자", "source": "KIWOOM" }] }` | Kiwoom search succeeded |
 | `401 Unauthorized` | `{ "error": "로그인이 필요합니다." }` | No session |
 | `503 Service Unavailable` | `{ "error": "..." }` | Production Kiwoom stock-list lookup failed |
 
 **Behavior notes**:
-- Production mode uses Kiwoom stock-information list data and filters by `stockCode` or `stockName` on the backend.
-- Mock mode MUST NOT forward stock search to an unsupported external mock endpoint; it returns app-owned mock results.
+- The backend uses Kiwoom stock-information list data and filters by `stockCode` or `stockName`.
 - Response bodies never include App Key, Secret Key, or access token.
 
 ---
 
 ## GET `/api/market/:stockCode/daily`
 
-Fetch a daily OHLCV series for a stock. Backed by `market_price_cache` plus on-demand Kiwoom calls for missing dates.
+Fetch a daily OHLCV series for a stock. Backed by the user's `market_price_cache` plus on-demand Kiwoom calls when stored rows do not cover the requested date range.
 
 **Path params**:
 - `stockCode`: 6-digit Korean stock code.
@@ -61,6 +58,8 @@ Fetch a daily OHLCV series for a stock. Backed by `market_price_cache` plus on-d
 **Query params**:
 - `from`: optional, `YYYY-MM-DD`. Defaults to today − 6 months.
 - `to`: optional, `YYYY-MM-DD`. Defaults to today (KST).
+- `requireReal`: optional boolean. When `true`, only Kiwoom-sourced stored rows are considered usable.
+- `refresh`: optional boolean. When `true`, the backend skips stored rows and calls Kiwoom.
 
 **Validation**:
 - If both supplied, `from <= to`.
@@ -70,7 +69,7 @@ Fetch a daily OHLCV series for a stock. Backed by `market_price_cache` plus on-d
 
 | Status | Body | When |
 |---|---|---|
-| `200 OK` | see "Daily response" below | Success (rows may include `source` mix of `KIWOOM` and `CACHE`) |
+| `200 OK` | see "Daily response" below | Success |
 | `400 Bad Request` | `{ "error": "조회 기간이 올바르지 않습니다." }` | Invalid `from`/`to` |
 | `400 Bad Request` | `{ "error": "키움 설정이 저장되어 있지 않습니다." }` | No credential AND cache empty for the requested range |
 | `401 Unauthorized` | `{ "error": "로그인이 필요합니다." }` | No session |
@@ -78,30 +77,19 @@ Fetch a daily OHLCV series for a stock. Backed by `market_price_cache` plus on-d
 
 **Daily response**:
 ```json
-{
-  "stockCode": "005930",
-  "from": "2025-10-30",
-  "to": "2026-04-29",
-  "summary": {
-    "fromCache": 110,
-    "fromKiwoom": 12,
-    "totalRows": 122
-  },
-  "rows": [
-    { "date": "2025-10-30", "open": 71800, "high": 72100, "low": 71500, "close": 71900, "volume": 12345678, "source": "CACHE" },
-    { "date": "2025-10-31", "open": 71900, "high": 72500, "low": 71700, "close": 72400, "volume": 9876543, "source": "CACHE" },
-    "…",
-    { "date": "2026-04-29", "open": 70500, "high": 70900, "low": 70200, "close": 70900, "volume": 11122233, "source": "KIWOOM" }
-  ]
-}
+[
+  { "stockCode": "005930", "date": "2025-10-30", "open": 71800, "high": 72100, "low": 71500, "close": 71900, "volume": 12345678, "source": "KIWOOM" },
+  { "stockCode": "005930", "date": "2025-10-31", "open": 71900, "high": 72500, "low": 71700, "close": 72400, "volume": 9876543, "source": "KIWOOM" },
+  { "stockCode": "005930", "date": "2026-04-29", "open": 70500, "high": 70900, "low": 70200, "close": 70900, "volume": 11122233, "source": "KIWOOM" }
+]
 ```
 
-`rows` are sorted ascending by `date`. Each row's `source` reflects whether THIS request fetched the row from Kiwoom or read it from the local cache. (Rows newly upserted from Kiwoom are marked `KIWOOM` for this response; on the next call they'll come back as `CACHE`.)
+Rows are sorted ascending by `date`. Current rows are Kiwoom-sourced; the storage layer may reuse already saved rows for the same user/stock/date range.
 
 ---
 
 ## Cross-cutting
 
 - All market endpoints scope reads/writes to `market_price_cache` by `userId`. Two users requesting the same stock get separate cache rows.
-- A 502 from Kiwoom NEVER deletes existing cache rows — partial degradation: we serve what we have and tell the user the rest failed.
+- A failed Kiwoom request never deletes existing stored price rows.
 - Response bodies NEVER contain App Key, Secret Key, or access token (FR-015, FR-032).

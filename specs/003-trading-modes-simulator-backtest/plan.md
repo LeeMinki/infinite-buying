@@ -2,15 +2,15 @@
 
 ## Summary
 
-Replace the previous multi-mode direction with a single backtest workflow. The frontend links directly to Backtest, fetches actual historical prices when the user runs a backtest, and then creates a user-scoped backtest run. Old mode-selection UI/API paths are removed. Market data uses Kiwoom only.
+Replace the previous multi-mode direction with a single backtest workflow. The frontend links directly to Backtest, ensures actual historical Kiwoom prices are stored when the user runs a backtest, and then creates a user-scoped backtest run. Old mode-selection UI/API paths are removed. Market data uses Kiwoom only.
 
 ## Architecture
 
 - Frontend `BacktestPage` collects stock, date range, budget, split count, target profit rate, and restart-after-sell.
-- Frontend calls `GET /api/market/:stockCode/daily?from&to&requireReal=true`.
-- Backend reads the current user's `market_price_cache` rows for the requested range first. If those rows already cover the range (within a small weekend/holiday tolerance) and were tagged with the Kiwoom source, they are returned without calling Kiwoom.
-- Otherwise the backend uses the current user's encrypted Kiwoom credentials to fetch daily prices, upserts them into the cache, and returns the cached rows.
-- Frontend can pass `refresh=true` to force a Kiwoom round-trip and refresh the cache.
+- Frontend calls `GET /api/market/:stockCode/daily?from&to&requireReal=true` before creating a run.
+- Backend reads the current user's `market_price_cache` rows for the requested range first. If those rows already cover the range within the weekend/holiday tolerance and are Kiwoom-sourced, they are returned.
+- Otherwise the backend uses the current user's encrypted Kiwoom credentials to fetch daily prices, upserts them into the cache, and returns the stored rows.
+- The API also supports `refresh=true` for operator/debug flows that need to force a Kiwoom round-trip.
 - Frontend calls `POST /api/backtests`.
 - `BacktestService` reads current-user stored price rows and runs `BacktestExecutionProvider`.
 - `StrategyEngine` remains a pure function and has no DB, HTTP, or Kiwoom dependency.
@@ -23,7 +23,7 @@ Replace the previous multi-mode direction with a single backtest workflow. The f
 - Require `MARKET_DATA_PROVIDER=kiwoom`.
 - Force Kiwoom credential saves to production environment.
 - Reject non-Kiwoom stored price rows during backtest execution.
-- `marketDataService.getDailyPrices` is cache-first: it returns the user's cached rows when they cover the requested range and only falls through to Kiwoom on a miss. `refresh=true` continues to force a round-trip.
+- `marketDataService.getDailyPrices` returns user-scoped Kiwoom rows from storage when they already cover the requested range, and falls through to Kiwoom only when the stored data is missing or insufficient. `refresh=true` forces a round-trip.
 
 ## Frontend Changes
 

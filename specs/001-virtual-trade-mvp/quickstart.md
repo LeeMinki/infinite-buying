@@ -31,19 +31,18 @@ Frontend default URL: `http://localhost:5173`
 
 ## Environment
 
-Start with mock market data:
+Use backend-only Kiwoom market data:
 
 ```text
-MARKET_DATA_PROVIDER=mock
+MARKET_DATA_PROVIDER=kiwoom
 KIWOOM_BASE_URL=https://api.kiwoom.com
-KIWOOM_MOCK_BASE_URL=https://mockapi.kiwoom.com
 KIWOOM_APP_KEY=
 KIWOOM_SECRET_KEY=
 KIWOOM_TIMEOUT_MS=5000
-KIWOOM_USE_MOCK=false
+ENABLE_LIVE_ORDER=false
 ```
 
-Switch to Kiwoom only after credentials exist:
+Current deployments use Kiwoom only:
 
 ```text
 MARKET_DATA_PROVIDER=kiwoom

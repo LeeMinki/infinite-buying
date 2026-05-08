@@ -17,14 +17,14 @@
   - 완료 조건: `npm run migrate`가 SQLite DB를 만들고, 같은 전략/날짜/회차 BUY 중복 방지 인덱스가 생성된다.
 
 - [X] T003 [P] Add `MarketDataProvider` interface and provider selection in `/home/hyerin/speckit/infinite-buying/backend/src/market-data/MarketDataProvider.js` and `/home/hyerin/speckit/infinite-buying/backend/src/market-data/index.js`
-  - 목적: 키움 연동과 mock 데이터를 같은 인터페이스 뒤로 숨긴다.
+  - 목적: 키움 연동을 같은 인터페이스 뒤로 숨긴다.
   - 수정 파일: `backend/src/market-data/MarketDataProvider.js`, `backend/src/market-data/index.js`, `backend/src/config/env.js`, `backend/src/services/marketDataService.js`
-  - 완료 조건: `MARKET_DATA_PROVIDER=mock|kiwoom` 설정으로 provider가 선택되고, 키움 인증정보가 없으면 mock으로 먼저 동작한다.
+  - 완료 조건: `MARKET_DATA_PROVIDER=kiwoom` 설정으로 provider가 선택되고, 키움 인증정보가 없으면 시장 데이터 조회는 실패하되 수동 현재가 입력 fallback은 유지된다.
 
-- [X] T004 [P] Implement read-only market data providers in `/home/hyerin/speckit/infinite-buying/backend/src/market-data/MockMarketDataProvider.js` and `/home/hyerin/speckit/infinite-buying/backend/src/market-data/KiwoomMarketDataProvider.js`
-  - 목적: mock 현재가/일봉 데이터를 먼저 제공하고, 키움 REST API는 현재가/일봉 조회까지만 연결한다.
-  - 수정 파일: `backend/src/market-data/MockMarketDataProvider.js`, `backend/src/market-data/KiwoomMarketDataProvider.js`, `backend/src/routes/marketRoutes.js`, `backend/src/app.js`
-  - 완료 조건: `GET /api/market/:stockCode/price`와 `GET /api/market/:stockCode/daily`가 mock으로 동작하며, Kiwoom provider에는 주문 TR/주문 API 호출 코드가 없다.
+- [X] T004 [P] Implement read-only market data provider in `/home/hyerin/speckit/infinite-buying/backend/src/market-data/KiwoomMarketDataProvider.js`
+  - 목적: 키움 REST API는 현재가/일봉 조회까지만 연결한다.
+  - 수정 파일: `backend/src/market-data/KiwoomMarketDataProvider.js`, `backend/src/routes/marketRoutes.js`, `backend/src/app.js`
+  - 완료 조건: `GET /api/market/:stockCode/price`와 `GET /api/market/:stockCode/daily`가 키움 read-only 데이터로 동작하며, Kiwoom provider에는 주문 TR/주문 API 호출 코드가 없다.
 
 - [X] T005 [P] Implement strategy calculation and tests in `/home/hyerin/speckit/infinite-buying/backend/src/services/strategyCalculator.js` and `/home/hyerin/speckit/infinite-buying/backend/tests/strategyCalculator.test.js`
   - 목적: BUY / SELL / HOLD / PAUSE 판단 규칙을 HTTP/DB와 분리해 검증한다.
@@ -44,10 +44,10 @@
 - [X] T008 [US1] [US2] [US3] Build React screens, manual price fallback, and chart in `/home/hyerin/speckit/infinite-buying/frontend/src/App.jsx`
   - 목적: 전략 생성부터 현재가 조회/수동입력/evaluate/차트/가상 주문 이력까지 한 화면 흐름으로 제공한다.
   - 수정 파일: `frontend/src/App.jsx`, `frontend/src/api/client.js`, `frontend/src/pages/StrategiesPage.jsx`, `frontend/src/pages/StrategyDetailPage.jsx`, `frontend/src/components/StrategyForm.jsx`, `frontend/src/components/HoldingPanel.jsx`, `frontend/src/components/EvaluationPanel.jsx`, `frontend/src/components/DailyChart.jsx`, `frontend/src/components/OrdersTable.jsx`, `frontend/src/styles.css`
-  - 완료 조건: 사용자가 전략을 만들고, mock 또는 키움 현재가를 조회하고, 실패 시 현재가를 수동 입력하고, evaluate 결과/차트/가상 주문 이력을 확인할 수 있다.
+  - 완료 조건: 사용자가 전략을 만들고, 키움 현재가를 조회하고, 실패 시 현재가를 수동 입력하고, evaluate 결과/차트/가상 주문 이력을 확인할 수 있다.
 
 - [X] T009 Document MVP setup and safety constraints in `/home/hyerin/speckit/infinite-buying/README.md`
-  - 목적: 실행 방법, 환경변수, mock 우선 동작, 키움 read-only 제약, PR 흐름을 명확히 남긴다.
+  - 목적: 실행 방법, 환경변수, 키움 read-only 제약, PR 흐름을 명확히 남긴다.
   - 수정 파일: `README.md`, `backend/.env.example`
   - 완료 조건: README에 backend/frontend 실행법, DB 초기화, Kiwoom 환경변수, 수동 입력 fallback, 실주문 금지, main 직접 push 금지가 포함된다.
 

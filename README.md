@@ -96,16 +96,16 @@ Frontend는 React, Vite, Recharts로 구현되어 있습니다.
 - 각 거래일의 `close` 값을 해당 날짜의 가격으로 사용합니다.
 - 결과로 summary, 거래 이력, 자산 변화 차트, 평균단가 vs 종가 차트를 확인할 수 있습니다.
 
-### 가격 캐시 (cache-first)
+### 일봉 가격 저장과 백테스트 입력 데이터
 
-일봉 가격 조회 (`GET /api/market/:stockCode/daily`)는 사용자별 `market_price_cache`를 먼저 조회합니다.
+일봉 가격 조회 (`GET /api/market/:stockCode/daily`)는 현재 로그인 사용자의 `market_price_cache`에 실제 키움 일봉을 저장합니다.
 
-- 요청한 `[from, to]` 범위를 캐시가 덮고 있으면 Kiwoom REST API 를 호출하지 않고 캐시 행을 그대로 반환합니다.
-- 캐시가 비어 있거나 범위를 덮지 못하면 Kiwoom 에서 가져와 캐시에 upsert 한 뒤 반환합니다.
-- `refresh=true` 쿼리 파라미터를 붙이면 캐시를 무시하고 Kiwoom 호출을 강제할 수 있습니다.
-- Kiwoom 호출이 실패해도 부분 캐시가 남아 있다면 그 캐시를 그대로 응답합니다 (`refresh=true` 는 예외).
+- 백테스트 화면은 실행 직전에 `requireReal=true`로 일봉을 조회해 실제 키움 데이터가 저장되어 있는지 확인합니다.
+- 저장된 사용자별 일봉이 요청 기간을 이미 충분히 덮고 있으면 backend는 그 행을 다시 사용합니다.
+- 저장된 일봉이 없거나 기간이 부족하면 backend가 현재 사용자의 키움 credential로 Kiwoom REST API를 호출하고, 결과를 `(user_id, stock_code, date)` 기준으로 upsert합니다.
+- `BacktestService`는 백테스트 계산 중 키움 API를 직접 호출하지 않고, 저장된 `KIWOOM` 출처의 일봉 행만 읽어 계산합니다.
 
-이 동작 덕분에 같은 사용자가 같은 종목/기간으로 백테스트를 다시 실행하면 키움 API rate limit 을 거치지 않고 즉시 결과를 계산합니다.
+이 구조는 백테스트가 실제 과거 가격으로 계산되도록 하면서도 같은 사용자가 같은 종목/기간을 반복 실행할 때 불필요한 외부 호출을 줄입니다.
 
 ### 투자 유의사항
 
@@ -143,7 +143,7 @@ SQLite에는 다음 테이블이 생성됩니다.
 - `backtest_runs`: 사용자별 백테스트 실행 summary
 - `backtest_trades`: 사용자별 백테스트 일자별 판단/거래 기록
 
-DB 스키마는 [backend/src/db/schema.sql](/home/hyerin/speckit/infinite-buying/backend/src/db/schema.sql)에 있습니다.
+DB 스키마는 [backend/src/db/schema.sql](backend/src/db/schema.sql)에 있습니다.
 
 ## 클론 후 실행 방법
 
