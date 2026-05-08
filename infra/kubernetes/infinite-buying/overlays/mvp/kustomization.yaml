@@ -15,7 +15,7 @@ patches:
 images:
   - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend
     newName: 107015853205.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend
-    newTag: 2cd83be605fc9f0e114c29dd32ad9f4236b25541
+    newTag: 3b6b813f3b67c1f2e73f2616080f1a3a13889d09
   - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend
     newName: 107015853205.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend
-    newTag: 2cd83be605fc9f0e114c29dd32ad9f4236b25541
+    newTag: 3b6b813f3b67c1f2e73f2616080f1a3a13889d09
