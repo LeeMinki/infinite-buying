@@ -40,14 +40,14 @@ spec:
                     "${K8S}/api/v1/namespaces/${NS}/secrets/ecr-registry")
 
                   if [ "${STATUS}" = "200" ]; then
-                    curl -s -X PATCH \
+                    curl -s -o /dev/null -f -X PATCH \
                       -H "Authorization: Bearer ${SA_TOKEN}" \
                       -H "Content-Type: application/strategic-merge-patch+json" \
                       --cacert "${CA}" \
                       "${K8S}/api/v1/namespaces/${NS}/secrets/ecr-registry" \
                       -d "{\"data\":{\".dockerconfigjson\":\"${DOCKER_CONFIG}\"}}"
                   else
-                    curl -s -X POST \
+                    curl -s -o /dev/null -f -X POST \
                       -H "Authorization: Bearer ${SA_TOKEN}" \
                       -H "Content-Type: application/json" \
                       --cacert "${CA}" \
