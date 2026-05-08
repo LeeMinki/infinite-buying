@@ -392,6 +392,8 @@ ENABLE_LIVE_ORDER=false
 
 관련 문서는 `infra/kubernetes/argocd/README.md`, 설정 예시는 `infra/kubernetes/argocd/runtime-tuning.yaml`에 있습니다.
 
+운영 EC2는 k3s Pod CIDR와 AWS VPC DNS 대역 충돌을 피하기 위해 `infra/operations/install-ec2-runtime-guards.sh`의 DNS/swap guard를 적용합니다. CoreDNS가 `/etc/resolv.conf`를 upstream으로 사용하면 DNS loop가 생길 수 있으므로, CoreDNS upstream은 `169.254.169.253`으로 고정해야 합니다.
+
 ## 주요 API
 
 ```text
