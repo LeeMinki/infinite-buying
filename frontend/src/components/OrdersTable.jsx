@@ -13,7 +13,7 @@ export function OrdersTable({ orders, onFill, onCancel }) {
       <div className="panel-heading">
         <div>
           <h3>가상 주문</h3>
-          <p>평가 결과로 만들어진 가상 주문이에요. 체결 또는 취소를 직접 눌러 처리해요.</p>
+          <p>평가 결과로 만들어진 가상 주문입니다. 체결 또는 취소를 직접 눌러 처리합니다.</p>
         </div>
         <span className="heading-meta">{orders.length}건</span>
       </div>
@@ -70,7 +70,7 @@ export function OrdersTable({ orders, onFill, onCancel }) {
             {orders.length === 0 && (
               <tr>
                 <td className="empty-row" colSpan="6">
-                  아직 가상 주문이 없어요. 평가 실행 결과가 BUY 또는 SELL이면 여기에 자동으로 추가돼요.
+                  아직 가상 주문이 없습니다. 평가 실행 결과가 매수 또는 매도이면 여기에 자동으로 추가됩니다.
                 </td>
               </tr>
             )}

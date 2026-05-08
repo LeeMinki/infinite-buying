@@ -1342,3 +1342,369 @@ button.danger-button:hover:not(:disabled) {
   display: grid;
   gap: 14px;
 }
+
+.mode-workspace {
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 32px 20px 48px;
+}
+
+.page-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.page-header p {
+  color: var(--text-soft);
+  font-size: 13.5px;
+  margin-top: 4px;
+}
+
+.mode-card-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mode-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.mode-card.disabled {
+  background: #fbfcff;
+}
+
+.mode-card header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.mode-card .summary {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mode-card .detail,
+.mode-card .warning {
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.risk-notice {
+  background: var(--warning-soft);
+  border: 1px solid #fed7aa;
+  border-radius: var(--radius-md);
+  color: #7c2d12;
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+}
+
+.risk-notice p {
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.risk-notice-danger {
+  background: var(--danger-soft);
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.guide-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.guide-panel h3 {
+  font-size: 15px;
+}
+
+.guide-panel ol {
+  color: var(--text-soft);
+  display: grid;
+  font-size: 13.5px;
+  gap: 6px;
+  line-height: 1.6;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.status-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.status-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+}
+
+.status-tile span {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-tile strong {
+  font-size: 16px;
+}
+
+.danger {
+  color: var(--danger);
+}
+
+.mode-form {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mode-form button,
+.mode-form .checkbox-field {
+  align-self: end;
+}
+
+.checkbox-field {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.checkbox-field input {
+  min-height: auto;
+  width: auto;
+}
+
+.actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.chart-box {
+  height: 280px;
+  width: 100%;
+}
+
+.chart-legend {
+  align-items: center;
+  background: rgba(148, 163, 184, 0.08);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  gap: 14px;
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+}
+
+.chart-legend .legend-item {
+  align-items: center;
+  color: var(--text-strong);
+  display: inline-flex;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.chart-legend .legend-line {
+  display: inline-block;
+  height: 0;
+  width: 22px;
+}
+
+.chart-legend .legend-line.solid {
+  height: 3px;
+  border-radius: 2px;
+}
+
+.chart-legend .legend-line.dashed {
+  border-top: 3px dashed transparent;
+}
+
+.chart-legend .legend-marker {
+  display: inline-block;
+  height: 12px;
+  width: 12px;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 0 0 1.5px #0f172a;
+}
+
+.chart-legend .legend-marker.circle {
+  border-radius: 50%;
+}
+
+.chart-legend .legend-marker.diamond {
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.laor-guide {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+.laor-guide > header h3 {
+  font-size: 16px;
+  margin: 0 0 4px;
+}
+
+.laor-guide > header p {
+  color: var(--text-soft);
+  font-size: 13px;
+  margin: 0;
+}
+
+.laor-step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.laor-step .step-num {
+  align-items: center;
+  background: #1e3a8a;
+  border-radius: 999px;
+  color: #fff;
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.laor-step h4 {
+  color: var(--text-strong);
+  font-size: 14px;
+  margin: 0 0 6px;
+}
+
+.laor-step p {
+  color: var(--text-soft);
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin: 0 0 6px;
+}
+
+.laor-example {
+  background: #f1f5f9;
+  border-left: 3px solid #1e3a8a;
+  border-radius: 6px;
+  color: var(--text-strong) !important;
+  font-size: 13px;
+  margin-top: 8px !important;
+  padding: 8px 10px;
+}
+
+.laor-rules {
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.laor-rules th,
+.laor-rules td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.laor-rules th {
+  background: #f8fafc;
+  color: var(--text-strong);
+  font-weight: 700;
+}
+
+.laor-rules td b {
+  color: var(--text-strong);
+}
+
+.laor-rules .badge {
+  border-radius: 999px;
+  font-size: 11px;
+  margin-left: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.laor-rules .badge.cool {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.laor-rules .badge.warm {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.laor-foot {
+  border-top: 1px dashed var(--border);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding-top: 10px;
+}
+
+.success,
+.error {
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px 12px;
+}
+
+.success {
+  background: var(--success-soft);
+  color: #065f46;
+}
+
+.error {
+  background: var(--danger-soft);
+  color: #991b1b;
+}
+
+@media (max-width: 900px) {
+  .mode-card-grid,
+  .status-grid,
+  .mode-form {
+    grid-template-columns: 1fr;
+  }
+
+  .page-header {
+    flex-direction: column;
+  }
+}

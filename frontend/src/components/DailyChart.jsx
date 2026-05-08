@@ -21,7 +21,7 @@ export function DailyChart({ data, stockCode }) {
       <div className="panel-heading">
         <div>
           <h3>일봉 차트</h3>
-          <p>최근 종가 흐름이에요. 평가에 직접 쓰이지는 않지만 추세 파악에 도움이 돼요.</p>
+          <p>최근 종가 흐름입니다. 평가에 직접 쓰이지는 않지만 추세 파악에 도움이 됩니다.</p>
         </div>
         {hasData && (
           <span className="heading-meta" style={{ color: changeColor }}>
@@ -32,8 +32,8 @@ export function DailyChart({ data, stockCode }) {
 
       {!hasData ? (
         <div className="empty" style={{ background: '#fafbff', borderRadius: 12, padding: 32 }}>
-          일봉 데이터를 가져올 수 없어요.<br />
-          <span className="muted" style={{ fontSize: 12 }}>(전략 평가는 차트 없이도 가능해요.)</span>
+          일봉 데이터를 가져올 수 없습니다.<br />
+          <span className="muted" style={{ fontSize: 12 }}>(전략 평가는 차트 없이도 가능합니다.)</span>
         </div>
       ) : (
         <div style={{ width: '100%', height: 280 }}>

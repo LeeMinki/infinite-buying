@@ -1,5 +1,4 @@
 import { MarketDataProvider } from './MarketDataProvider.js';
-import { getMockAccountDeposit, searchMockStocks } from './MockMarketDataProvider.js';
 
 export class KiwoomMarketDataProvider extends MarketDataProvider {
   constructor(options) {
@@ -7,7 +6,6 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
     this.baseUrl = options.baseUrl;
     this.timeoutMs = options.timeoutMs;
     this.tokenSupplier = options.tokenSupplier;
-    this.useMockData = options.useMockData;
   }
 
   isConfigured() {
@@ -38,10 +36,11 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
       base_dt: (options.to || currentDate()).replaceAll('-', ''),
       upd_stkpc_tp: '1'
     });
-    const rows = data.output ?? data.output1 ?? data.output2 ?? data.list ?? data;
-    const list = Array.isArray(rows) ? rows : [];
+    const list = pickCandleArray(data);
     if (list.length === 0) {
-      throw new Error('Kiwoom daily price response was empty');
+      const detail = data?.return_msg ? ` (${data.return_msg})` : '';
+      const keys = data && typeof data === 'object' ? Object.keys(data).join(', ') : '';
+      throw new Error(`Kiwoom daily price response was empty${detail}${keys ? ` [fields: ${keys}]` : ''}`);
     }
     return list.map((row) => ({
       stockCode,
@@ -56,10 +55,6 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
   }
 
   async searchStocks(query) {
-    if (this.useMockData) {
-      return searchMockStocks(query);
-    }
-
     const normalized = String(query || '').trim();
     if (!normalized) return [];
 
@@ -108,10 +103,6 @@ export class KiwoomMarketDataProvider extends MarketDataProvider {
   }
 
   async getAccountDeposit() {
-    if (this.useMockData) {
-      return getMockAccountDeposit();
-    }
-
     const data = await this.requestJson('/api/dostk/acnt', 'kt00001', {
       qry_tp: '3'
     });
@@ -211,4 +202,32 @@ function normalizeDate(value) {
 
 function currentDate() {
   return new Date().toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+const CANDLE_ARRAY_KEYS = [
+  'stk_dt_pole_chart_qry',
+  'stk_dt_bong_chart_qry',
+  'output',
+  'output1',
+  'output2',
+  'list'
+];
+
+const CANDLE_ROW_DATE_KEYS = ['dt', 'date', 'base_dt', 'stck_bsop_date'];
+
+function pickCandleArray(data) {
+  if (!data || typeof data !== 'object') return [];
+  for (const key of CANDLE_ARRAY_KEYS) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value) && value.length > 0 && looksLikeCandleRow(value[0])) {
+      return value;
+    }
+  }
+  return [];
+}
+
+function looksLikeCandleRow(row) {
+  return row && typeof row === 'object' && CANDLE_ROW_DATE_KEYS.some((key) => row[key] != null);
 }

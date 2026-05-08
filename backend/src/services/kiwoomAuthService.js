@@ -30,13 +30,26 @@ export async function getAccessToken(userId) {
 }
 
 export async function testConnection(userId) {
+  const credential = repository.getByUserId(userId);
+  if (!credential) {
+    return {
+      ok: false,
+      status: 'TOKEN_ERROR',
+      ec2ElasticIp: env.ec2ElasticIp,
+      message: '키움 자격증명이 등록되어 있지 않습니다. App Key와 Secret Key를 먼저 저장해 주세요.'
+    };
+  }
+  // The connection test must verify the saved keys against Kiwoom every time —
+  // never serve a cached token, otherwise stale tokens from previous keys can
+  // mask invalid credentials.
+  tokenCache.delete(userId);
   try {
-    await getAccessToken(userId);
-    const credential = repository.getByUserId(userId);
+    await issueToken(userId, credential);
+    const refreshed = repository.getByUserId(userId);
     return {
       ok: true,
       status: 'TOKEN_VALID',
-      appKeyMasked: credential.appKeyMasked,
+      appKeyMasked: refreshed.appKeyMasked,
       ec2ElasticIp: env.ec2ElasticIp,
       message: '키움 access token 발급에 성공했습니다.'
     };
@@ -52,18 +65,11 @@ export async function testConnection(userId) {
   }
 }
 
-async function issueToken(userId, credential) {
-  if (env.kiwoomUseMock || credential.environment === 'mock' || env.marketDataProvider === 'mock') {
-    const token = `mock-token-${userId}-${Date.now()}`;
-    const expiresAt = Date.now() + 60 * 60 * 1000;
-    repository.saveToken(userId, {
-      accessTokenEncrypted: encryptSecret(token),
-      tokenExpiresAt: new Date(expiresAt).toISOString()
-    });
-    tokenCache.set(userId, { token, expiresAt });
-    return token;
-  }
+export function clearTokenCache(userId) {
+  tokenCache.delete(userId);
+}
 
+async function issueToken(userId, credential) {
   const appKey = decryptSecret(credential.appKeyEncrypted);
   const secretKey = decryptSecret(credential.secretKeyEncrypted);
   const controller = new AbortController();
@@ -106,7 +112,7 @@ async function issueToken(userId, credential) {
 }
 
 export function baseUrl(credential) {
-  return credential.environment === 'mock' ? env.kiwoomMockApiBaseUrl : env.kiwoomApiBaseUrl;
+  return env.kiwoomApiBaseUrl;
 }
 
 function buildTokenFailureMessage(error) {

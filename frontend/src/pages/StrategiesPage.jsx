@@ -2,7 +2,7 @@ import React from 'react';
 import { createStrategy, deleteStrategy } from '../api/client.js';
 import { StrategyForm } from '../components/StrategyForm.jsx';
 
-export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKiwoom, user, onLogout }) {
+export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKiwoom, onOpenBacktest, user, onLogout }) {
   async function create(payload) {
     const strategy = await createStrategy(payload);
     await onChanged(strategy.id);
@@ -30,13 +30,14 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         <div className="brand-logo" aria-hidden="true">∞</div>
         <div className="brand-text">
           <h1>무한매수 해죠</h1>
-          <span>가상 거래 시뮬레이터</span>
+          <span>무한매수 백테스트</span>
         </div>
       </div>
 
       <div className="account-bar">
         <span>{user?.email}</span>
         <div className="button-row compact">
+          <button type="button" className="sm" onClick={onOpenBacktest}>백테스트</button>
           <button type="button" className="sm" onClick={onOpenKiwoom}>키움 설정</button>
           <button type="button" className="ghost sm" onClick={onLogout}>로그아웃</button>
         </div>
@@ -45,19 +46,19 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
       <div className="disclaimer" role="note">
         <div className="dot" aria-hidden="true" />
         <div>
-          <b>실제 주문은 절대 발생하지 않아요.</b><br />
-          모든 매수·매도는 앱 안의 <b>가상 주문</b>으로만 기록돼요.
+          <b>실제 주문은 발생하지 않습니다.</b><br />
+          모든 매수·매도는 앱 안의 <b>가상 주문</b>으로만 기록됩니다.
         </div>
       </div>
 
       <section className="onboard" aria-label="시작 가이드">
-        <h2>처음이신가요? 👋</h2>
-        <p>라오어 무한매수법을 따라 분할 매수 시뮬레이션을 도와드려요. 아래 순서로 시작해보세요.</p>
+        <h2>시작 가이드</h2>
+        <p>라오어 무한매수법을 기준으로 전략을 만들고 실제 과거 가격 백테스트를 실행합니다.</p>
         <ol>
-          <li><b>1</b><span>전략을 만들고 종목·예산·분할 회차를 정해요.</span></li>
-          <li><b>2</b><span>현재가를 조회하거나 직접 입력해 평가해요.</span></li>
-          <li><b>3</b><span>BUY / SELL / HOLD / PAUSE 결과를 확인해요.</span></li>
-          <li><b>4</b><span>가상 주문을 체결하면 보유 상태가 갱신돼요.</span></li>
+          <li><b>1</b><span>전략을 만들고 종목·예산·분할 회차를 정합니다.</span></li>
+          <li><b>2</b><span>키움 설정에서 App Key와 Secret Key를 저장합니다.</span></li>
+          <li><b>3</b><span>백테스트에서 종목과 기간을 입력해 실제 과거 가격 기준 결과를 확인합니다.</span></li>
+          <li><b>4</b><span>필요하면 전략 상세에서 현재가 기준 단일 평가를 확인합니다.</span></li>
         </ol>
       </section>
 
@@ -93,7 +94,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
           })}
           {strategies.length === 0 && (
             <div className="empty" style={{ background: '#fafbff', border: '1px dashed var(--border-strong)', borderRadius: 12 }}>
-              아직 등록된 전략이 없어요.<br />위에서 첫 전략을 만들어보세요.
+              아직 등록된 전략이 없습니다.<br />위에서 첫 전략을 만들어 주세요.
             </div>
           )}
         </div>
