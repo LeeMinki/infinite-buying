@@ -28,10 +28,12 @@ router.get('/:stockCode/daily', async (req, res, next) => {
   try {
     res.json(await getDailyPrices(req.userId, req.params.stockCode, {
       from: req.query.from,
-      to: req.query.to
+      to: req.query.to,
+      requireReal: req.query.requireReal === 'true',
+      refresh: req.query.refresh === 'true'
     }));
   } catch (error) {
-    res.status(503).json({
+    res.status(error.status || 503).json({
       error: error.message,
       manualFallback: false
     });

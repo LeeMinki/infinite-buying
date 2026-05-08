@@ -1,4 +1,4 @@
-export function evaluateStrategy({ strategy, holding, currentPrice, today = new Date() }) {
+export function evaluateStrategy({ strategy, holding, currentPrice }) {
   const price = Number(currentPrice);
   if (!Number.isFinite(price) || price <= 0) {
     throw new Error('Current price must be greater than zero');
@@ -14,23 +14,50 @@ export function evaluateStrategy({ strategy, holding, currentPrice, today = new 
       quantity: holding.quantity,
       amount: Math.floor(price * holding.quantity),
       roundNo: strategy.currentRound,
-      reason: 'Target profit reached'
+      reason: '목표 수익률 도달 → 전량 매도'
     };
   }
 
-  if (strategy.currentRound > strategy.splitCount || holding.remainingBudget <= 0) {
+  if (strategy.currentRound > strategy.splitCount) {
+    if (holding.quantity > 0) {
+      const qty = Math.max(1, Math.min(holding.quantity, Math.ceil(holding.quantity / 4)));
+      return {
+        decision: 'SELL',
+        quantity: qty,
+        amount: Math.floor(price * qty),
+        roundNo: strategy.currentRound,
+        reason: '40회 매수 완료 → 보유 1/4 매도하여 시드 재확보'
+      };
+    }
     return { decision: 'HOLD', quantity: 0, amount: 0, roundNo: strategy.currentRound, reason: 'No remaining buy capacity' };
   }
 
-  const availableAmount = Math.min(strategy.buyAmountPerRound, holding.remainingBudget);
-  const quantity = Math.floor(availableAmount / price);
+  if (holding.remainingBudget <= 0) {
+    return { decision: 'HOLD', quantity: 0, amount: 0, roundNo: strategy.currentRound, reason: 'No remaining buy capacity' };
+  }
+
+  const baseQty = Math.floor(strategy.buyAmountPerRound / price);
+  let plannedQty;
+  let reason;
+  if (holding.quantity === 0) {
+    plannedQty = baseQty;
+    reason = '첫 매수: 회차당 기본 수량';
+  } else if (price < holding.averagePrice) {
+    plannedQty = baseQty * 2;
+    reason = '평단가보다 저렴 → 2배 수량 매수';
+  } else {
+    plannedQty = Math.max(1, Math.floor(baseQty / 2));
+    reason = '평단가 이상 → 절반 수량 매수';
+  }
+  const cashCappedQty = Math.floor(holding.remainingBudget / price);
+  const quantity = Math.min(plannedQty, cashCappedQty);
   if (quantity <= 0) {
     return {
       decision: 'HOLD',
       quantity: 0,
       amount: 0,
       roundNo: strategy.currentRound,
-      reason: 'Per-round amount cannot buy one share'
+      reason: '회차 예산으로 1주를 매수할 수 없습니다.'
     };
   }
 
@@ -39,6 +66,6 @@ export function evaluateStrategy({ strategy, holding, currentPrice, today = new 
     quantity,
     amount: Math.floor(quantity * price),
     roundNo: strategy.currentRound,
-    reason: 'Buy conditions met'
+    reason
   };
 }

@@ -9,6 +9,7 @@ const NARROW_QUERY = '(max-width: 1100px)';
 const StrategiesPage = lazy(() => import('./pages/StrategiesPage.jsx').then((module) => ({ default: module.StrategiesPage })));
 const StrategyDetailPage = lazy(() => import('./pages/StrategyDetailPage.jsx').then((module) => ({ default: module.StrategyDetailPage })));
 const KiwoomSetupPage = lazy(() => import('./pages/KiwoomSetupPage.jsx').then((module) => ({ default: module.KiwoomSetupPage })));
+const BacktestPage = lazy(() => import('./pages/BacktestPage.jsx').then((module) => ({ default: module.BacktestPage })));
 
 function isNarrow() {
   return typeof window !== 'undefined' && window.matchMedia(NARROW_QUERY).matches;
@@ -35,7 +36,36 @@ function AuthenticatedApp() {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
-  const [view, setView] = useState('strategies');
+  const [view, setViewState] = useState('strategies');
+
+  function setView(nextView) {
+    if (nextView === view) return;
+    if (typeof window === 'undefined') {
+      setViewState(nextView);
+      return;
+    }
+    if (nextView === 'strategies') {
+      const onSubpage = window.history.state && window.history.state.ibView && window.history.state.ibView !== 'strategies';
+      if (onSubpage) {
+        window.history.back();
+        return;
+      }
+      setViewState(nextView);
+      return;
+    }
+    window.history.pushState({ ibView: nextView }, '', `#${nextView}`);
+    setViewState(nextView);
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onPop = (event) => {
+      const next = event.state && event.state.ibView ? event.state.ibView : 'strategies';
+      setViewState(next);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   async function refreshStrategies(nextSelectedId = selectedId) {
     const items = await listStrategies();
@@ -98,6 +128,14 @@ function AuthenticatedApp() {
     );
   }
 
+  if (view === 'backtest') {
+    return (
+      <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
+        <BacktestPage onBack={() => setView('strategies')} />
+      </Suspense>
+    );
+  }
+
   return (
     <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
       <main className={`app-shell ${sidebarOpen ? '' : 'collapsed'}`}>
@@ -122,6 +160,7 @@ function AuthenticatedApp() {
           onChanged={refreshStrategies}
           onClose={() => setSidebar(false)}
           onOpenKiwoom={() => setView('kiwoom')}
+          onOpenBacktest={() => setView('backtest')}
           user={auth.user}
           onLogout={auth.logout}
         />

@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS kiwoom_credentials (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL UNIQUE,
-  environment TEXT NOT NULL DEFAULT 'production' CHECK (environment IN ('production', 'mock')),
+  environment TEXT NOT NULL DEFAULT 'production' CHECK (environment IN ('production')),
   app_key_masked TEXT NOT NULL,
   app_key_encrypted TEXT NOT NULL,
   secret_key_encrypted TEXT NOT NULL,

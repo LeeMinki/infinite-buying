@@ -8,10 +8,10 @@ const DECISION_LABEL = {
 };
 
 const DECISION_HEADLINE = {
-  BUY: '매수 신호가 떴어요',
-  SELL: '매도 신호가 떴어요',
-  HOLD: '이번 회차는 관망이에요',
-  PAUSE: '전략이 일시정지 상태예요'
+  BUY: '매수 신호입니다',
+  SELL: '매도 신호입니다',
+  HOLD: '이번 회차는 관망입니다',
+  PAUSE: '전략이 일시정지 상태입니다'
 };
 
 const LEGEND = [
@@ -32,7 +32,7 @@ export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFet
     try {
       await onFetchPrice();
     } catch (err) {
-      setError(`현재가를 가져오지 못했어요: ${err.message} 아래 칸에 직접 입력하면 평가를 이어갈 수 있어요.`);
+      setError(`현재가를 가져오지 못했습니다: ${err.message} 아래 칸에 직접 입력하면 평가를 계속할 수 있습니다.`);
     } finally {
       setFetching(false);
     }
@@ -61,7 +61,7 @@ export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFet
 
       <div className="action-row">
         <button type="button" className="subtle" onClick={fetchPrice} disabled={fetching || !strategy}>
-          {fetching ? '조회 중…' : '📡 현재가 자동 조회'}
+          {fetching ? '조회 중...' : '현재가 자동 조회'}
         </button>
         <label className="price-input">
           <span>현재가 (수동 입력 가능)</span>
@@ -82,7 +82,7 @@ export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFet
           onClick={evaluate}
           disabled={!strategy || !currentPrice || evaluating}
         >
-          {evaluating ? '판단 중…' : '평가 실행'}
+          {evaluating ? '판단 중...' : '평가 실행'}
         </button>
       </div>
 

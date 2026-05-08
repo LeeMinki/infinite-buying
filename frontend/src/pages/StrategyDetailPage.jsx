@@ -59,13 +59,13 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
       <section className="content empty-state">
         <div className="empty-state-card">
           <div className="icon-circle" aria-hidden="true">∞</div>
-          <h2>전략을 골라 시작해보세요</h2>
-          <p>왼쪽에서 새 전략을 만들거나, 기존 전략을 선택하면 이곳에서 가상 매수·매도 판단을 도와드려요.</p>
+          <h2>전략을 선택해 시작하세요</h2>
+          <p>왼쪽에서 새 전략을 만들거나 기존 전략을 선택하면 이곳에서 가상 매수·매도 판단을 확인할 수 있습니다.</p>
           <ol>
-            <li>전략을 만들고 종목·예산·분할 회차를 정해요.</li>
-            <li>현재가를 조회해 평가를 실행해요.</li>
-            <li>결과에 따라 가상 주문이 자동으로 만들어져요.</li>
-            <li>주문을 체결하면 보유 상태가 갱신돼요.</li>
+            <li>전략을 만들고 종목·예산·분할 회차를 정합니다.</li>
+            <li>현재가를 조회해 평가를 실행합니다.</li>
+            <li>결과에 따라 가상 주문이 자동으로 만들어집니다.</li>
+            <li>주문을 체결하면 보유 상태가 갱신됩니다.</li>
           </ol>
         </div>
       </section>
@@ -103,7 +103,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
     <section className="content">
       {error && (
         <div className="panel section" style={{ borderColor: '#fecaca', background: '#fef2f2', color: '#991b1b' }}>
-          <strong style={{ display: 'block', marginBottom: 4 }}>요청을 처리하지 못했어요</strong>
+          <strong style={{ display: 'block', marginBottom: 4 }}>요청을 처리하지 못했습니다</strong>
           <span style={{ fontSize: 13 }}>{error}</span>
         </div>
       )}
@@ -116,7 +116,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
                 <span className="eyebrow">{strategy.stockCode} · {strategy.stockName}</span>
                 <h2>{strategy.name}</h2>
                 <p className="muted" style={{ fontSize: 13, marginTop: 6 }}>
-                  설정한 규칙을 기반으로 매 평가마다 자동으로 BUY · SELL · HOLD · PAUSE를 판단해요.
+                  설정한 규칙을 기반으로 매 평가마다 매수 · 매도 · 관망 · 일시정지를 판단합니다.
                 </p>
               </div>
               <span className={`badge ${isPaused ? 'warning' : 'active'}`}>
@@ -168,7 +168,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
             <div className="panel-heading">
               <div>
                 <h3>판단 로그</h3>
-                <p>평가를 실행할 때마다 결과와 사유가 이곳에 기록돼요.</p>
+                <p>평가를 실행할 때마다 결과와 사유가 이곳에 기록됩니다.</p>
               </div>
               <span className="heading-meta">{logs.length}건</span>
             </div>
@@ -198,7 +198,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
                   {logs.length === 0 && (
                     <tr>
                       <td className="empty-row" colSpan="4">
-                        아직 판단 로그가 없어요. 위에서 <b>평가 실행</b>을 눌러보세요.
+                        아직 판단 로그가 없습니다. 위에서 <b>평가 실행</b>을 눌러주세요.
                       </td>
                     </tr>
                   )}
