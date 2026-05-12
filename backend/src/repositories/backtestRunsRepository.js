@@ -5,13 +5,18 @@ function toRun(row) {
   return {
     id: row.id,
     userId: row.user_id,
-    stockCode: row.stock_code,
-    stockName: row.stock_name,
+    symbol: row.symbol || row.stock_code,
+    market: row.market || 'US',
+    currency: row.currency || 'USD',
+    dataSource: row.data_source || 'KIS_API',
     fromDate: row.from_date,
     toDate: row.to_date,
     totalBudget: row.total_budget,
     splitCount: row.split_count,
     buyAmountPerRound: row.buy_amount_per_round,
+    initialLumpRatio: row.initial_lump_ratio,
+    dailyAmount: row.daily_amount,
+    algorithm: row.algorithm || 'LAOR_INFINITE_V2',
     targetProfitRate: row.target_profit_rate,
     restartAfterSell: row.restart_after_sell === 1,
     status: row.status,
@@ -46,28 +51,55 @@ export function getRun(userId, id) {
   return toRun(row);
 }
 
+function safeFiniteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function safeNonNegInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
 export function createRun(userId, input) {
-  const buyAmountPerRound = Math.floor(input.totalBudget / input.splitCount);
+  const totalBudget = safeFiniteNumber(input.totalBudget, 0);
+  const targetProfitRate = safeFiniteNumber(input.targetProfitRate, 0.1);
+  const splitCountRaw = Number(input.splitCount);
+  const splitCount = Number.isInteger(splitCountRaw) && splitCountRaw > 0
+    ? splitCountRaw
+    : 40;
+  const perRoundBudget = splitCount > 0 ? totalBudget / splitCount : 0;
+  const market = String(input.market || 'US').toUpperCase();
+  const currency = String(input.currency || (market === 'KR' ? 'KRW' : 'USD')).toUpperCase();
   const result = getDb()
     .prepare(`
       INSERT INTO backtest_runs (
-        user_id, stock_code, stock_name, from_date, to_date,
+        user_id, stock_code, stock_name, symbol, market, data_source, currency, from_date, to_date,
         total_budget, split_count, buy_amount_per_round, target_profit_rate, restart_after_sell,
+        initial_lump_ratio, daily_amount, algorithm,
         status, initial_budget
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
     `)
     .run(
       userId,
-      input.stockCode,
-      input.stockName ?? null,
+      input.symbol,
+      input.symbol,
+      input.symbol,
+      market,
+      'KIS_API',
+      currency,
       input.fromDate,
       input.toDate,
-      input.totalBudget,
-      input.splitCount,
-      buyAmountPerRound,
-      input.targetProfitRate,
+      totalBudget,
+      splitCount,
+      perRoundBudget,
+      targetProfitRate,
       input.restartAfterSell ? 1 : 0,
-      input.totalBudget
+      0,
+      0,
+      'LAOR_INFINITE_V2',
+      totalBudget
     );
   return getRun(userId, result.lastInsertRowid);
 }

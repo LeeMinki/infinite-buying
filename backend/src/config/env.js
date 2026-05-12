@@ -9,14 +9,13 @@ const generatedDevSessionSecret = 'development-session-secret-change-before-depl
 export const env = {
   port: Number(process.env.PORT || 4000),
   dbPath: process.env.DB_PATH || 'data/app.db',
-  marketDataProvider: process.env.MARKET_DATA_PROVIDER || 'kiwoom',
-  ec2ElasticIp: process.env.EC2_ELASTIC_IP || '',
-  kiwoomApiBaseUrl: process.env.KIWOOM_API_BASE_URL || process.env.KIWOOM_BASE_URL || 'https://api.kiwoom.com',
-  kiwoomTimeoutMs: Number(process.env.KIWOOM_TIMEOUT_MS || 5000),
+  kisApiBaseUrl: process.env.KIS_API_BASE_URL || 'https://openapi.koreainvestment.com:9443',
+  kisTimeoutMs: Number(process.env.KIS_TIMEOUT_MS || 5000),
   secretEncryptionKey: process.env.SECRET_ENCRYPTION_KEY || generatedDevEncryptionKey,
   sessionSecret: process.env.SESSION_SECRET || generatedDevSessionSecret,
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'true',
   enableLiveOrder: process.env.ENABLE_LIVE_ORDER || 'false',
+  enableReservedOrder: process.env.ENABLE_RESERVED_ORDER || 'false',
   isProduction
 };
 
@@ -27,8 +26,8 @@ export function validateEnv() {
   if (env.enableLiveOrder !== 'false') {
     errors.push('ENABLE_LIVE_ORDER must remain false. Real broker order APIs are not supported.');
   }
-  if (env.marketDataProvider !== 'kiwoom') {
-    errors.push('MARKET_DATA_PROVIDER must be kiwoom. Only Kiwoom market data is supported.');
+  if (env.enableReservedOrder !== 'false') {
+    errors.push('ENABLE_RESERVED_ORDER must remain false. Reserved broker order APIs are not supported.');
   }
   if (encryptionKey.length !== 32) {
     errors.push('SECRET_ENCRYPTION_KEY must be a base64-encoded 32-byte key.');
@@ -42,11 +41,8 @@ export function validateEnv() {
   if (env.isProduction && !process.env.SESSION_SECRET) {
     errors.push('SESSION_SECRET is required in production.');
   }
-  if (env.isProduction && !env.ec2ElasticIp) {
-    errors.push('EC2_ELASTIC_IP is required in production for Kiwoom IP registration guidance.');
-  }
-  if (env.isProduction && !process.env.KIWOOM_API_BASE_URL) {
-    errors.push('KIWOOM_API_BASE_URL is required in production.');
+  if (env.isProduction && !process.env.KIS_API_BASE_URL) {
+    errors.push('KIS_API_BASE_URL is required in production.');
   }
 
   if (errors.length > 0) {

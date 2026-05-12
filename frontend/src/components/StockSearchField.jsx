@@ -10,106 +10,153 @@ export function StockSearchField({
   label = '종목 검색',
   helper = '검색 결과를 선택하면 종목코드와 종목명이 자동으로 입력됩니다.'
 }) {
-  const [query, setQuery] = useState(stockCode && stockName ? `${stockCode} · ${stockName}` : '');
+  const [query, setQuery] = useState(formatDisplay(stockCode, stockName));
   const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [hint, setHint] = useState('');
 
   useEffect(() => {
-    if (stockCode && stockName) {
-      setQuery(`${stockCode} · ${stockName}`);
-    }
+    setQuery(formatDisplay(stockCode, stockName));
   }, [stockCode, stockName]);
 
   useEffect(() => {
     if (clearSignal === undefined) return;
     setQuery('');
     setResults([]);
-    setError('');
+    setHint('');
   }, [clearSignal]);
 
   useEffect(() => {
     const keyword = query.trim();
-    if (keyword.length < 2 || (stockCode && query === `${stockCode} · ${stockName}`)) {
+    if (!keyword || keyword.includes(' · ')) {
       setResults([]);
-      setError('');
       return undefined;
     }
-
-    let cancelled = false;
+    if (HANGUL_RE.test(keyword)) {
+      setResults([]);
+      return undefined;
+    }
+    if (!/^[A-Za-z0-9.-]{1,12}$/.test(keyword)) {
+      setResults([]);
+      return undefined;
+    }
     const timer = setTimeout(async () => {
-      setSearching(true);
-      setError('');
+      setLoading(true);
       try {
-        const data = await searchStocks(keyword);
-        if (!cancelled) setResults(data?.items || []);
+        const response = await searchStocks(keyword);
+        setResults(response.items || []);
+        setHint('');
       } catch (err) {
-        if (!cancelled) {
-          setResults([]);
-          setError(err.message);
-        }
+        setResults([]);
+        setHint(err.message || '종목 검색에 실패했습니다.');
       } finally {
-        if (!cancelled) setSearching(false);
+        setLoading(false);
       }
     }, 250);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query, stockCode, stockName]);
-
-  function choose(stock) {
-    onSelect(stock);
-    setQuery(`${stock.stockCode} · ${stock.stockName}`);
-    setResults([]);
-    setError('');
-  }
+    return () => clearTimeout(timer);
+  }, [query]);
 
   function changeQuery(value) {
-    setQuery(value);
+    const raw = String(value || '');
+    const nextQuery = HANGUL_RE.test(raw) ? raw : raw.toUpperCase();
+    setQuery(nextQuery);
     if (onClear) onClear();
+    if (!nextQuery.trim()) {
+      setHint('');
+      return;
+    }
+    if (HANGUL_RE.test(nextQuery)) {
+      setHint('국내 종목은 6자리 종목코드로 검색하세요 (예: 005930 → 삼성전자).');
+      return;
+    }
+    if (/^[A-Z0-9.-]{1,12}$/.test(nextQuery)) {
+      setHint('');
+      onSelect({
+        stockCode: nextQuery,
+        stockName: '',
+        symbol: nextQuery,
+        name: '',
+        market: inferMarket(nextQuery),
+        currency: inferCurrency(inferMarket(nextQuery))
+      });
+    } else {
+      setHint('영문/숫자/점/하이픈만 가능합니다 (최대 12자).');
+    }
   }
 
-  const noResults = query.trim().length >= 2 && !searching && results.length === 0 && !stockCode && !error;
+  function selectStock(stock) {
+    const symbol = stock.stockCode || stock.symbol;
+    const rawName = (stock.stockName || stock.name || '').trim();
+    const name = rawName && rawName !== symbol ? rawName : '';
+    setQuery(formatDisplay(symbol, name));
+    setResults([]);
+    setHint('');
+    onSelect({
+      stockCode: symbol,
+      stockName: name,
+      symbol,
+      name,
+      market: stock.market,
+      exchange: stock.exchange,
+      currency: stock.currency
+    });
+  }
 
   return (
     <label className="stock-search-field">
       <span>{label}</span>
       <div className="stock-search">
         <input
-          placeholder="예: 005930 또는 삼성전자"
+          placeholder="예: TQQQ"
           value={query}
           onChange={(event) => changeQuery(event.target.value)}
           autoComplete="off"
         />
         {results.length > 0 && (
-          <div className="stock-results" role="listbox" aria-label="종목 검색 결과">
+          <div className="stock-results">
             {results.map((stock) => (
               <button
                 type="button"
-                role="option"
-                key={`${stock.stockCode}-${stock.stockName}`}
-                onClick={() => choose(stock)}
+                key={`${stock.market}-${stock.exchange || ''}-${stock.symbol}`}
+                onClick={() => selectStock(stock)}
               >
-                <strong>{stock.stockCode}</strong>
-                <span>{stock.stockName}</span>
-                <em>{stock.source}</em>
+                <strong>{stock.symbol}</strong>
+                <span>{stock.name}</span>
+                <em>
+                  {stock.market === 'KR' ? '국내' : '해외'} · {stock.currency}
+                  {stock.fractionalTradingAvailable ? ' · 소수점 가능' : ''}
+                </em>
               </button>
             ))}
           </div>
         )}
       </div>
       <p className="helper">
-        {searching ? '종목 정보를 조회하는 중입니다.' : helper}
+        {loading ? 'KIS에서 종목을 조회하는 중입니다.' : (hint || helper)}
       </p>
-      {error && <p className="form-error">{error}</p>}
-      {noResults && <p className="helper">검색 결과가 없습니다. 종목코드나 종목명을 조금 더 정확히 입력해 주세요.</p>}
       {stockCode && (
         <p className="selected-stock">
-          선택됨: <b>{stockCode}</b>{stockName ? ` · ${stockName}` : ''}
+          선택됨: <b>{stockCode}</b>{stockName && stockName !== stockCode ? ` · ${stockName}` : ''}
         </p>
       )}
     </label>
   );
+}
+
+function formatDisplay(symbol, name) {
+  const sym = String(symbol || '').trim();
+  const nm = String(name || '').trim();
+  if (!sym) return '';
+  if (!nm || nm === sym) return sym;
+  return `${sym} · ${nm}`;
+}
+
+const HANGUL_RE = /[가-힣ᄀ-ᇿ㄰-㆏]/;
+
+function inferMarket(symbol) {
+  return /^\d{6}$/.test(String(symbol || '')) ? 'KR' : 'US';
+}
+
+function inferCurrency(market) {
+  return market === 'KR' ? 'KRW' : 'USD';
 }

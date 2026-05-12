@@ -21,7 +21,7 @@ const LEGEND = [
   { key: 'pause', label: '일시정지 (PAUSE)', desc: '전략 상태가 PAUSED일 때' }
 ];
 
-export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFetchPrice, onEvaluate, decision, priceSource }) {
+export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFetchPrice, onEvaluate, decision, priceSource, currency = 'KRW' }) {
   const [error, setError] = useState('');
   const [fetching, setFetching] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
@@ -73,7 +73,7 @@ export function EvaluationPanel({ strategy, currentPrice, setCurrentPrice, onFet
               value={currentPrice}
               onChange={(e) => setCurrentPrice(e.target.value)}
             />
-            <em>원</em>
+            <em>{currency}</em>
           </div>
         </label>
         <button

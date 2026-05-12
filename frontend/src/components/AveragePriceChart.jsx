@@ -22,7 +22,7 @@ const COLOR_SELL_STROKE = '#0f172a';
 const COLOR_GRID = '#94a3b8';
 const COLOR_REFLINE = '#94a3b8';
 
-export function AveragePriceChart({ data = [] }) {
+export function AveragePriceChart({ data = [], unit = '원' }) {
   const hasData = Array.isArray(data) && data.length > 0;
 
   const chartData = useMemo(() => {
@@ -82,7 +82,7 @@ export function AveragePriceChart({ data = [] }) {
                 itemStyle={{ color: '#f8fafc' }}
                 formatter={(value, name) => {
                   if (value == null) return null;
-                  return [`${formatNumber(value)}원`, NAME_LABEL[name] || name];
+                  return [`${formatNumber(value)}${unit === '원' ? '원' : ` ${unit}`}`, NAME_LABEL[name] || name];
                 }}
               />
               {sellDates.map((d) => (
@@ -176,5 +176,5 @@ const NAME_LABEL = {
 };
 
 function formatNumber(value) {
-  return Number(value || 0).toLocaleString('ko-KR');
+  return Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 }

@@ -10,4 +10,5 @@ test('removed historical validation routes are not mounted', () => {
   const content = fs.readFileSync(appPath, 'utf8');
   assert.equal(content.includes('/api/simulations'), false);
   assert.equal(content.includes('/api/trading-modes'), false);
+  assert.equal(content.includes('/api/live/orders'), false);
 });

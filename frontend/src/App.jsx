@@ -8,7 +8,7 @@ const SIDEBAR_KEY = 'ib.sidebarOpen';
 const NARROW_QUERY = '(max-width: 1100px)';
 const StrategiesPage = lazy(() => import('./pages/StrategiesPage.jsx').then((module) => ({ default: module.StrategiesPage })));
 const StrategyDetailPage = lazy(() => import('./pages/StrategyDetailPage.jsx').then((module) => ({ default: module.StrategyDetailPage })));
-const KiwoomSetupPage = lazy(() => import('./pages/KiwoomSetupPage.jsx').then((module) => ({ default: module.KiwoomSetupPage })));
+const KisSetupPage = lazy(() => import('./pages/KisSetupPage.jsx').then((module) => ({ default: module.KisSetupPage })));
 const BacktestPage = lazy(() => import('./pages/BacktestPage.jsx').then((module) => ({ default: module.BacktestPage })));
 
 function isNarrow() {
@@ -120,10 +120,10 @@ function AuthenticatedApp() {
       : <RegisterPage onSwitch={() => setAuthMode('login')} />;
   }
 
-  if (view === 'kiwoom') {
+  if (view === 'kis') {
     return (
       <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
-        <KiwoomSetupPage onBack={() => setView('strategies')} />
+        <KisSetupPage onBack={() => setView('strategies')} />
       </Suspense>
     );
   }
@@ -159,7 +159,7 @@ function AuthenticatedApp() {
           onSelect={handleSelect}
           onChanged={refreshStrategies}
           onClose={() => setSidebar(false)}
-          onOpenKiwoom={() => setView('kiwoom')}
+          onOpenKis={() => setView('kis')}
           onOpenBacktest={() => setView('backtest')}
           user={auth.user}
           onLogout={auth.logout}

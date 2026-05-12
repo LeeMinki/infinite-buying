@@ -2,7 +2,7 @@ import React from 'react';
 import { createStrategy, deleteStrategy } from '../api/client.js';
 import { StrategyForm } from '../components/StrategyForm.jsx';
 
-export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKiwoom, onOpenBacktest, user, onLogout }) {
+export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKis, onOpenBacktest, user, onLogout }) {
   async function create(payload) {
     const strategy = await createStrategy(payload);
     await onChanged(strategy.id);
@@ -30,7 +30,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         <div className="brand-logo" aria-hidden="true">∞</div>
         <div className="brand-text">
           <h1>무한매수 해죠</h1>
-          <span>무한매수 백테스트</span>
+          <span>전략 관리와 검증</span>
         </div>
       </div>
 
@@ -38,7 +38,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         <span>{user?.email}</span>
         <div className="button-row compact">
           <button type="button" className="sm" onClick={onOpenBacktest}>백테스트</button>
-          <button type="button" className="sm" onClick={onOpenKiwoom}>키움 설정</button>
+          <button type="button" className="sm" onClick={onOpenKis}>KIS 설정</button>
           <button type="button" className="ghost sm" onClick={onLogout}>로그아웃</button>
         </div>
       </div>
@@ -51,13 +51,28 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         </div>
       </div>
 
+      <section className="algorithm-card" aria-label="전략 알고리즘">
+        <div className="algorithm-card-head">
+          <span className="algo-kicker">LAOR_INFINITE_V2</span>
+          <h2>40분할 무한매수</h2>
+        </div>
+        <p>
+          총 시드를 여러 회차로 나누고, 한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS) 일봉 데이터로 매수·매도 조건을 검증합니다.
+        </p>
+        <div className="algorithm-steps">
+          <span>시가 기준 첫 매수</span>
+          <span>기준가 이하 추가 매수</span>
+          <span>목표가 도달 시 전량 매도</span>
+        </div>
+      </section>
+
       <section className="onboard" aria-label="시작 가이드">
         <h2>시작 가이드</h2>
         <p>라오어 무한매수법을 기준으로 전략을 만들고 실제 과거 가격 백테스트를 실행합니다.</p>
         <ol>
           <li><b>1</b><span>전략을 만들고 종목·예산·분할 회차를 정합니다.</span></li>
-          <li><b>2</b><span>키움 설정에서 App Key와 Secret Key를 저장합니다.</span></li>
-          <li><b>3</b><span>백테스트에서 종목과 기간을 입력해 실제 과거 가격 기준 결과를 확인합니다.</span></li>
+          <li><b>2</b><span>KIS 설정에서 App Key와 App Secret을 저장합니다.</span></li>
+          <li><b>3</b><span>백테스트에서 TQQQ 또는 005930 같은 종목과 기간을 입력해 실제 과거 가격 기준 결과를 확인합니다.</span></li>
           <li><b>4</b><span>필요하면 전략 상세에서 현재가 기준 단일 평가를 확인합니다.</span></li>
         </ol>
       </section>
