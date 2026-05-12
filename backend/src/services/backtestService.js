@@ -40,6 +40,7 @@ function validateInput(input) {
   return {
     symbol,
     market,
+    exchange: input.exchange ? String(input.exchange).trim().toUpperCase() : null,
     currency: market === 'KR' ? 'KRW' : 'USD',
     fromDate,
     toDate,
@@ -119,6 +120,7 @@ export async function createRun(userId, input) {
     // 불안정해도 캐시가 있으면 그대로 백테스트를 진행한다. 일봉은 하루 단위이므로 안전.
     const dailyRows = await getDailyPrices(userId, params.symbol, {
       market: params.market,
+      exchange: params.exchange,
       from: params.fromDate,
       to: params.toDate
     });
@@ -132,6 +134,7 @@ export async function createRun(userId, input) {
         totalBudget: params.totalBudget,
         splitCount: params.splitCount,
         targetProfitRate: params.targetProfitRate,
+        currency: params.currency,
         allowFractionalShares: params.market === 'US',
         restartAfterSell: params.restartAfterSell
       },

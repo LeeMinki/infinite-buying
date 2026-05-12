@@ -7,7 +7,7 @@ import { RiskNotice } from '../components/RiskNotice.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
 import { TradeHistoryTable } from '../components/TradeHistoryTable.jsx';
 
-export function BacktestPage({ onBack }) {
+export function BacktestPage({ onBack, initialStrategy }) {
   const [form, setForm] = useState(createDefaultForm);
   const [runs, setRuns] = useState([]);
   const [selectedRun, setSelectedRun] = useState(null);
@@ -28,6 +28,23 @@ export function BacktestPage({ onBack }) {
     refresh().catch((err) => setError(err.message));
   }, []);
 
+  useEffect(() => {
+    if (!initialStrategy) return;
+    const symbol = initialStrategy.stockCode || initialStrategy.symbol || '';
+    const market = initialStrategy.market || inferMarket(symbol);
+    setForm((current) => ({
+      ...current,
+      symbol,
+      name: initialStrategy.stockName || initialStrategy.symbolName || symbol,
+      market,
+      exchange: initialStrategy.exchange || '',
+      currency: initialStrategy.currency || inferCurrency(market),
+      totalBudget: initialStrategy.totalBudget || current.totalBudget,
+      splitCount: initialStrategy.splitCount || current.splitCount,
+      targetProfitPercent: Number(initialStrategy.targetProfitRate || 0.1) * 100
+    }));
+  }, [initialStrategy]);
+
   async function runBacktest(event) {
     event.preventDefault();
     if (!form.symbol || !form.fromDate || !form.toDate) {
@@ -41,6 +58,7 @@ export function BacktestPage({ onBack }) {
       const run = await createBacktest({
         symbol: form.symbol.toUpperCase(),
         market: form.market,
+        exchange: form.exchange,
         fromDate: form.fromDate,
         toDate: form.toDate,
         totalBudget: Number(form.totalBudget),
@@ -111,10 +129,11 @@ export function BacktestPage({ onBack }) {
                 symbol,
                 name: rawName && rawName !== symbol ? rawName : '',
                 market: stock.market || inferMarket(symbol),
+                exchange: stock.exchange || '',
                 currency: stock.currency || inferCurrency(stock.market || inferMarket(symbol))
               });
             }}
-            onClear={() => setForm({ ...form, name: '', market: inferMarket(form.symbol), currency: inferCurrency(inferMarket(form.symbol)) })}
+            onClear={() => setForm({ ...form, name: '', exchange: '', market: inferMarket(form.symbol), currency: inferCurrency(inferMarket(form.symbol)) })}
           />
           <label><span>시작일</span><input type="date" value={form.fromDate} onChange={(e) => setForm({ ...form, fromDate: e.target.value })} required /></label>
           <label><span>종료일</span><input type="date" value={form.toDate} onChange={(e) => setForm({ ...form, toDate: e.target.value })} required /></label>
@@ -303,7 +322,7 @@ function LaorStrategyGuide() {
         <span className="step-num">1</span>
         <div>
           <h4>분할 회차</h4>
-          <p>총 시드를 분할 회차로 나눕니다. 40분할이면 매 회차 예산은 <b>총 시드 ÷ 40</b>입니다.</p>
+          <p>사이클 시작 시점의 총 시드를 분할 회차로 나눕니다. 40분할이면 매 회차 예산은 <b>현재 사이클 시드 ÷ 40</b>입니다.</p>
           <p className="laor-example">
             예) 총 시드 4,000 USD, 40분할이면 회차당 예산은 100 USD입니다.
           </p>
@@ -344,8 +363,8 @@ function LaorStrategyGuide() {
         <span className="step-num">5</span>
         <div>
           <h4>회차 소진</h4>
-          <p>분할 회차를 모두 썼는데 목표 매도가 나오지 않으면 일부 보유 수량을 종가에 매도해 현금을 확보하고 다음 회차를 이어갑니다.</p>
-          <p className="helper">`매도 후 새 사이클 시작`을 켜면 목표 매도 이후 같은 규칙으로 다시 시작합니다. 끄면 첫 목표 매도에서 종료합니다.</p>
+          <p>분할 회차를 모두 쓰고 현금이 다음 회차 예산보다 적으면, 보유 수량의 4분의 1을 종가에 매도해 다음 매수 자금을 확보합니다. 해외 종목은 소수점 6자리까지, 국내 종목은 최소 1주 단위로 계산합니다.</p>
+          <p className="helper">매도 후 새 사이클 시작을 켜면 목표 매도 이후 늘거나 줄어든 총자산을 다시 분할해 다음 사이클을 시작합니다. 끄면 첫 목표 매도에서 종료합니다.</p>
         </div>
       </div>
 
@@ -393,6 +412,7 @@ function createDefaultForm() {
     symbol: 'TQQQ',
     name: 'TQQQ',
     market: 'US',
+    exchange: 'NAS',
     currency: 'USD',
     fromDate: toDateInputValue(from),
     toDate: toDateInputValue(to),

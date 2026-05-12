@@ -2,6 +2,7 @@ import { encryptSecret } from '../crypto/secretCipher.js';
 import { maskAppKey } from '../crypto/mask.js';
 import * as repository from '../repositories/kisCredentialsRepository.js';
 import { clearTokenCache } from './kisAuthService.js';
+import { clearTokenCache as clearTradingTokenCache } from './kisTokenManager.js';
 
 export function getSettings(userId) {
   return toSafeSettings(repository.getByUserId(userId));
@@ -29,12 +30,14 @@ export function saveSettings(userId, input) {
   });
 
   clearTokenCache(userId);
+  clearTradingTokenCache(userId);
   return toSafeSettings(credential);
 }
 
 export function deleteSettings(userId) {
   repository.deleteByUserId(userId);
   clearTokenCache(userId);
+  clearTradingTokenCache(userId);
 }
 
 export function toSafeSettings(credential) {

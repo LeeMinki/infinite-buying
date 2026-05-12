@@ -3,7 +3,7 @@ import { deleteKisSettings, getKisSettings, saveKisSettings, testKisSettings } f
 
 export function KisSetupPage({ onBack }) {
   const [settings, setSettings] = useState(null);
-  const [form, setForm] = useState({ appKey: '', appSecret: '' });
+  const [form, setForm] = useState({ appKey: '', appSecret: '', accountNumber: '', accountProductCode: '01' });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -26,8 +26,13 @@ export function KisSetupPage({ onBack }) {
     try {
       const result = await saveKisSettings(form);
       setSettings(result);
-      setForm((current) => ({ ...current, appKey: '', appSecret: '' }));
-      setMessage('KIS App Key와 App Secret을 저장했습니다.');
+      setForm((current) => ({
+        ...current,
+        appKey: '',
+        appSecret: '',
+        // 계좌번호/상품코드는 비밀번호 수준이 아니므로 굳이 폼에서 지우지 않음.
+      }));
+      setMessage('KIS 설정을 저장했습니다.');
     } catch (err) {
       setError(err.message);
     }
@@ -90,15 +95,50 @@ export function KisSetupPage({ onBack }) {
           <div className="setup-step">
             <span className="step-badge">3</span>
             <div>
+              <h3>계좌번호 입력 (자동매매 사용 시 필수)</h3>
+              <p>
+                <b>계좌번호</b>는 앞 8자리, <b>계좌상품코드</b>는 뒤 2자리입니다 (예: <code>12345678-01</code>이면 계좌번호 <code>12345678</code>, 상품코드 <code>01</code>).
+                백테스트만 사용하면 이 값은 비워둬도 되지만, <b>자동매매</b>는 잔고/주문 API 호출에 계좌번호와 상품코드가 필수입니다.
+              </p>
+              <p className="helper">
+                일반 위탁계좌의 상품코드는 보통 <code>01</code>입니다. KIS HTS [0301] 계좌조회 화면에서 정확한 값을 확인할 수 있습니다.
+              </p>
+            </div>
+          </div>
+          <div className="setup-step">
+            <span className="step-badge">4</span>
+            <div>
               <h3>저장 후 연결 테스트</h3>
               <p>연결 테스트는 저장된 App Key와 App Secret으로 KIS access token 발급 가능 여부만 확인합니다.</p>
             </div>
           </div>
         </div>
 
+        <div className="setup-guidance" role="note" style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+          <h3>해외주식(TQQQ, SOXL 등)을 자동매매하려면</h3>
+          <p>
+            KIS는 매수 시점에 자동 환전을 해주지 않습니다. 옵션은 둘 중 하나입니다.
+          </p>
+          <ol>
+            <li>
+              <b>주식통합증거금 신청 (권장)</b> — KIS HTS <code>[0867] 통합증거금조회</code> 또는 KIS 영업점에서 신청하면 KRW 잔고가 환율 적용된 USD 매수가능금액으로 가상 환산됩니다.
+              자동매매가 매수가능금액 조회 시 <code>frcr_ord_psbl_amt1</code> (환전 후 USD 매수가능금액)을 받아 자동으로 KRW 자산을 사용합니다.
+            </li>
+            <li>
+              <b>수동 환전</b> — KIS HTS/MTS에서 KRW → USD 환전 후 USD 잔고로 매수.
+              통합증거금 미신청 계좌는 USD 잔고만 매수에 사용됩니다.
+            </li>
+          </ol>
+          <p className="helper">
+            전략의 총 예산은 종목 통화 기준으로 입력합니다. TQQQ 전략의 총 예산 1,000은 <b>1,000 USD</b>이고 백테스트·자동매매 결과 평가도 USD로 표시됩니다.
+            환율 변동에 따른 KRW 환산 평가는 KIS 잔고조회 응답의 환율 필드(<code>exrt</code>)로 별도 확인할 수 있습니다.
+          </p>
+        </div>
+
         <div className="settings-summary">
           <span>상태: <b>{settings?.status || '미설정'}</b></span>
           <span>App Key: <b>{settings?.appKeyMasked || '미등록'}</b></span>
+          <span>계좌: <b>{settings?.accountConfigured ? '등록됨' : '미등록'}</b></span>
         </div>
 
         <form className="setup-form" onSubmit={save}>
@@ -123,6 +163,30 @@ export function KisSetupPage({ onBack }) {
               required
             />
             <small className="helper">저장 후에는 보안을 위해 App Secret 원문을 다시 보여주지 않습니다.</small>
+          </label>
+          <label>
+            <span>계좌번호 (CANO, 앞 8자리) <small className="helper" style={{ fontWeight: 'normal' }}>자동매매 사용 시 필수</small></span>
+            <input
+              value={form.accountNumber}
+              onChange={(e) => update('accountNumber', e.target.value.replace(/[^0-9]/g, ''))}
+              autoComplete="off"
+              placeholder="예: 12345678"
+              maxLength={8}
+              inputMode="numeric"
+            />
+            <small className="helper">백테스트만 사용하면 비워둬도 됩니다. 저장 후 화면에 다시 표시되지 않으며 암호화되어 저장됩니다.</small>
+          </label>
+          <label>
+            <span>계좌상품코드 (ACNT_PRDT_CD, 뒤 2자리)</span>
+            <input
+              value={form.accountProductCode}
+              onChange={(e) => update('accountProductCode', e.target.value.replace(/[^0-9]/g, ''))}
+              autoComplete="off"
+              placeholder="예: 01"
+              maxLength={2}
+              inputMode="numeric"
+            />
+            <small className="helper">일반 위탁계좌는 보통 <code>01</code>. KIS HTS [0301] 화면에서 확인 가능.</small>
           </label>
           <div className="button-row">
             <button className="primary" type="submit">저장</button>

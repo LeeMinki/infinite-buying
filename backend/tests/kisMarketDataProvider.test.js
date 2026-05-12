@@ -75,6 +75,41 @@ test('KIS provider normalizes daily candle response', async () => {
   });
 });
 
+test('KIS provider falls back across US exchanges for daily candles', async () => {
+  const exchanges = [];
+  await withMockedFetch(async (url) => {
+    const text = String(url);
+    if (text.endsWith('/oauth2/tokenP')) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok-market-fallback', expires_in: 3600 }) };
+    }
+    assert.ok(text.includes('/uapi/overseas-price/v1/quotations/dailyprice'));
+    const parsed = new URL(text);
+    const exchange = parsed.searchParams.get('EXCD');
+    exchanges.push(exchange);
+    if (exchange !== 'AMS') {
+      return { ok: true, status: 200, json: async () => ({ rt_cd: '0', output2: [] }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        rt_cd: '0',
+        output2: [
+          { xymd: '20260102', open: '10', high: '12', low: '9', clos: '11', tvol: '1000' }
+        ]
+      })
+    };
+  }, async () => {
+    const provider = new KisMarketDataProvider(alice.id);
+    const rows = await provider.getDailyPrices('SOXL', { to: '2026-01-02' });
+    assert.deepEqual(exchanges, ['NAS', 'NYS', 'AMS']);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].symbol, 'SOXL');
+    assert.equal(rows[0].exchange, 'AMS');
+    assert.equal(rows[0].close, 11);
+  });
+});
+
 test('KIS provider normalizes KR current price response', async () => {
   await withMockedFetch(async (url) => {
     const text = String(url);

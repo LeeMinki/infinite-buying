@@ -2,7 +2,7 @@ import React from 'react';
 import { createStrategy, deleteStrategy } from '../api/client.js';
 import { StrategyForm } from '../components/StrategyForm.jsx';
 
-export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKis, onOpenBacktest, user, onLogout }) {
+export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKis, onOpenBacktest, onOpenAutoTrading, user, onLogout }) {
   async function create(payload) {
     const strategy = await createStrategy(payload);
     await onChanged(strategy.id);
@@ -38,6 +38,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         <span>{user?.email}</span>
         <div className="button-row compact">
           <button type="button" className="sm" onClick={onOpenBacktest}>백테스트</button>
+          <button type="button" className="sm" onClick={onOpenAutoTrading}>자동매매</button>
           <button type="button" className="sm" onClick={onOpenKis}>KIS 설정</button>
           <button type="button" className="ghost sm" onClick={onLogout}>로그아웃</button>
         </div>
@@ -46,8 +47,8 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
       <div className="disclaimer" role="note">
         <div className="dot" aria-hidden="true" />
         <div>
-          <b>실제 주문은 발생하지 않습니다.</b><br />
-          모든 매수·매도는 앱 안의 <b>가상 주문</b>으로만 기록됩니다.
+          <b>실주문은 별도 설정으로 제어합니다.</b><br />
+          자동매매 화면에서 기록 모드일 때는 주문을 전송하지 않고 모의 주문 기록만 남깁니다.
         </div>
       </div>
 
@@ -68,17 +69,17 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
 
       <section className="onboard" aria-label="시작 가이드">
         <h2>시작 가이드</h2>
-        <p>라오어 무한매수법을 기준으로 전략을 만들고 실제 과거 가격 백테스트를 실행합니다.</p>
+        <p>공통 전략 초안을 만들고, 같은 설정을 백테스트와 자동매매로 가져가 검증하거나 실행합니다.</p>
         <ol>
-          <li><b>1</b><span>전략을 만들고 종목·예산·분할 회차를 정합니다.</span></li>
+          <li><b>1</b><span>공통 전략 초안에서 종목·예산·분할 회차를 정합니다.</span></li>
           <li><b>2</b><span>KIS 설정에서 App Key와 App Secret을 저장합니다.</span></li>
-          <li><b>3</b><span>백테스트에서 TQQQ 또는 005930 같은 종목과 기간을 입력해 실제 과거 가격 기준 결과를 확인합니다.</span></li>
-          <li><b>4</b><span>필요하면 전략 상세에서 현재가 기준 단일 평가를 확인합니다.</span></li>
+          <li><b>3</b><span>전략 상세의 백테스트 버튼으로 같은 설정을 가져가 과거 가격 기준 결과를 확인합니다.</span></li>
+          <li><b>4</b><span>자동매매 전략 만들기 버튼으로 같은 설정을 가져가 실행 전략을 생성합니다.</span></li>
         </ol>
       </section>
 
       <div className="sidebar-section">
-        <h4>새 전략 만들기</h4>
+        <h4>공통 전략 초안 만들기</h4>
         <StrategyForm onSubmit={create} />
       </div>
 

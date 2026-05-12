@@ -25,14 +25,14 @@ Backend and frontend commands are run from their own package directories after i
 JavaScript on Node.js 22+; React 19-compatible frontend: Follow standard conventions
 
 ## Recent Changes
+- 005-kis-auto-trading: Added JavaScript on Node.js 22+ backend; React 19-compatible JavaScript frontend + Express, better-sqlite3, dotenv, cors, bcrypt, express-session, built-in fetch, node:crypto, Vite, React, Recharts
 - KIS Open API is the single read-only market data integration.
 - Backtests use user-scoped KIS daily prices. Domestic symbols use KRW and overseas symbols use their KIS response currency, normally USD for US ETFs.
-- User authentication, per-user credentials, per-user market cache, and per-user backtest results are required.
 
 <!-- MANUAL ADDITIONS START -->
 - Do not push directly to `main`; use a feature branch, detailed pull request, review, then merge.
 - Use Linux line endings only (`LF`), never Windows `CRLF`.
-- This app must not implement or call real broker order APIs. KIS integration is read-only market data for price and daily chart retrieval unless a later explicitly approved LIVE-order spec changes this.
-- For KIS REST API details, use the local Excel reference in `KIS/` first. Current reference file: `KIS/한국투자증권_오픈API_전체문서_20260512_030000.xlsx`.
+- KIS integration must use the local Excel reference in `KIS/` first. Current reference file: `KIS/한국투자증권_오픈API_전체문서_20260512_030000.xlsx`.
 - Pull request descriptions must be written in Korean.
+- Real broker orders are only allowed for explicitly approved live-order specs. For 005 and later auto-trading work, live order execution must default to disabled, require the user's `liveOrderEnabled=true` setting, pass safety guards, and never expose raw App Secret, access token, or account number.
 <!-- MANUAL ADDITIONS END -->

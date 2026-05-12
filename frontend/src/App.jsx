@@ -10,6 +10,7 @@ const StrategiesPage = lazy(() => import('./pages/StrategiesPage.jsx').then((mod
 const StrategyDetailPage = lazy(() => import('./pages/StrategyDetailPage.jsx').then((module) => ({ default: module.StrategyDetailPage })));
 const KisSetupPage = lazy(() => import('./pages/KisSetupPage.jsx').then((module) => ({ default: module.KisSetupPage })));
 const BacktestPage = lazy(() => import('./pages/BacktestPage.jsx').then((module) => ({ default: module.BacktestPage })));
+const AutoTradingPage = lazy(() => import('./pages/AutoTradingPage.jsx').then((module) => ({ default: module.AutoTradingPage })));
 
 function isNarrow() {
   return typeof window !== 'undefined' && window.matchMedia(NARROW_QUERY).matches;
@@ -37,6 +38,7 @@ function AuthenticatedApp() {
   const [selectedId, setSelectedId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
   const [view, setViewState] = useState('strategies');
+  const [strategySeed, setStrategySeed] = useState(null);
 
   function setView(nextView) {
     if (nextView === view) return;
@@ -110,6 +112,16 @@ function AuthenticatedApp() {
     if (isNarrow()) setSidebar(false);
   }
 
+  function openBacktest(strategy = null) {
+    setStrategySeed(strategy);
+    setView('backtest');
+  }
+
+  function openAutoTrading(strategy = null) {
+    setStrategySeed(strategy);
+    setView('auto-trading');
+  }
+
   if (auth.loading) {
     return <section className="auth-screen"><div className="auth-panel">로딩 중...</div></section>;
   }
@@ -131,7 +143,15 @@ function AuthenticatedApp() {
   if (view === 'backtest') {
     return (
       <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
-        <BacktestPage onBack={() => setView('strategies')} />
+        <BacktestPage onBack={() => setView('strategies')} initialStrategy={strategySeed} />
+      </Suspense>
+    );
+  }
+
+  if (view === 'auto-trading') {
+    return (
+      <Suspense fallback={<section className="auth-screen"><div className="auth-panel">화면 준비 중...</div></section>}>
+        <AutoTradingPage onBack={() => setView('strategies')} initialStrategy={strategySeed} />
       </Suspense>
     );
   }
@@ -160,11 +180,17 @@ function AuthenticatedApp() {
           onChanged={refreshStrategies}
           onClose={() => setSidebar(false)}
           onOpenKis={() => setView('kis')}
-          onOpenBacktest={() => setView('backtest')}
+          onOpenBacktest={() => openBacktest()}
+          onOpenAutoTrading={() => openAutoTrading()}
           user={auth.user}
           onLogout={auth.logout}
         />
-        <StrategyDetailPage strategyId={selectedId} onChanged={refreshStrategies} />
+        <StrategyDetailPage
+          strategyId={selectedId}
+          onChanged={refreshStrategies}
+          onOpenBacktest={openBacktest}
+          onOpenAutoTrading={openAutoTrading}
+        />
       </main>
     </Suspense>
   );

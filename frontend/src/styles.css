@@ -735,6 +735,37 @@ tbody tr:last-child td {
   font-weight: 500;
 }
 
+.strategy-bridge {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding: 14px;
+}
+
+.strategy-bridge h3 {
+  color: var(--text-strong);
+  font-size: 14px;
+  margin: 0 0 4px;
+}
+
+.strategy-bridge p {
+  color: var(--text-soft);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+.strategy-bridge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .muted {
   color: var(--text-muted);
 }
@@ -1531,6 +1562,18 @@ button.danger-button:hover:not(:disabled) {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* 종목 검색은 보조 안내가 길어서 폼 전체 가로폭을 쓰는 게 자연스럽다. */
+.mode-form .stock-search-field {
+  grid-column: 1 / -1;
+}
+
+/* 제출 버튼은 마지막에 한 줄 차지하도록 정렬한다. */
+.mode-form > button[type="submit"] {
+  grid-column: 1 / -1;
+  justify-self: end;
+  min-width: 160px;
+}
+
 .mode-form button,
 .mode-form .checkbox-field {
   align-self: end;
@@ -1930,14 +1973,248 @@ button.danger-button:hover:not(:disabled) {
   color: #991b1b;
 }
 
+.live-toggle-panel {
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 18px;
+}
+
+.live-toggle-panel h2 {
+  color: var(--text-strong);
+  font-size: 20px;
+  margin: 4px 0 6px;
+}
+
+.live-toggle-panel p {
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.live-toggle-panel.dry {
+  background: #f8fafc;
+}
+
+.live-toggle-panel.live {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.account-summary-panel {
+  margin-bottom: 18px;
+}
+
+.account-summary-panel.warning {
+  background: var(--warning-soft);
+  border-color: #fed7aa;
+}
+
+/* (deprecated) 자동매매 페이지는 더 이상 2단 grid 로 좌우 분할하지 않는다.
+   전략 목록은 `.strategy-chip-list` 로 페이지 가로폭 위에 깔리고,
+   전략 상세는 일반 panel section 처럼 전체 폭을 사용한다. */
+
+/* 자동매매 전략 목록: 가로로 늘어선 카드(칩) 그룹. 전략 상세 패널이 같은 페이지 폭을 그대로 사용할 수 있게
+   목록은 페이지 위에서 가로로 깔린다. 좁은 화면에서는 자연스럽게 줄바꿈된다. */
+.strategy-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.strategy-chip {
+  align-items: stretch;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  min-width: 220px;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.strategy-chip:hover {
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.strategy-chip.active {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.18);
+}
+
+.strategy-chip-body {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  font: inherit;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.strategy-chip-body:hover {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.strategy-chip.active .strategy-chip-body {
+  background: rgba(29, 78, 216, 0.08);
+}
+
+.strategy-chip-symbol {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.strategy-chip-symbol strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.strategy-chip-sub {
+  color: var(--text-soft);
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.strategy-chip-delete {
+  align-self: center;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  margin-right: 8px;
+  padding: 4px 10px;
+}
+
+.foreign-currency-guide {
+  background: #fffbeb;
+  border-left: 4px solid #f59e0b;
+}
+
+.foreign-currency-guide .foreign-currency-body {
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.foreign-currency-guide ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.foreign-currency-guide ol li {
+  margin-bottom: 6px;
+}
+
+td.positive {
+  color: #166534;
+  font-weight: 600;
+}
+
+td.neutral {
+  color: var(--text-soft);
+}
+
+.budget-hint {
+  margin-top: 4px;
+}
+
+.budget-hint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.budget-hint-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.foreign-currency-guide .helper {
+  color: var(--text-soft);
+  font-size: 12.5px;
+  margin-top: 8px;
+}
+
+.subsection {
+  border-top: 1px solid var(--border);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.subsection h4 {
+  color: var(--text-strong);
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.compact-grid {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.auto-action-row {
+  align-items: stretch;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.auto-action-row button {
+  min-width: 0;
+  width: 100%;
+}
+
+.auto-log-note {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+}
+
 @media (max-width: 900px) {
   .mode-card-grid,
   .status-grid,
-  .mode-form {
+  .mode-form,
+  .compact-grid {
     grid-template-columns: 1fr;
   }
 
   .page-header {
     flex-direction: column;
+  }
+
+  .live-toggle-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .auto-action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-bridge {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .strategy-bridge-actions {
+    justify-content: stretch;
+  }
+
+  .strategy-bridge-actions button {
+    width: 100%;
   }
 }
