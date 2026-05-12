@@ -3,10 +3,9 @@ import cors from 'cors';
 import { env } from './config/env.js';
 import { createSessionMiddleware } from './auth/sessionStore.js';
 import authRoutes from './routes/authRoutes.js';
-import kiwoomSettingsRoutes from './routes/kiwoomSettingsRoutes.js';
+import kisSettingsRoutes from './routes/kisSettingsRoutes.js';
 import strategiesRoutes from './routes/strategiesRoutes.js';
 import marketRoutes from './routes/marketRoutes.js';
-import accountRoutes from './routes/accountRoutes.js';
 import ordersRoutes from './routes/ordersRoutes.js';
 import backtestRoutes from './routes/backtestRoutes.js';
 
@@ -24,10 +23,9 @@ export function createApp() {
   });
 
   app.use('/api/auth', authRoutes);
-  app.use('/api/settings/kiwoom', kiwoomSettingsRoutes);
+  app.use('/api/settings/kis', kisSettingsRoutes);
   app.use('/api/strategies', strategiesRoutes);
   app.use('/api/market', marketRoutes);
-  app.use('/api/account', accountRoutes);
   app.use('/api/orders', ordersRoutes);
   app.use('/api/backtests', backtestRoutes);
 

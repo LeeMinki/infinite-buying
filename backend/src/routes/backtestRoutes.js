@@ -5,9 +5,9 @@ import * as backtestService from '../services/backtestService.js';
 const router = Router();
 router.use(requireAuth);
 
-router.post('/', (req, res, next) => {
+router.post('/', async (req, res, next) => {
   try {
-    res.status(201).json(backtestService.createRun(req.userId, req.body));
+    res.status(201).json(await backtestService.createRun(req.userId, req.body));
   } catch (error) {
     next(error);
   }

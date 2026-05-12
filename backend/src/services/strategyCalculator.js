@@ -57,7 +57,7 @@ export function evaluateStrategy({ strategy, holding, currentPrice }) {
       quantity: 0,
       amount: 0,
       roundNo: strategy.currentRound,
-      reason: '회차 예산으로 1주를 매수할 수 없습니다.'
+      reason: '회차 예산으로 매수할 수 없습니다.'
     };
   }
 

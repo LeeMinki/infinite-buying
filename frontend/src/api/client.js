@@ -57,18 +57,24 @@ export const evaluateStrategy = (id, currentPrice) => request(`/api/strategies/$
   method: 'POST',
   body: JSON.stringify({ currentPrice })
 });
-export const getCurrentPrice = (stockCode) => request(`/api/market/${stockCode}/price`);
-export const getDailyPrices = (stockCode, options = {}) => {
+export const searchStocks = (query) => request(`/api/market/stocks/search?q=${encodeURIComponent(query)}`);
+export const getCurrentPrice = (symbol, options = {}) => {
+  const market = normalizeMarket(options.market, symbol);
   const params = new URLSearchParams();
+  if (options.exchange) params.set('exchange', options.exchange);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return request(`/api/market/${market}/${symbol}/price${suffix}`);
+};
+export const getDailyPrices = (symbol, options = {}) => {
+  const market = normalizeMarket(options.market, symbol);
+  const params = new URLSearchParams();
+  if (options.exchange) params.set('exchange', options.exchange);
   if (options.from) params.set('from', options.from);
   if (options.to) params.set('to', options.to);
-  if (options.requireReal) params.set('requireReal', 'true');
   if (options.refresh) params.set('refresh', 'true');
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return request(`/api/market/${stockCode}/daily${suffix}`);
+  return request(`/api/market/${market}/${symbol}/daily${suffix}`);
 };
-export const searchStocks = (query) => request(`/api/market/stocks/search?q=${encodeURIComponent(query)}`);
-export const getAccountDeposit = () => request('/api/account/deposit');
 export const listOrders = (id) => request(`/api/strategies/${id}/orders`);
 export const listLogs = (id) => request(`/api/strategies/${id}/logs`);
 export const fillOrder = (id) => request(`/api/orders/${id}/fill`, { method: 'POST' });
@@ -77,13 +83,20 @@ export const register = (payload) => request('/api/auth/register', { method: 'PO
 export const login = (payload) => request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) });
 export const logout = () => request('/api/auth/logout', { method: 'POST' });
 export const getMe = () => request('/api/auth/me');
-export const getKiwoomSettings = () => request('/api/settings/kiwoom');
-export const saveKiwoomSettings = (payload) => request('/api/settings/kiwoom', { method: 'POST', body: JSON.stringify(payload) });
-export const deleteKiwoomSettings = () => request('/api/settings/kiwoom', { method: 'DELETE' });
-export const testKiwoomSettings = () => request('/api/settings/kiwoom/test', { method: 'POST' });
+export const getKisSettings = () => request('/api/settings/kis');
+export const saveKisSettings = (payload) => request('/api/settings/kis', { method: 'POST', body: JSON.stringify(payload) });
+export const deleteKisSettings = () => request('/api/settings/kis', { method: 'DELETE' });
+export const testKisSettings = () => request('/api/settings/kis/test', { method: 'POST' });
 
 export const listBacktests = () => request('/api/backtests');
 export const createBacktest = (payload) => request('/api/backtests', { method: 'POST', body: JSON.stringify(payload) });
 export const getBacktest = (id) => request(`/api/backtests/${id}`);
 export const listBacktestTrades = (id) => request(`/api/backtests/${id}/trades`);
 export const deleteBacktest = (id) => request(`/api/backtests/${id}`, { method: 'DELETE' });
+
+function normalizeMarket(value, symbol) {
+  const market = String(value || '').trim().toUpperCase();
+  if (market === 'KR' || market === 'KOSPI' || market === 'KOSDAQ') return 'KR';
+  if (market === 'US') return 'US';
+  return /^\d{6}$/.test(String(symbol || '')) ? 'KR' : 'US';
+}

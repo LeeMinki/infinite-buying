@@ -7,7 +7,7 @@ const SIDE_LABEL = {
   COMPLETED: '완료'
 };
 
-export function TradeHistoryTable({ trades = [], title = '거래 이력' }) {
+export function TradeHistoryTable({ trades = [], title = '거래 이력', currency = 'KRW' }) {
   return (
     <section className="panel section">
       <div className="panel-heading">
@@ -26,6 +26,8 @@ export function TradeHistoryTable({ trades = [], title = '거래 이력' }) {
               <th>가격</th>
               <th>수량</th>
               <th>총자산</th>
+              <th>보유 현금</th>
+              <th>보유 주식</th>
               <th>사유</th>
             </tr>
           </thead>
@@ -34,15 +36,17 @@ export function TradeHistoryTable({ trades = [], title = '거래 이력' }) {
               <tr key={trade.id}>
                 <td className="muted">{trade.tradeDate || formatDate(trade.createdAt)}</td>
                 <td><span className={`decision compact ${String(trade.side || '').toLowerCase()}`}>{SIDE_LABEL[trade.side] || trade.side}</span></td>
-                <td>{formatWon(trade.price)}</td>
-                <td>{Number(trade.quantity || 0).toLocaleString('ko-KR')}</td>
-                <td>{formatWon(trade.totalAsset)}</td>
-                <td className="muted">{trade.reason}</td>
+                <td>{formatMoney(trade.price, currency)}</td>
+                <td>{formatShares(trade.quantity)}</td>
+                <td>{formatMoney(trade.totalAsset, currency)}</td>
+                <td>{formatMoney(trade.cash, currency)}</td>
+                <td>{formatShares(trade.holdingQuantity)}주</td>
+                <td className="muted reason-cell">{trade.reason}</td>
               </tr>
             ))}
             {trades.length === 0 && (
               <tr>
-                <td className="empty-row" colSpan="6">아직 거래 이력이 없습니다.</td>
+                <td className="empty-row" colSpan="8">아직 거래 이력이 없습니다.</td>
               </tr>
             )}
           </tbody>
@@ -52,8 +56,17 @@ export function TradeHistoryTable({ trades = [], title = '거래 이력' }) {
   );
 }
 
-function formatWon(value) {
-  return `${Math.round(Number(value || 0)).toLocaleString('ko-KR')}원`;
+function formatMoney(value, currency) {
+  if (currency === 'USD') {
+    return `${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} USD`;
+  }
+  return `${Math.round(Number(value || 0)).toLocaleString('ko-KR')} KRW`;
+}
+
+function formatShares(value) {
+  const n = Number(value || 0);
+  if (n === 0) return '0';
+  return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
 }
 
 function formatDate(value) {

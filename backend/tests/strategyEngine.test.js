@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { evaluate, initialState } from '../src/services/strategyEngine.js';
+import { evaluateDay, initialState } from '../src/services/strategyEngine.js';
 import { TradingMode, Decision } from '../src/domain/tradingMode.js';
 
 const params = {
@@ -10,231 +10,250 @@ const params = {
   restartAfterSell: false
 };
 
-test('first BUY uses base round quantity (totalBudget/splitCount/price)', () => {
-  const result = evaluate({
+test('첫 매수: 평단가 없으니 시가에 floor(T/시가)주 매수', () => {
+  // T = 4_000_000 / 40 = 100_000. 시가 50_000 → 2주.
+  const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 50000,
+    ohlc: { open: 50000, high: 51000, low: 49000, close: 50500 },
+    prevClose: null,
     params,
-    state: initialState(params)
+    state: initialState(params),
+    tradeDate: '2026-01-02'
   });
-  assert.equal(result.decision, Decision.BUY);
-  assert.equal(result.quantity, 2);
-  assert.equal(result.amount, 100000);
-  assert.equal(result.nextState.cash, 3900000);
-  assert.equal(result.nextState.holdingQuantity, 2);
-  assert.equal(result.nextState.averagePrice, 50000);
-  assert.equal(result.nextState.currentRound, 2);
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].decision, Decision.BUY);
+  assert.equal(decisions[0].quantity, 2);
+  assert.equal(decisions[0].price, 50000);
+  assert.equal(decisions[0].reason.includes('첫 매수'), true);
+  assert.equal(nextState.holdingQuantity, 2);
+  assert.equal(nextState.currentRound, 1);
 });
 
-test('SELL fires when target profit reached and resets holdings', () => {
+test('큰수 LOC만 체결되는 날 (전일종가 이하, 평단가 × 0.95 위)', () => {
+  // 평단가 50_000, 전일 종가 50_000. bigPrice = 50_000, smallPrice = 47_500.
+  // 종가 49_500 → 큰수만 체결.
   const state = {
-    cash: 3900000,
-    holdingQuantity: 2,
-    averagePrice: 50000,
-    investedAmount: 100000,
-    realizedProfit: 0,
-    currentRound: 2,
-    completed: false
+    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
   };
-  const result = evaluate({
+  const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 56000,
+    ohlc: { open: 49800, high: 50000, low: 49000, close: 49500 },
+    prevClose: 50000,
     params,
-    state
+    state,
+    tradeDate: '2026-01-03'
   });
-  assert.equal(result.decision, Decision.SELL);
-  assert.equal(result.quantity, 2);
-  assert.equal(result.amount, 112000);
-  assert.equal(result.nextState.holdingQuantity, 0);
-  assert.equal(result.nextState.averagePrice, 0);
-  assert.equal(result.nextState.realizedProfit, 12000);
-  assert.equal(result.nextState.completed, true);
+  const buys = decisions.filter((d) => d.decision === Decision.BUY);
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].reason.includes('매수:'), true);
+  // half = 50_000, qty = floor(50_000 / 49_500) = 1.
+  assert.equal(buys[0].quantity, 1);
 });
 
-test('SELL with restartAfterSell=true keeps run active and resets round to 1', () => {
+test('큰 하락일: 큰수 + 작은수 둘 다 체결', () => {
+  // 평단가 50_000, 전일 종가 50_000. smallPrice = 47_500.
+  // 종가 47_000 → 둘 다 체결.
   const state = {
-    cash: 3900000,
-    holdingQuantity: 2,
-    averagePrice: 50000,
-    investedAmount: 100000,
-    realizedProfit: 0,
-    currentRound: 5,
-    completed: false
+    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
   };
-  const result = evaluate({
+  const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 56000,
+    ohlc: { open: 48000, high: 49000, low: 46500, close: 47000 },
+    prevClose: 50000,
+    params,
+    state,
+    tradeDate: '2026-01-04'
+  });
+  const buys = decisions.filter((d) => d.decision === Decision.BUY);
+  assert.equal(buys.length, 2);
+  assert.equal(buys[0].reason.includes('매수:'), true);
+  assert.equal(buys[1].reason.includes('추가 매수'), true);
+  // 둘 다 같은 가격 (종가 47_000)에 체결.
+  assert.equal(buys[0].price, 47000);
+  assert.equal(buys[1].price, 47000);
+});
+
+test('상승일: 둘 다 한도 초과 → HOLD', () => {
+  const state = {
+    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
+  };
+  const { decisions, nextState } = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 51000, high: 52000, low: 50500, close: 51500 },
+    prevClose: 50000,
+    params,
+    state,
+    tradeDate: '2026-01-05'
+  });
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].decision, Decision.HOLD);
+  assert.equal(decisions[0].reason.includes('관망'), true);
+  assert.equal(nextState.currentRound, 1);
+});
+
+test('익절 매도: 장중 고가 ≥ 평단가 × (1+목표) → 한도가에 전량 매도', () => {
+  // 평단가 50_000, 목표 10% → 한도 55_000. 고가 56_000 → 체결.
+  const state = {
+    cash: 3000000, holdingQuantity: 20, averagePrice: 50000,
+    investedAmount: 1000000, realizedProfit: 0, currentRound: 5, completed: false
+  };
+  const { decisions, nextState } = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 54000, high: 56000, low: 53500, close: 55200 },
+    prevClose: 53000,
+    params,
+    state,
+    tradeDate: '2026-01-15'
+  });
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].decision, Decision.SELL);
+  assert.equal(decisions[0].quantity, 20);
+  assert.ok(Math.abs(decisions[0].price - 55000) < 1e-6);
+  assert.equal(nextState.holdingQuantity, 0);
+  assert.equal(nextState.completed, true);
+});
+
+test('익절 + restartAfterSell=true → 사이클 재시작 (round=0)', () => {
+  const state = {
+    cash: 3000000, holdingQuantity: 20, averagePrice: 50000,
+    investedAmount: 1000000, realizedProfit: 0, currentRound: 5, completed: false
+  };
+  const { nextState } = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 54000, high: 56000, low: 53500, close: 55200 },
+    prevClose: 53000,
     params: { ...params, restartAfterSell: true },
-    state
+    state,
+    tradeDate: '2026-01-15'
   });
-  assert.equal(result.decision, Decision.SELL);
-  assert.equal(result.nextState.completed, false);
-  assert.equal(result.nextState.currentRound, 1);
+  assert.equal(nextState.completed, false);
+  assert.equal(nextState.currentRound, 0);
 });
 
-test('cheap day (price < avg) BUYs double the base quantity', () => {
+test('40회차 소진 + 현금 부족 → 보유 1/4 매도 (시드 재확보)', () => {
+  // 보유 80주, currentRound=40, 현금 50_000 (T=100_000보다 적음).
   const state = {
-    cash: 3900000,
-    holdingQuantity: 2,
-    averagePrice: 50000,
-    investedAmount: 100000,
-    realizedProfit: 0,
-    currentRound: 2,
-    completed: false
+    cash: 50000, holdingQuantity: 80, averagePrice: 50000,
+    investedAmount: 4000000, realizedProfit: 0, currentRound: 40, completed: false
   };
-  const result = evaluate({
+  const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 40000,
+    ohlc: { open: 49000, high: 50000, low: 48000, close: 49000 },
+    prevClose: 49500,
     params,
-    state
+    state,
+    tradeDate: '2026-02-15'
   });
-  assert.equal(result.decision, Decision.BUY);
-  assert.equal(result.quantity, 4);
-  assert.equal(result.amount, 160000);
-  assert.equal(result.nextState.holdingQuantity, 6);
-  assert.equal(result.nextState.investedAmount, 260000);
-  assert.ok(Math.abs(result.nextState.averagePrice - 260000 / 6) < 1e-9);
-  assert.match(result.reason, /2배 수량/);
+  assert.equal(decisions[0].decision, Decision.SELL);
+  // ceil(80/4) = 20
+  assert.equal(decisions[0].quantity, 20);
+  assert.equal(decisions[0].price, 49000);
+  assert.equal(decisions[0].reason.includes('현금 확보'), true);
+  assert.equal(nextState.holdingQuantity, 60);
+  assert.equal(nextState.averagePrice, 50000);
+  assert.equal(nextState.currentRound, 0);
 });
 
-test('expensive day (price >= avg) BUYs roughly half the base quantity (floor with min 1)', () => {
+test('40회차 소진 + 보유 0 → COMPLETED', () => {
   const state = {
-    cash: 3900000,
-    holdingQuantity: 4,
-    averagePrice: 40000,
-    investedAmount: 160000,
-    realizedProfit: 0,
-    currentRound: 5,
-    completed: false
+    cash: 100000, holdingQuantity: 0, averagePrice: 0,
+    investedAmount: 0, realizedProfit: 0, currentRound: 40, completed: false
   };
-  const result = evaluate({
+  const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 42000,
+    ohlc: { open: 49000, high: 50000, low: 48000, close: 49000 },
+    prevClose: 49500,
     params,
-    state
+    state,
+    tradeDate: '2026-02-15'
   });
-  assert.equal(result.decision, Decision.BUY);
-  // baseQty = floor(100000/42000) = 2 → half = 1
-  assert.equal(result.quantity, 1);
-  assert.equal(result.amount, 42000);
-  assert.match(result.reason, /절반 수량/);
+  assert.equal(decisions[0].decision, Decision.COMPLETED);
+  assert.equal(nextState.completed, true);
 });
 
-test('HOLD when per-round budget cannot buy a single share', () => {
-  const result = evaluate({
+test('1주도 못 사는 가격: 회차 예산 < 1주 가격 → HOLD with 안내', () => {
+  // T = 4_000_000 / 40 = 100_000. 시가 150_000 → floor(100_000/150_000) = 0.
+  const { decisions } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 200000,
+    ohlc: { open: 150000, high: 151000, low: 149000, close: 150500 },
+    prevClose: null,
     params,
-    state: initialState(params)
+    state: initialState(params),
+    tradeDate: '2026-01-02'
   });
-  assert.equal(result.decision, Decision.HOLD);
-  assert.match(result.reason, /1주를 매수할 수 없/);
+  assert.equal(decisions[0].decision, Decision.HOLD);
+  assert.equal(decisions[0].reason.includes('매수할 수 없습니다'), true);
 });
 
-test('after splitCount rounds completed, sells 1/4 of holdings to refresh seed', () => {
+test('국내/정수주 모드: quantity는 항상 정수', () => {
   const state = {
-    cash: 0,
-    holdingQuantity: 8,
-    averagePrice: 50000,
-    investedAmount: 400000,
-    realizedProfit: 0,
-    currentRound: 41,
-    completed: false
+    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
   };
-  const result = evaluate({
+  const { decisions } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    price: 49000,
+    ohlc: { open: 48000, high: 49000, low: 46500, close: 47000 },
+    prevClose: 50000,
     params,
-    state
+    state,
+    tradeDate: '2026-01-04'
   });
-  assert.equal(result.decision, Decision.SELL);
-  assert.equal(result.quantity, 2);
-  assert.equal(result.amount, 98000);
-  assert.equal(result.nextState.holdingQuantity, 6);
-  assert.equal(result.nextState.averagePrice, 50000);
-  assert.equal(result.nextState.cash, 98000);
-  assert.equal(result.nextState.currentRound, 1);
-  assert.equal(result.nextState.completed, false);
-  assert.match(result.reason, /1\/4|시드 재확보/);
-});
-
-test('COMPLETED when max round exhausted and no holdings', () => {
-  const state = {
-    cash: 0,
-    holdingQuantity: 0,
-    averagePrice: 0,
-    investedAmount: 0,
-    realizedProfit: 0,
-    currentRound: 41,
-    completed: false
-  };
-  const result = evaluate({
-    mode: TradingMode.BACKTEST,
-    price: 49000,
-    params,
-    state
-  });
-  assert.equal(result.decision, Decision.COMPLETED);
-  assert.equal(result.nextState.completed, true);
-});
-
-test('rejects non-positive price', () => {
-  assert.throws(() => evaluate({
-    mode: TradingMode.BACKTEST,
-    price: 0,
-    params,
-    state: initialState(params)
-  }));
-});
-
-test('rejects unknown mode', () => {
-  assert.throws(() => evaluate({
-    mode: 'PAPER',
-    price: 50000,
-    params,
-    state: initialState(params)
-  }));
-});
-
-test('returnRate metric reflects total asset minus budget', () => {
-  const state = {
-    cash: 3900000,
-    holdingQuantity: 2,
-    averagePrice: 50000,
-    investedAmount: 100000,
-    realizedProfit: 0,
-    currentRound: 2,
-    completed: false
-  };
-  const result = evaluate({
-    mode: TradingMode.BACKTEST,
-    price: 60000,
-    params,
-    state
-  });
-  // 60k >= 50k*1.1 → SELL ALL
-  assert.equal(result.decision, Decision.SELL);
-  assert.equal(result.metrics.totalAsset, 3900000 + 60000 * 2);
-  const expected = (3900000 + 120000 - 4000000) / 4000000;
-  assert.ok(Math.abs(result.metrics.returnRate - expected) < 1e-9);
-});
-
-test('default restartAfterSell is true (Laor canonical)', () => {
-  const result = evaluate({
-    mode: TradingMode.BACKTEST,
-    price: 56000,
-    params: { totalBudget: 4000000, splitCount: 40, targetProfitRate: 0.1 },
-    state: {
-      cash: 3900000,
-      holdingQuantity: 2,
-      averagePrice: 50000,
-      investedAmount: 100000,
-      realizedProfit: 0,
-      currentRound: 5,
-      completed: false
+  for (const d of decisions) {
+    if (d.decision === Decision.BUY) {
+      assert.equal(Number.isInteger(d.quantity), true);
     }
+  }
+});
+
+test('해외/소수점 모드: 회차 예산이 1주 가격보다 작아도 매수', () => {
+  const fractionalParams = {
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    restartAfterSell: false,
+    allowFractionalShares: true
+  };
+  const { decisions, nextState } = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 150, high: 151, low: 149, close: 150.5 },
+    prevClose: null,
+    params: fractionalParams,
+    state: initialState(fractionalParams),
+    tradeDate: '2026-01-02'
   });
-  assert.equal(result.decision, Decision.SELL);
-  assert.equal(result.nextState.completed, false);
-  assert.equal(result.nextState.currentRound, 1);
+  assert.equal(decisions[0].decision, Decision.BUY);
+  assert.equal(decisions[0].quantity, 0.666666);
+  assert.equal(nextState.holdingQuantity, 0.666666);
+});
+
+test('정수주 모드: 소수점 holdingQuantity 거부', () => {
+  assert.throws(() => evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 50000, high: 51000, low: 49000, close: 50500 },
+    prevClose: null,
+    params,
+    state: { cash: 100, holdingQuantity: 0.5, averagePrice: 0, investedAmount: 0, realizedProfit: 0, currentRound: 0, completed: false },
+    tradeDate: '2026-01-02'
+  }));
+});
+
+test('소수점 모드: 소수점 holdingQuantity 허용', () => {
+  assert.doesNotThrow(() => evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 50, high: 51, low: 49, close: 50.5 },
+    prevClose: null,
+    params: { ...params, allowFractionalShares: true },
+    state: { cash: 100, holdingQuantity: 0.5, averagePrice: 50, investedAmount: 25, realizedProfit: 0, currentRound: 1, completed: false },
+    tradeDate: '2026-01-02'
+  }));
+});
+
+test('initial_state has currentRound=0', () => {
+  const s = initialState(params);
+  assert.equal(s.currentRound, 0);
+  assert.equal(s.holdingQuantity, 0);
+  assert.equal(s.cash, params.totalBudget);
 });

@@ -9,7 +9,7 @@ import {
   YAxis
 } from 'recharts';
 
-export function DailyChart({ data, stockCode }) {
+export function DailyChart({ data, stockCode, currency = 'USD' }) {
   const hasData = Array.isArray(data) && data.length > 0;
   const lastClose = hasData ? data[data.length - 1].close : null;
   const firstClose = hasData ? data[0].close : null;
@@ -59,7 +59,7 @@ export function DailyChart({ data, stockCode }) {
                 axisLine={false}
                 tickLine={false}
                 width={60}
-                tickFormatter={(v) => Number(v).toLocaleString('ko-KR')}
+                tickFormatter={(v) => formatMoneyValue(v, currency)}
               />
               <Tooltip
                 contentStyle={{
@@ -70,7 +70,7 @@ export function DailyChart({ data, stockCode }) {
                   fontSize: 12
                 }}
                 labelStyle={{ color: '#475569', fontWeight: 600 }}
-                formatter={(value) => [`${Number(value).toLocaleString('ko-KR')}원`, '종가']}
+                formatter={(value) => [`${formatMoneyValue(value, currency)} ${currency}`, '종가']}
               />
               <Area
                 type="monotone"
@@ -86,4 +86,10 @@ export function DailyChart({ data, stockCode }) {
       )}
     </section>
   );
+}
+
+function formatMoneyValue(value, currency) {
+  const locale = currency === 'KRW' ? 'ko-KR' : 'en-US';
+  const maximumFractionDigits = currency === 'KRW' ? 0 : 2;
+  return Number(value || 0).toLocaleString(locale, { maximumFractionDigits });
 }

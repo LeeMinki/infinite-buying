@@ -30,6 +30,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
   const [daily, setDaily] = useState([]);
   const [currentPrice, setCurrentPrice] = useState('');
   const [currentPriceSource, setCurrentPriceSource] = useState('');
+  const [currency, setCurrency] = useState('USD');
   const [decision, setDecision] = useState(null);
   const [error, setError] = useState('');
 
@@ -45,6 +46,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
     setHolding(nextHolding);
     setOrders(nextOrders);
     setLogs(nextLogs);
+    setCurrency(inferCurrency(nextStrategy.stockCode));
     getDailyPrices(nextStrategy.stockCode).then(setDaily).catch(() => setDaily([]));
   }
 
@@ -75,6 +77,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
   async function fetchPrice() {
     const result = await getCurrentPrice(strategy.stockCode);
     setCurrentPrice(result.price);
+    setCurrency(result.currency || inferCurrency(strategy.stockCode));
     setCurrentPriceSource(`${result.source} ${new Date(result.fetchedAt).toLocaleString('ko-KR')}`);
   }
 
@@ -98,6 +101,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
 
   const isPaused = strategy?.status === 'PAUSED';
   const progressRatio = strategy ? Math.min(1, strategy.currentRound / strategy.splitCount) : 0;
+  const displayCurrency = currency || inferCurrency(strategy?.stockCode);
 
   return (
     <section className="content">
@@ -127,12 +131,12 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
             <div className="metric-grid">
               <div className="metric">
                 <span className="metric-label">총 투자금</span>
-                <strong>{strategy.totalBudget.toLocaleString('ko-KR')}원</strong>
+                <strong>{formatMoney(strategy.totalBudget, displayCurrency)}</strong>
                 <span className="metric-hint">전략에 배정한 전체 예산</span>
               </div>
               <div className="metric">
                 <span className="metric-label">1회 매수금</span>
-                <strong>{strategy.buyAmountPerRound.toLocaleString('ko-KR')}원</strong>
+                <strong>{formatMoney(strategy.buyAmountPerRound, displayCurrency)}</strong>
                 <span className="metric-hint">총 투자금 ÷ 분할 회차</span>
               </div>
               <div className="metric">
@@ -148,7 +152,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
             </div>
           </section>
 
-          <HoldingPanel holding={holding} />
+          <HoldingPanel holding={holding} currency={displayCurrency} />
 
           <EvaluationPanel
             strategy={strategy}
@@ -158,9 +162,10 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
             onEvaluate={evaluate}
             decision={decision}
             priceSource={currentPriceSource}
+            currency={displayCurrency}
           />
 
-          <DailyChart data={daily} stockCode={strategy.stockCode} />
+          <DailyChart data={daily} stockCode={strategy.stockCode} currency={displayCurrency} />
 
           <OrdersTable orders={orders} onFill={fill} onCancel={cancel} />
 
@@ -191,7 +196,7 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
                           {DECISION_LABEL[log.decision] || log.decision}
                         </span>
                       </td>
-                      <td>{Math.round(log.inputPrice).toLocaleString('ko-KR')}원</td>
+                      <td>{formatMoney(log.inputPrice, displayCurrency)}</td>
                       <td className="muted">{log.reason}</td>
                     </tr>
                   ))}
@@ -210,6 +215,16 @@ export function StrategyDetailPage({ strategyId, onChanged }) {
       )}
     </section>
   );
+}
+
+function inferCurrency(symbol) {
+  return /^\d{6}$/.test(String(symbol || '')) ? 'KRW' : 'USD';
+}
+
+function formatMoney(value, currency) {
+  const locale = currency === 'KRW' ? 'ko-KR' : 'en-US';
+  const maximumFractionDigits = currency === 'KRW' ? 0 : 2;
+  return `${Number(value || 0).toLocaleString(locale, { maximumFractionDigits })} ${currency}`;
 }
 
 function formatDate(iso) {

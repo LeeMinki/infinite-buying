@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth/authMiddleware.js';
-import * as credentialService from '../services/kiwoomCredentialService.js';
-import * as kiwoomAuthService from '../services/kiwoomAuthService.js';
+import * as credentialService from '../services/kisCredentialService.js';
+import * as kisAuthService from '../services/kisAuthService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -33,7 +33,7 @@ router.delete('/', (req, res, next) => {
 
 router.post('/test', async (req, res, next) => {
   try {
-    res.json(await kiwoomAuthService.testConnection(req.userId));
+    res.json(await kisAuthService.testConnection(req.userId));
   } catch (error) {
     next(error);
   }

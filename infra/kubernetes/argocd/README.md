@@ -14,7 +14,7 @@
 
 ## EC2/k3s DNS Loop Guard
 
-현재 MVP EC2는 AWS VPC 대역이 `10.42.0.0/16`이고, k3s 기본 Pod CIDR도 `10.42.0.0/16`이라 충돌할 수 있다. AWS VPC DNS는 VPC base+2 주소인 `10.42.0.2`인데, CoreDNS pod도 같은 대역의 IP를 받을 수 있어 CoreDNS가 자기 자신에게 forward하는 loop가 발생한다.
+현재 EC2는 AWS VPC 대역이 `10.42.0.0/16`이고, k3s 기본 Pod CIDR도 `10.42.0.0/16`이라 충돌할 수 있다. AWS VPC DNS는 VPC base+2 주소인 `10.42.0.2`인데, CoreDNS pod도 같은 대역의 IP를 받을 수 있어 CoreDNS가 자기 자신에게 forward하는 loop가 발생한다.
 
 운영 EC2에는 다음 방어 설정을 적용한다.
 
