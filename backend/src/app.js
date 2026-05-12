@@ -8,6 +8,7 @@ import strategiesRoutes from './routes/strategiesRoutes.js';
 import marketRoutes from './routes/marketRoutes.js';
 import ordersRoutes from './routes/ordersRoutes.js';
 import backtestRoutes from './routes/backtestRoutes.js';
+import autoTradingRoutes from './routes/autoTradingRoutes.js';
 
 export function createApp() {
   const app = express();
@@ -28,6 +29,7 @@ export function createApp() {
   app.use('/api/market', marketRoutes);
   app.use('/api/orders', ordersRoutes);
   app.use('/api/backtests', backtestRoutes);
+  app.use('/api/auto-trading', autoTradingRoutes);
 
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);

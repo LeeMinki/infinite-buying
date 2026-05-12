@@ -14,6 +14,8 @@ import { Decision, TradingMode, isTradingMode } from '../domain/tradingMode.js';
 //   4) 첫 매수(보유 0): 시가에 T/시가 수량 매수 (국내는 정수 주 단위)
 //   5) 그 외 일반 매수: 큰수/작은수 LOC 분할 (각 T/2씩)
 // 회차 카운터는 실제 매수 체결이 있을 때만 +1.
+// 목표 매도나 시드 재확보로 새 사이클을 시작하면 당시 총자산을 새 사이클 예산으로 삼아
+// 다음 회차 예산을 다시 계산한다.
 
 const DEFAULT_SMALL_DISCOUNT = 0.05;
 
@@ -41,7 +43,7 @@ function normalizeParams(params) {
   return {
     totalBudget,
     splitCount,
-    perRoundBudget: totalBudget / splitCount,
+    currency: String(params.currency || 'USD').trim().toUpperCase(),
     targetProfitRate,
     smallDiscount,
     allowFractionalShares: params.allowFractionalShares === true,
@@ -57,6 +59,7 @@ function normalizeState(state, params) {
   const investedAmount = Number.isFinite(state.investedAmount) ? state.investedAmount : 0;
   const realizedProfit = Number.isFinite(state.realizedProfit) ? state.realizedProfit : 0;
   const currentRound = Number.isFinite(state.currentRound) && state.currentRound >= 0 ? state.currentRound : 0;
+  const cycleBudget = Number.isFinite(state.cycleBudget) && state.cycleBudget > 0 ? state.cycleBudget : params.totalBudget;
   const completed = state.completed === true;
   assertNonNegativeNumber(cash, 'cash');
   assertNonNegativeNumber(holdingQuantity, 'holdingQuantity');
@@ -65,7 +68,7 @@ function normalizeState(state, params) {
   }
   assertNonNegativeNumber(averagePrice, 'averagePrice');
   assertNonNegativeNumber(investedAmount, 'investedAmount');
-  return { cash, holdingQuantity, averagePrice, investedAmount, realizedProfit, currentRound, completed };
+  return { cash, holdingQuantity, averagePrice, investedAmount, realizedProfit, currentRound, cycleBudget, completed };
 }
 
 export function initialState(params) {
@@ -77,6 +80,7 @@ export function initialState(params) {
     investedAmount: 0,
     realizedProfit: 0,
     currentRound: 0,
+    cycleBudget: p.totalBudget,
     completed: false
   };
 }
@@ -134,6 +138,7 @@ function sellQty(s, p, sellPrice, qty, roundNo, reason, tradeDate, restartCycle 
     investedAmount: remainingInvested,
     realizedProfit: s.realizedProfit + realizedDelta,
     currentRound: restartCycle ? 0 : s.currentRound,
+    cycleBudget: restartCycle ? (s.cash + proceeds + remainingQty * sellPrice) : s.cycleBudget,
     completed: completeRun
   };
   return {
@@ -211,7 +216,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
   if (s.completed) {
     return { decisions: [makeCompleted(s, p, close, s.currentRound, '백테스트가 이미 종료된 상태.', tradeDate)], nextState: s };
   }
-  const T = p.perRoundBudget;
+  const T = perRoundBudget(s, p);
   const nextRoundNo = Math.min(s.currentRound + 1, p.splitCount);
 
   // 1) LOC 매도: 평단가 × (1+목표) 한도에 매도 주문 → 장중 고가가 한도 도달 시 체결.
@@ -223,8 +228,8 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
       const realized = (target - s.averagePrice) * qty;
       const tail = p.restartAfterSell ? '사이클을 새로 시작합니다.' : '백테스트를 종료합니다.';
       const reason =
-        `목표가 매도: 장중 고가 ${fmt(high)}가 목표가 ${fmt(target)}에 도달했습니다. ` +
-        `${fmtQty(qty)}주를 모두 매도했고 실현손익은 ${realized >= 0 ? '+' : ''}${fmt(realized)}입니다. ${tail}`;
+        `목표가 매도: 장중 고가 ${fmtMoney(high, p)}가 목표가 ${fmtMoney(target, p)}에 도달했습니다. ` +
+        `${fmtQty(qty)}주를 모두 매도했고 실현손익은 ${realized >= 0 ? '+' : ''}${fmtMoney(realized, p)}입니다. ${tail}`;
       const dec = sellQty(s, p, target, qty, nextRoundNo, reason, tradeDate, p.restartAfterSell, !p.restartAfterSell);
       return { decisions: [dec], nextState: dec.nextState };
     }
@@ -240,8 +245,8 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
       const realized = (close - s.averagePrice) * qty;
       const reason =
         `현금 확보 매도: ${p.splitCount}회차를 모두 사용했지만 목표가에 닿지 않았습니다. ` +
-        `${fmtQty(qty)}주를 종가 ${fmt(close)}에 매도해 다음 매수 자금을 확보했습니다. ` +
-        `실현손익은 ${realized >= 0 ? '+' : ''}${fmt(realized)}입니다.`;
+        `${fmtQty(qty)}주를 종가 ${fmtMoney(close, p)}에 매도해 다음 매수 자금을 확보했습니다. ` +
+        `실현손익은 ${realized >= 0 ? '+' : ''}${fmtMoney(realized, p)}입니다.`;
       const dec = sellQty(s, p, close, qty, p.splitCount, reason, tradeDate, true, false);
       return { decisions: [dec], nextState: dec.nextState };
     }
@@ -262,11 +267,11 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
     const planned = Math.min(T, s.cash);
     const qty = quantityForBudget(planned, open, p);
     if (qty <= 0) {
-      const reason = `관망: 회차 예산 ${fmt(T)}으로 시가 ${fmt(open)}에서 매수할 수 없습니다. 예산을 늘리거나 분할 회차를 줄여보세요.`;
+      const reason = `관망: 회차 예산 ${fmtMoney(T, p)}으로 시가 ${fmtMoney(open, p)}에서 매수할 수 없습니다. 예산을 늘리거나 분할 회차를 줄여보세요.`;
       return { decisions: [makeHold(s, p, close, roundNo, reason, tradeDate)], nextState: { ...s } };
     }
     const reason =
-      `첫 매수: 시가 ${fmt(open)}에 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmt(qty * open)}입니다.`;
+      `첫 매수: 시가 ${fmtMoney(open, p)}에 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmtMoney(qty * open, p)}입니다.`;
     const dec = buyFill({ s, params: p, qty, fillPrice: open, roundNo, reason, tradeDate });
     return { decisions: [dec], nextState: { ...dec.nextState, currentRound: roundNo, prevClose: close } };
   }
@@ -284,7 +289,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
     const qty = quantityForBudget(available, close, p);
     if (qty > 0) {
       const reason =
-        `매수: 종가 ${fmt(close)}가 기준가 ${fmt(bigPrice)} 이하라 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmt(qty * close)}입니다.`;
+        `매수: 종가 ${fmtMoney(close, p)}가 기준가 ${fmtMoney(bigPrice, p)} 이하라 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmtMoney(qty * close, p)}입니다.`;
       const dec = buyFill({ s: workingState, params: p, qty, fillPrice: close, roundNo, reason, tradeDate });
       decisions.push(dec);
       workingState = dec.nextState;
@@ -297,7 +302,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
     const qty = quantityForBudget(available, close, p);
     if (qty > 0) {
       const reason =
-        `추가 매수: 종가 ${fmt(close)}가 추가 매수 기준 ${fmt(smallPrice)} 이하라 ${fmtQty(qty)}주를 더 매수했습니다. 사용 금액은 ${fmt(qty * close)}입니다.`;
+        `추가 매수: 종가 ${fmtMoney(close, p)}가 추가 매수 기준 ${fmtMoney(smallPrice, p)} 이하라 ${fmtQty(qty)}주를 더 매수했습니다. 사용 금액은 ${fmtMoney(qty * close, p)}입니다.`;
       const dec = buyFill({ s: workingState, params: p, qty, fillPrice: close, roundNo, reason, tradeDate });
       decisions.push(dec);
       workingState = dec.nextState;
@@ -307,7 +312,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
   if (decisions.length === 0) {
     const target = s.averagePrice * (1 + p.targetProfitRate);
     const reason =
-      `관망: 종가 ${fmt(close)}가 매수 기준 ${fmt(bigPrice)}보다 높고, 장중 고가도 목표가 ${fmt(target)}에 닿지 않았습니다.`;
+      `관망: 종가 ${fmtMoney(close, p)}가 매수 기준 ${fmtMoney(bigPrice, p)}보다 높고, 장중 고가도 목표가 ${fmtMoney(target, p)}에 닿지 않았습니다.`;
     decisions.push(makeHold(s, p, close, roundNo, reason, tradeDate));
   }
 
@@ -329,7 +334,7 @@ export function evaluate({ mode = TradingMode.BACKTEST, price, tradeDate, params
   if (s.currentRound >= p.splitCount && s.holdingQuantity === 0) {
     return makeCompleted(s, p, price, p.splitCount, `${p.splitCount}회차 소진 후 보유 없음`, tradeDate);
   }
-  const qty = quantityForBudget(p.perRoundBudget, price, p);
+  const qty = quantityForBudget(perRoundBudget(s, p), price, p);
   if (qty <= 0 || qty * price > s.cash) {
     return makeHold(s, p, price, roundNo, '회차 예산으로 매수할 수 없거나 현금 부족', tradeDate);
   }
@@ -343,6 +348,17 @@ function fmt(n) {
   return Math.abs(n) >= 100
     ? n.toLocaleString('en-US', { maximumFractionDigits: 2 })
     : n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+function fmtMoney(n, params) {
+  return `${fmt(n)} ${params.currency}`;
+}
+
+function perRoundBudget(state, params) {
+  const cycleBudget = Number.isFinite(state.cycleBudget) && state.cycleBudget > 0
+    ? state.cycleBudget
+    : params.totalBudget;
+  return cycleBudget / params.splitCount;
 }
 
 function quantityForBudget(budget, price, params) {

@@ -131,6 +131,50 @@ test('익절 + restartAfterSell=true → 사이클 재시작 (round=0)', () => {
   });
   assert.equal(nextState.completed, false);
   assert.equal(nextState.currentRound, 0);
+  assert.equal(nextState.cycleBudget, 4100000);
+});
+
+test('익절 후 새 사이클은 늘어난 현금 기준으로 회차 예산을 다시 계산', () => {
+  const fractionalParams = {
+    totalBudget: 1000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    restartAfterSell: true,
+    allowFractionalShares: true,
+    currency: 'USD'
+  };
+  const sold = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 43, high: 44, low: 42, close: 44 },
+    prevClose: 42,
+    params: fractionalParams,
+    state: {
+      cash: 0,
+      holdingQuantity: 25,
+      averagePrice: 40,
+      investedAmount: 1000,
+      realizedProfit: 0,
+      currentRound: 5,
+      cycleBudget: 1000,
+      completed: false
+    },
+    tradeDate: '2026-01-10'
+  });
+  assert.equal(sold.nextState.cash, 1100);
+  assert.equal(sold.nextState.cycleBudget, 1100);
+  assert.equal(sold.nextState.currentRound, 0);
+
+  const restarted = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 44, high: 44, low: 43, close: 43.5 },
+    prevClose: 44,
+    params: fractionalParams,
+    state: sold.nextState,
+    tradeDate: '2026-01-11'
+  });
+  assert.equal(restarted.decisions[0].decision, Decision.BUY);
+  assert.equal(restarted.decisions[0].quantity, 0.625);
+  assert.match(restarted.decisions[0].reason, /사용 금액은 27.5 USD입니다/);
 });
 
 test('40회차 소진 + 현금 부족 → 보유 1/4 매도 (시드 재확보)', () => {

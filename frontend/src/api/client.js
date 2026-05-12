@@ -94,6 +94,40 @@ export const getBacktest = (id) => request(`/api/backtests/${id}`);
 export const listBacktestTrades = (id) => request(`/api/backtests/${id}/trades`);
 export const deleteBacktest = (id) => request(`/api/backtests/${id}`, { method: 'DELETE' });
 
+export const getAutoTradingSettings = () => request('/api/auto-trading/settings');
+export const updateAutoTradingLiveOrder = (liveOrderEnabled) => request('/api/auto-trading/settings/live-order', {
+  method: 'PUT',
+  body: JSON.stringify({ liveOrderEnabled })
+});
+export const getAutoTradingDashboard = () => request('/api/auto-trading/dashboard');
+export const getAutoTradingAccountSummary = (strategyId) => request(`/api/auto-trading/account-summary?strategyId=${encodeURIComponent(strategyId)}`);
+export const getAutoTradingBuyingPowerPreview = ({ market, symbol, exchange } = {}) => {
+  const params = new URLSearchParams();
+  if (market) params.set('market', market);
+  if (symbol) params.set('symbol', symbol);
+  if (exchange) params.set('exchange', exchange);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return request(`/api/auto-trading/buying-power-preview${suffix}`);
+};
+export const createAutoTradingStrategy = (payload) => request('/api/auto-trading/strategies', {
+  method: 'POST',
+  body: JSON.stringify(payload)
+});
+export const listAutoTradingStrategies = () => request('/api/auto-trading/strategies');
+export const getAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}`);
+export const updateAutoTradingStrategy = (id, payload) => request(`/api/auto-trading/strategies/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify(payload)
+});
+export const deleteAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}`, { method: 'DELETE' });
+export const startAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}/start`, { method: 'POST' });
+export const stopAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}/stop`, { method: 'POST' });
+export const evaluateAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}/evaluate`, { method: 'POST' });
+export const listAutoTradingOrders = (id) => request(`/api/auto-trading/strategies/${id}/orders`);
+export const listAutoTradingDecisions = (id) => request(`/api/auto-trading/strategies/${id}/decisions`);
+export const listAutoTradingPositions = (id) => request(`/api/auto-trading/strategies/${id}/positions`);
+export const refreshAutoTradingOrder = (id) => request(`/api/auto-trading/orders/${id}/refresh`, { method: 'POST' });
+
 function normalizeMarket(value, symbol) {
   const market = String(value || '').trim().toUpperCase();
   if (market === 'KR' || market === 'KOSPI' || market === 'KOSDAQ') return 'KR';

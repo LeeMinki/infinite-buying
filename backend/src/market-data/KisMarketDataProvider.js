@@ -46,7 +46,19 @@ export class KisMarketDataProvider {
   }
 
   async getOverseasCurrentPrice(symbol, options = {}) {
-    const exchange = normalizeExchange(options.exchange);
+    const exchanges = options.exchange ? [normalizeExchange(options.exchange)] : uniqueExchanges();
+    let lastError = null;
+    for (const exchange of exchanges) {
+      try {
+        return await this.getOverseasCurrentPriceForExchange(symbol, exchange);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || marketError();
+  }
+
+  async getOverseasCurrentPriceForExchange(symbol, exchange) {
     const data = await this.requestJson('/uapi/overseas-price/v1/quotations/price', {
       trId: 'HHDFS00000300',
       query: {
@@ -104,7 +116,21 @@ export class KisMarketDataProvider {
   }
 
   async getOverseasDailyPrices(symbol, options = {}) {
-    const exchange = normalizeExchange(options.exchange);
+    const exchanges = options.exchange ? [normalizeExchange(options.exchange)] : uniqueExchanges();
+    let lastError = null;
+    for (const exchange of exchanges) {
+      try {
+        const rows = await this.getOverseasDailyPricesForExchange(symbol, exchange, options);
+        if (rows.length > 0) return rows;
+      } catch (error) {
+        lastError = error;
+        if (error.message !== EMPTY_DAILY_MESSAGE) throw error;
+      }
+    }
+    throw lastError || emptyDailyError();
+  }
+
+  async getOverseasDailyPricesForExchange(symbol, exchange, options = {}) {
     const rows = [];
     const seenDates = new Set();
     const from = options.from || null;
@@ -352,6 +378,10 @@ function normalizeMarket(value, symbol) {
 
 function normalizeExchange(value) {
   return String(value || DEFAULT_EXCHANGE).trim().toUpperCase();
+}
+
+function uniqueExchanges() {
+  return [...new Set([DEFAULT_EXCHANGE, ...US_PRODUCT_TYPES.map((type) => type.exchange)])];
 }
 
 function normalizeOverseasExchange(value) {

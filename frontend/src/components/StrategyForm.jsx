@@ -90,7 +90,7 @@ export function StrategyForm({ onSubmit }) {
           />
           <em>{form.currency}</em>
         </div>
-        <p className="helper">이 전략에 사용할 가상 예산입니다. 실제 주문은 발생하지 않습니다.</p>
+        <p className="helper">백테스트와 자동매매 전략 생성에 함께 가져갈 기준 예산입니다.</p>
       </label>
 
       <div className="form-grid two">
@@ -128,12 +128,12 @@ export function StrategyForm({ onSubmit }) {
         <div>
           <b>1회 매수금</b>은 자동으로 계산됩니다: <b>{formatMoney(perRoundBuy, form.currency)}</b>
           <br />
-          현재가가 이 금액보다 높으면 해당 회차는 자동으로 <b>HOLD</b>(관망)로 처리됩니다.
+          현재가가 이 금액보다 높으면 해당 회차는 자동으로 관망 처리됩니다.
         </div>
       </div>
 
       <button className="primary wide" type="submit" disabled={submitting}>
-        {submitting ? '저장 중...' : '전략 저장하기'}
+        {submitting ? '저장 중...' : '초안 저장하기'}
       </button>
     </form>
   );

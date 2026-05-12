@@ -11,6 +11,8 @@ export const env = {
   dbPath: process.env.DB_PATH || 'data/app.db',
   kisApiBaseUrl: process.env.KIS_API_BASE_URL || 'https://openapi.koreainvestment.com:9443',
   kisTimeoutMs: Number(process.env.KIS_TIMEOUT_MS || 5000),
+  autoTradingSchedulerEnabled: process.env.AUTO_TRADING_SCHEDULER_ENABLED !== 'false',
+  autoTradingSchedulerIntervalMs: Number(process.env.AUTO_TRADING_SCHEDULER_INTERVAL_MS || 600_000),
   secretEncryptionKey: process.env.SECRET_ENCRYPTION_KEY || generatedDevEncryptionKey,
   sessionSecret: process.env.SESSION_SECRET || generatedDevSessionSecret,
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'true',
@@ -23,9 +25,6 @@ export function validateEnv() {
   const errors = [];
   const encryptionKey = Buffer.from(env.secretEncryptionKey, 'base64');
 
-  if (env.enableLiveOrder !== 'false') {
-    errors.push('ENABLE_LIVE_ORDER must remain false. Real broker order APIs are not supported.');
-  }
   if (env.enableReservedOrder !== 'false') {
     errors.push('ENABLE_RESERVED_ORDER must remain false. Reserved broker order APIs are not supported.');
   }

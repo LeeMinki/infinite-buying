@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { env, validateEnv } from './config/env.js';
 import { runMigrations } from './db/migrate.js';
+import { startAutoTradingScheduler } from './services/autoTradingScheduler.js';
 
 validateEnv();
 runMigrations();
@@ -9,6 +10,8 @@ const app = createApp();
 const server = app.listen(env.port, () => {
   console.log(`Backend listening on http://localhost:${env.port}`);
 });
+
+startAutoTradingScheduler();
 
 server.on('error', (error) => {
   if (error.code === 'EADDRINUSE') {
