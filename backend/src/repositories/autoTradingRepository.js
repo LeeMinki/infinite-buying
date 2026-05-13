@@ -43,9 +43,9 @@ export function createStrategy(userId, input) {
   const result = getDb().prepare(`
     INSERT INTO auto_trading_strategies (
       user_id, symbol, symbol_name, market, currency, total_budget, split_count,
-      buy_amount_per_round, target_profit_rate, current_round, max_order_amount,
+      buy_amount_per_round, target_profit_rate, big_buy_premium_rate, current_round, max_order_amount,
       max_daily_order_amount
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
   `).run(
     userId,
     input.symbol,
@@ -55,7 +55,8 @@ export function createStrategy(userId, input) {
     input.totalBudget,
     input.splitCount,
     input.buyAmountPerRound,
-    input.targetProfitRate
+    input.targetProfitRate,
+    input.bigBuyPremiumRate
   );
   return getStrategy(userId, result.lastInsertRowid);
 }
@@ -89,7 +90,7 @@ export function updateStrategy(userId, id, input) {
     UPDATE auto_trading_strategies
     SET symbol = ?, symbol_name = ?, market = ?, currency = ?,
         total_budget = ?, split_count = ?, buy_amount_per_round = ?,
-        target_profit_rate = ?,
+        target_profit_rate = ?, big_buy_premium_rate = ?,
         updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(
@@ -101,6 +102,7 @@ export function updateStrategy(userId, id, input) {
     input.splitCount,
     input.buyAmountPerRound,
     input.targetProfitRate,
+    input.bigBuyPremiumRate,
     userId,
     id
   );
@@ -338,6 +340,29 @@ export function listOrders(userId, { strategyId = null, limit = 100 } = {}) {
   `).all(...params).map(toOrder);
 }
 
+// 우리 시스템이 KIS에 보낸 주문 중 아직 미체결로 남아 있는 것들 (취소 대상)
+export function listOpenOwnedOrders(userId, strategyId) {
+  return getDb().prepare(`
+    SELECT * FROM auto_trading_orders
+    WHERE user_id = ? AND strategy_id = ?
+      AND status IN ('REQUESTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+      AND kis_order_no IS NOT NULL AND kis_order_no <> ''
+    ORDER BY id DESC
+  `).all(userId, strategyId).map(toOrder);
+}
+
+export function markOrderCanceled(userId, orderId, { reason = '', responsePayloadMasked = null } = {}) {
+  getDb().prepare(`
+    UPDATE auto_trading_orders
+    SET status = 'CANCELED',
+        error_message = COALESCE(?, error_message),
+        response_payload_masked = COALESCE(?, response_payload_masked),
+        updated_at = datetime('now')
+    WHERE user_id = ? AND id = ?
+  `).run(reason || null, responsePayloadMasked, userId, orderId);
+  return getOrder(userId, orderId);
+}
+
 export function hasBlockingOpenOrder(userId, strategyId) {
   const row = getDb().prepare(`
     SELECT 1 FROM auto_trading_orders
@@ -447,6 +472,7 @@ function toStrategy(row) {
     splitCount: row.split_count,
     buyAmountPerRound: row.buy_amount_per_round,
     targetProfitRate: row.target_profit_rate,
+    bigBuyPremiumRate: row.big_buy_premium_rate ?? 0.1,
     currentRound: row.current_round,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at,

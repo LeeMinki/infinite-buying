@@ -132,8 +132,10 @@ See:
 3d. The strategy creation form, after the user selects a symbol, fetches buying-power preview for that symbol/market and offers one-click options to apply the current foreign-currency buying power or the after-FX equivalent to the total budget. Manual input is always allowed and recommended values never auto-overwrite the input.
 3b. The strategy list supports a per-row delete action with confirmation. Deleting a RUNNING strategy shows an extra warning that ongoing evaluation will stop and that already submitted broker orders will not be canceled automatically.
 3e. The page lays the strategy list out as a horizontal chip group directly above the strategy detail panel. Chips wrap on narrow viewports. The strategy detail panel consumes the full page width like the surrounding panels so its metric grid stays readable.
-3f. The strategy creation form uses a balanced grid: the stock-search row spans both columns, the numeric inputs (총 예산, 분할 회차, 목표 수익률) align on the next row, and the submit button anchors a final right-aligned row. The legacy 1회/일일 주문 한도 inputs are removed.
+3f. The strategy creation form uses a balanced grid: the stock-search row spans both columns, the numeric inputs (총 예산, 분할 회차, 목표 수익률, 큰수 매수 여유율) align consistently, and the submit button anchors a final right-aligned row. The legacy 1회/일일 주문 한도 inputs are removed.
 3g. The "최근 포지션 스냅샷" panel surfaces the matching BUY/SELL/HOLD/SKIP/ERROR/COMPLETED label as a decision badge so the user can see at a glance what the strategy decided at that snapshot moment.
+3h. The auto-trading algorithm explanation lists the buy conditions before the sell condition (1. Inspect current price/account, 2. 평단가 매수 + 큰수 매수, 3. Buy quantity calculation, 4. Target sell condition, 5. Pre-order safety checks). Buy is the everyday action under cost averaging and should appear first; sell remains the higher-priority rule at evaluation time but is documented after the buy rules so the reading flow matches the user's mental model.
+3i. The main-screen "공통 전략 초안 만들기" form arranges 분할 회차 / 목표 수익률 / 큰수 매수 여유율 in a single 3-column row so the input boxes align cleanly on wide viewports.
 4. Strategy form reuses `StockSearchField`, stores symbol/market/currency/name and budget/risk fields.
 5. Strategy detail supports start/stop/manual evaluate, status panels, latest snapshot, orders, decisions, and open-order visibility.
 6. Decision logs show what the evaluator checked: current price, holding quantity, average price, cash/buying power, current round, open-order count, and live-order setting.
@@ -220,6 +222,7 @@ Pure function input:
 - `totalBudget`
 - `splitCount`
 - `targetProfitRate`
+- `bigBuyPremiumRate`
 
 Pure function output:
 
@@ -234,13 +237,25 @@ Rules:
 
 - SELL if holding quantity > 0 and current price >= average price × (1 + target profit rate).
 - SELL targets full available holding quantity.
-- Otherwise compute `rawQuantity = (totalBudget / splitCount) / current price`. For domestic (KR) symbols floor to whole shares; for non-domestic symbols keep up to 6 decimal places so a per-round budget smaller than one share's price still produces a BUY decision rather than perpetual HOLD.
+- If holdings exist, split the per-round buy amount into two halves evaluated independently: **평단가 매수** half is eligible at or below average price, **큰수 매수** half is eligible at or below previous close/KIS base price × (1 + big buy premium rate, default 0.1). Both, one, or neither may match.
+- Otherwise compute `rawQuantity = eligible buy budget / current price`. For domestic (KR) symbols floor to whole shares; for non-domestic symbols keep up to 6 decimal places so an eligible budget smaller than one share's price still produces a BUY decision rather than perpetual HOLD.
 - BUY when the resulting quantity is positive and matches cash availability.
-- HOLD if the quantity rounds to zero or cash is insufficient.
+- HOLD if neither half matches, or quantity rounds to zero, or cash is insufficient.
 - HOLD if max split rounds are used and no SELL condition exists.
 - No DB, HTTP, KIS, logging, or time dependencies inside the function.
 
+Unmatched halves are not carried into a special accumulator. The unspent half-budget remains as the user's cash, naturally counted by the next evaluation's KIS buying-power check.
+
 SafetyGuard takes care of enforcing whole-share submission for the KIS standard overseas order endpoint when live-order mode is on, so the engine itself stays free of broker-specific rounding.
+
+Order cancellation: In live-order mode, when evaluating a strategy whose KIS open-order list still includes orders the system itself created previously, the evaluator auto-cancels those owned orders via KIS 정정취소 endpoints (domestic `TTTC0013U`, US overseas `TTTT1004U`) before running SafetyGuard. Each canceled order is marked `CANCELED` in `auto_trading_orders` with a safe reason. The flow:
+
+1. After fetching open orders from KIS, intersect with `auto_trading_orders` rows still in `REQUESTED`/`ACCEPTED`/`PARTIALLY_FILLED`/`UNKNOWN` and having a `kis_order_no`.
+2. For each owned open order, call `KisTradingService.cancelOpenOrder` (dispatches domestic/overseas based on market).
+3. Mark `CANCELED` locally and record the cancel attempt note in the decision reason.
+4. Re-fetch KIS open orders. If external open orders remain, SafetyGuard still blocks and the SKIP reason includes the cancel notes.
+
+The system never auto-cancels orders the user created directly via KIS HTS/MTS. DRY_RUN mode skips this auto-cancel path entirely.
 
 ## SafetyGuard Design
 
@@ -266,7 +281,7 @@ Checks:
 8. `liveOrderEnabled=false` returns DRY_RUN outcome before any real-order path.
 9. `liveOrderEnabled=true` allows real-order request only when all checks pass.
 
-The legacy per-order and daily order limits (`maxOrderAmount`, `maxDailyOrderAmount`) are no longer checked here. They were noisy for users and the natural KIS account capacity check is enough for the MVP.
+The legacy per-order and daily order limits (`maxOrderAmount`, `maxDailyOrderAmount`) are no longer checked here. They were noisy for users and the natural KIS account capacity check is enough for the current product shape.
 
 Additionally, when live-order mode is on and the strategy market is non-domestic, SafetyGuard blocks real-order submission if the calculated BUY quantity is less than one whole share, because the standard KIS overseas order endpoint accepts only integer share counts. DRY_RUN orders keep the fractional quantity so the user can see what the strategy would have done.
 

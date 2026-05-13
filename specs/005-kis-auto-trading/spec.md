@@ -3,7 +3,7 @@
 **Feature Branch**: `005-kis-auto-trading`
 **Created**: 2026-05-12
 **Status**: Ready for planning
-**Input**: 사용자가 선택한 종목에 대해 자동매매 전략을 만들고 시작/종료하며, 실주문 실행 설정이 꺼진 상태에서는 DRY_RUN 기록만 남기고 켜진 상태에서는 미체결·중복·주문 한도·매수가능금액·보유 수량 검사를 통과한 주문만 한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS)을 통해 실행한다.
+**Input**: 사용자가 선택한 종목에 대해 자동매매 전략을 만들고 시작/종료하며, 실주문 실행 설정이 꺼진 상태에서는 DRY_RUN 기록만 남기고 켜진 상태에서는 미체결·중복·매수가능금액·보유 수량 검사를 통과한 주문만 한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS)을 통해 실행한다.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -25,7 +25,7 @@
 
 ### User Story 2 - Create and Run an Auto Trading Strategy (Priority: P1)
 
-로그인한 사용자는 종목을 검색해 자동매매 대상 종목을 선택하고, 총 예산·분할 회차·목표 수익률·주문 한도를 입력해 자동매매 전략을 생성한 뒤 시작하거나 종료할 수 있다.
+로그인한 사용자는 종목을 검색해 자동매매 대상 종목을 선택하고, 총 예산·분할 회차·목표 수익률·큰수 매수 여유율을 입력해 자동매매 전략을 생성한 뒤 시작하거나 종료할 수 있다.
 
 **Why this priority**: 사용자가 자동매매 대상과 전략 조건을 명확히 정의하고 RUNNING/STOPPED 상태를 직접 제어해야 자동매매 기능의 핵심 가치가 생긴다.
 
@@ -60,18 +60,18 @@
 
 ### User Story 4 - Execute Safe Live Orders (Priority: P2)
 
-실주문 실행 설정이 켜진 사용자는 미체결·중복·주문 한도·매수가능금액·보유 수량 검사를 통과한 경우에만 KIS 주문으로 실제 매수 또는 매도를 실행할 수 있다. 주문 결과와 상태는 자동매매 주문 기록에 저장된다.
+실주문 실행 설정이 켜진 사용자는 미체결·중복·매수가능금액·보유 수량 검사를 통과한 경우에만 KIS 주문으로 실제 매수 또는 매도를 실행할 수 있다. 주문 결과와 상태는 자동매매 주문 기록에 저장된다.
 
 **Why this priority**: 실제 주문은 자동매매의 확장 가치이지만, 주문 전 검사와 추적성이 먼저 보장되어야 한다.
 
-**Independent Test**: 실주문 실행 설정을 켜고 RUNNING 전략을 평가한다. 미체결 주문 없음, 중복 주문 없음, 주문 한도 이내, 매수가능금액 또는 보유수량 충분 조건이 모두 만족될 때만 주문이 접수되고 결과가 기록되는지 확인한다.
+**Independent Test**: 실주문 실행 설정을 켜고 RUNNING 전략을 평가한다. 미체결 주문 없음, 중복 주문 없음, 매수가능금액 또는 보유수량 충분 조건이 모두 만족될 때만 주문이 접수되고 결과가 기록되는지 확인한다.
 
 **Acceptance Scenarios**:
 
-1. **Given** 실주문 실행 설정이 켜져 있고 BUY 판단이 발생한 전략, **When** 매수가능금액과 주문 한도를 모두 만족하면, **Then** 실제 매수 주문을 요청하고 주문 결과를 저장한다.
+1. **Given** 실주문 실행 설정이 켜져 있고 BUY 판단이 발생한 전략, **When** 매수가능금액이 충분하고 주문 전 검사를 모두 만족하면, **Then** 실제 매수 주문을 요청하고 주문 결과를 저장한다.
 2. **Given** 실주문 실행 설정이 켜져 있고 SELL 판단이 발생한 전략, **When** 보유 수량이 충분하고 주문 전 검사를 통과하면, **Then** 실제 매도 주문을 요청하고 주문 결과를 저장한다.
 3. **Given** 미체결 주문이 존재하는 전략, **When** 평가가 BUY 또는 SELL을 판단하면, **Then** 신규 주문을 차단하고 SKIP 판단과 차단 사유를 저장한다.
-4. **Given** 주문 수량이 0이거나 주문 한도를 초과하는 판단, **When** 평가가 실행되면, **Then** 실제 주문 없이 HOLD 또는 SKIP을 저장한다.
+4. **Given** 주문 수량이 0이거나 계좌 매수가능금액 또는 보유 수량이 부족한 판단, **When** 평가가 실행되면, **Then** 실제 주문 없이 HOLD 또는 SKIP을 저장한다.
 
 ---
 
@@ -122,7 +122,7 @@
 - **FR-004**: The system MUST record every live order execution setting change with previous value, new value, user, and change time.
 - **FR-005**: Users MUST be able to search and select a tradable symbol for an auto trading strategy.
 - **FR-006**: Users MUST be able to create, view, update, start, stop, and manually evaluate their own auto trading strategies.
-- **FR-007**: Auto trading strategies MUST store symbol, optional symbol name, market, currency, status, total budget, split count, per-round buy amount, target profit rate, current round, last evaluation time, last order time, last decision, and last error. The legacy per-order-limit and daily-order-limit columns are retained in the database schema for migration safety, but they are no longer surfaced in the strategy form, no longer validated by SafetyGuard, and not part of the strategy creation/update API contract.
+- **FR-007**: Auto trading strategies MUST store symbol, optional symbol name, market, currency, status, total budget, split count, per-round buy amount, target profit rate, max buy-above-average rate, current round, last evaluation time, last order time, last decision, and last error. The legacy per-order-limit and daily-order-limit columns are retained in the database schema for migration safety, but they are no longer surfaced in the strategy form, no longer validated by SafetyGuard, and not part of the strategy creation/update API contract.
 - **FR-008**: Strategy status MUST support CREATED, RUNNING, STOPPED, and ERROR.
 - **FR-009**: Only RUNNING strategies MUST be evaluated automatically.
 - **FR-010**: STOPPED strategies MUST be excluded from automatic evaluation.
@@ -137,8 +137,10 @@
 - **FR-019**: The decision outcome MUST be one of BUY, SELL, HOLD, SKIP, or ERROR.
 - **FR-020**: A SELL decision MUST be produced when holding quantity is greater than zero and current price is at least average price multiplied by one plus target profit rate.
 - **FR-021**: A SELL decision MUST target the full available holding quantity.
-- **FR-022**: If SELL conditions are not met, the system MUST evaluate a BUY using per-round buy amount and current price.
-- **FR-023**: BUY quantity MUST be calculated from `per-round buy amount / current price`. For domestic (KR) symbols the result MUST be floored to whole shares. For non-domestic symbols the result MUST be kept as a fractional quantity (up to 6 decimal places) so a strategy with a per-round budget smaller than one share's price still produces a BUY decision rather than perpetual HOLD. The actual broker order submission step, not the strategy decision, is responsible for any whole-share rounding required by the chosen KIS endpoint.
+- **FR-022**: If SELL conditions are not met, the system MUST evaluate BUY opportunities from the per-round buy amount.
+- **FR-022a**: If the strategy already has holdings and average price is available, BUY evaluation MUST split the per-round buy amount into two halves. The average-price half is eligible when the current price is at or below average price. The big-number half is eligible when the current price is at or below `previousCloseOrKisBasePrice × (1 + bigBuyPremiumRate)`. The default `bigBuyPremiumRate` is 0.1, meaning the big-number half can buy up to 10% above the previous close or KIS base price. Backtests use the daily previous close and daily close; auto-trading uses KIS current price and the KIS previous close/base price when available. The two halves are evaluated independently — both, one, or neither may match. When only one half matches, the strategy buys only that half-budget worth and the remaining half MUST stay in the strategy's cash pool (no special carry-forward bookkeeping; the leftover naturally counts toward the next evaluation's KIS buying-power check).
+- **FR-022b**: A SELL decision MUST stop the current evaluation. The system MUST NOT create a same-day or same-evaluation BUY after a target SELL; the next BUY evaluation starts from the next scheduled/manual evaluation or next backtest trading day.
+- **FR-023**: BUY quantity MUST be calculated from the eligible buy budget divided by current price. For domestic (KR) symbols the result MUST be floored to whole shares. For non-domestic symbols the result MUST be kept as a fractional quantity (up to 6 decimal places) so a strategy with an eligible budget smaller than one share's price still produces a BUY decision rather than perpetual HOLD. The actual broker order submission step, not the strategy decision, is responsible for any whole-share rounding required by the chosen KIS endpoint.
 - **FR-024**: If calculated BUY quantity is zero, the system MUST record HOLD and MUST NOT create an actual order request.
 - **FR-025**: If all split rounds are used, the system MUST record HOLD unless a SELL condition is met.
 - **FR-026**: The system MUST use KIS balance values as the primary source for holding quantity and average price.
@@ -162,20 +164,24 @@
 - **FR-044**: The account summary MUST include cash or buying power, holding quantity, average price, and open order count when KIS returns those values, plus a clear indicator of whether the displayed numbers will be used to send real orders (live-order mode) or only for reference (record mode).
 - **FR-045**: The user interface MUST clearly show when live order execution is off with wording equivalent to "기록 모드" and "주문은 전송하지 않습니다".
 - **FR-046**: The user interface MUST clearly show when live order execution is on and actual orders may be placed after safety validation.
-- **FR-046a**: The user interface MUST explain safety validation in plain language as checks for open orders, duplicate orders, per-order/daily limits, buying power, holding quantity, and positive order quantity.
+- **FR-046a**: The user interface MUST explain safety validation in plain language as checks for open orders, duplicate orders, buying power, holding quantity, and positive order quantity.
 - **FR-046b**: For strategies whose market is not domestic (KR), the user interface MUST display a plain-language guide explaining that the broker does not auto-convert the home currency at order time, and that the user must either enroll in KIS integrated-margin or pre-exchange to settlement currency before automatic orders can succeed. The guide MUST NOT hard-code a specific foreign currency name (e.g., "USD") and MUST NOT phrase the explanation as if it were specific to one strategy's settlement currency; it explains the broker's general home-currency-to-foreign-currency rule.
 - **FR-046c**: The user interface MUST allow the user to delete an existing auto-trading strategy from the strategy list, confirm the action (with an extra warning when the strategy is RUNNING), and remove all related decision logs, position snapshots, orders, locks, and daily order usage rows for that strategy.
 - **FR-046d**: For overseas strategies, the account summary MUST surface both the current foreign-currency buying power (KIS `frcr_ord_psbl_amt1` or equivalent) and the "after FX conversion" buying power (KIS `echm_af_ord_psbl_amt`), along with the applied FX rate (KIS `exrt`). When the current foreign-currency buying power is 0 but the after-FX value is positive, the UI MUST explain that the user can either enroll in KIS integrated-margin or pre-exchange to make that amount available for automatic orders.
 - **FR-046f**: The "최근 포지션" (latest position snapshot) UI MUST include a plain-language description that clarifies the snapshot is the captured state at the moment of the last evaluation (not real-time KIS data) and is used to track how the strategy's holdings have evolved over evaluation cycles. The snapshot MUST also surface the decision (BUY / SELL / HOLD / SKIP / ERROR / COMPLETED) that the auto-trading evaluator produced at the same moment, so the user can immediately tell what action accompanied that snapshot. Each `auto_trading_position_snapshots` row therefore stores the matching decision string, populated during the evaluation that wrote the snapshot. When no snapshot has been captured yet, the empty state MUST guide the user to start the strategy or press the "지금 평가" button.
 - **FR-046g**: The decision log UI MUST include a helper sentence explaining that `SCHEDULED` rows are produced by the background scheduler and `MANUAL` rows are produced by user-triggered manual evaluations, and explaining how to read the "목표가까지" (distance-to-target) column: 0% or negative means the target sell price has been reached, and a positive percentage is the remaining upside required.
+- **FR-046j**: The auto-trading algorithm explanation panel MUST list buy conditions BEFORE the sell condition, since buying is the more frequent and primary action under the cost-averaging strategy. The reordered narrative flow is: (1) what is checked each evaluation, (2) the two buy halves (평단가 매수, 큰수 매수), (3) how the buy quantity is calculated, (4) the sell condition that overrides everything, (5) live-order safety checks. The panel MUST also note that an unmatched half stays as cash and that there is no automatic cancel of unfilled KIS orders.
 - **FR-046h**: The auto-trading page layout MUST allocate full page width to the strategy detail panel so its metric grid stays readable instead of collapsing into a column of single-line cells. The strategy list is rendered as a horizontal card group (chips) directly above the strategy detail panel; the detail panel uses the same horizontal width as the other auto-trading panels (전략 만들기, 연결 계좌 등). The chips wrap onto multiple rows on narrow viewports.
-- **FR-046i**: The auto-trading strategy creation form MUST present its fields in a clean, balanced grid. The stock-search field always spans the full row, the numeric inputs (총 예산, 분할 회차, 목표 수익률) line up on the next row, and the submit button anchors a final row on the right. The layout MUST stay consistent after the removal of the 1회/일일 주문 한도 fields.
+- **FR-046i**: The auto-trading strategy creation form MUST present its fields in a clean, balanced grid. The stock-search field always spans the full row, the numeric inputs (총 예산, 분할 회차, 목표 수익률, 큰수 매수 여유율) line up consistently, and the submit button anchors a final row on the right. The layout MUST stay consistent after the removal of the 1회/일일 주문 한도 fields.
+- **FR-046j**: The backtest and auto-trading screens MUST show an algorithm guide in plain Korean. The guide MUST explain how the seed is split, how the average-price half and big-number half are bought, how target selling works, and that a target SELL does not trigger another BUY on the same day/evaluation.
 - **FR-046e**: The auto-trading strategy creation form MUST, after the user selects a symbol, fetch the current KIS buying power for that symbol/market and offer one-click options to set the strategy's total budget to the available foreign-currency balance or the after-FX equivalent. The user MUST still be free to type any total budget manually; the recommendation never auto-overwrites the input.
 - **FR-047**: The auto-trading screen MUST NOT reuse the backtest profit-guarantee notice as its primary warning copy; live-order copy must focus on order transmission and account safety checks.
 - **FR-048**: RUNNING strategies MUST produce an initial start log and then produce scheduled decision logs at least every 10 minutes while the backend process is running.
 - **FR-049**: Decision logs MUST include the checked current price, holding quantity, average price, cash or buying power, current round, open order count, live order setting, and a user-readable decision reason when those values are available.
 - **FR-050**: Fees, taxes, exchange-rate precision, and slippage MUST be excluded from this feature's strategy calculation.
 - **FR-051**: Automatic strategy stop MUST NOT automatically cancel already submitted orders.
+- **FR-051a**: When evaluating a strategy in live-order mode, before SafetyGuard runs, the system MUST attempt to auto-cancel any KIS orders that *this auto-trading system* previously submitted for the same strategy and are still open (`REQUESTED`, `ACCEPTED`, `PARTIALLY_FILLED`, `UNKNOWN`). Cancellation uses KIS 정정취소 endpoints (domestic `TTTC0013U` `/uapi/domestic-stock/v1/trading/order-rvsecncl`, US overseas `TTTT1004U` `/uapi/overseas-stock/v1/trading/order-rvsecncl`) with `RVSE_CNCL_DVSN_CD=02` (cancel). Each successfully canceled order MUST be marked `CANCELED` in `auto_trading_orders` with a safe reason and the masked KIS response. Orders the system did not create (user-placed via KIS HTS/MTS) MUST never be canceled by this flow. In DRY_RUN mode (live-order off) no cancellation is attempted; the existing SafetyGuard open-order block applies as before.
+- **FR-051b**: After auto-cancel attempts, the system MUST re-fetch open orders from KIS and pass the refreshed list to SafetyGuard. If KIS still reports open orders (e.g., external orders not owned by the system, or KIS has not yet reflected cancellation), SafetyGuard's open-order check still blocks the new order and records SKIP with the cancel attempt notes appended to the decision reason.
 - **FR-052**: Open orders MUST be visible in the strategy detail screen.
 - **FR-053**: The main strategy draft MUST be reusable as initial input for backtest and auto-trading strategy creation so the three areas do not feel disconnected.
 - **FR-054**: User-facing UI copy SHOULD label internal DRY_RUN order records as "모의 주문 기록" or an equivalent Korean phrase instead of exposing the raw technical status.
@@ -223,6 +229,7 @@
 - Users have already completed any KIS account setup required for trading before enabling live order execution.
 - If required account identifiers are missing, the app blocks live order execution and asks the user to complete KIS settings.
 - The default split count is 40 and the default target profit rate is 10%.
+- The default max buy-above-average rate is 0%, meaning additional buys are allowed at or below average price unless the user explicitly allows buying above average price.
 - Per-round buy amount is calculated from total budget divided by split count.
 - Automatic evaluation interval defaults to 10 minutes; outside known open sessions the safe behavior is SKIP.
 - This feature uses whole-share order quantities for automatic live trading.

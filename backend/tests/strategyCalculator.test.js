@@ -65,3 +65,21 @@ test('returns HOLD when budget is exhausted', () => {
   });
   assert.equal(result.decision, 'HOLD');
 });
+
+test('returns HOLD when price is above big-number buy ceiling', () => {
+  const result = evaluateStrategy({
+    strategy: { ...strategy, previousClose: 51000, bigBuyPremiumRate: 0.02 },
+    holding: { quantity: 2, averagePrice: 50000, remainingBudget: 1000000 },
+    currentPrice: 52100
+  });
+  assert.equal(result.decision, 'HOLD');
+});
+
+test('returns BUY when price is within big-number buy ceiling', () => {
+  const result = evaluateStrategy({
+    strategy: { ...strategy, buyAmountPerRound: 200000, previousClose: 51000, bigBuyPremiumRate: 0.05 },
+    holding: { quantity: 2, averagePrice: 50000, remainingBudget: 1000000 },
+    currentPrice: 52000
+  });
+  assert.equal(result.decision, 'BUY');
+});

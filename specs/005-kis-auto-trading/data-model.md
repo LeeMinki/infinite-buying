@@ -69,6 +69,7 @@ Automatic trading plan for one selected symbol.
 | split_count | integer | yes | Default 40 |
 | buy_amount_per_round | real | yes | `floor(total_budget / split_count)` for strategy display/order sizing |
 | target_profit_rate | real | yes | Default 0.1 |
+| big_buy_premium_rate | real | yes | Default 0.1. Big-number buy half is eligible at or below `previous_close_or_base_price × (1 + big_buy_premium_rate)`. |
 | current_round | integer | yes | Starts at 0 |
 | max_order_amount | real | yes | Legacy per-order cap. Retained for migration safety; written as 0 by new code and ignored by SafetyGuard. |
 | max_daily_order_amount | real | yes | Legacy daily cap. Retained for migration safety; written as 0 by new code and ignored by SafetyGuard. |
@@ -92,6 +93,7 @@ Validation:
 - `total_budget > 0`
 - `buy_amount_per_round >= 0` (set to `total_budget / split_count` on create; allowed to round to zero before evaluation populates fields)
 - `target_profit_rate > 0`
+- `big_buy_premium_rate >= 0`
 - `max_order_amount >= 0` (legacy; new strategies always set 0 and SafetyGuard does not read this field)
 - `max_daily_order_amount >= 0` (legacy; new strategies always set 0 and SafetyGuard does not read this field)
 - `current_round >= 0`

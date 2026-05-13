@@ -29,9 +29,9 @@ test('첫 매수: 평단가 없으니 시가에 floor(T/시가)주 매수', () =
   assert.equal(nextState.currentRound, 1);
 });
 
-test('큰수 LOC만 체결되는 날 (전일종가 이하, 평단가 × 0.95 위)', () => {
-  // 평단가 50_000, 전일 종가 50_000. bigPrice = 50_000, smallPrice = 47_500.
-  // 종가 49_500 → 큰수만 체결.
+test('평단가 매수와 큰수 매수가 모두 체결되는 날', () => {
+  // 평단가 50_000, 전일 종가 50_000, 큰수 매수 상한 55_000.
+  // 종가 49_500 → 평단가 매수와 큰수 매수가 모두 체결.
   const state = {
     cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
     investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
@@ -45,15 +45,15 @@ test('큰수 LOC만 체결되는 날 (전일종가 이하, 평단가 × 0.95 위
     tradeDate: '2026-01-03'
   });
   const buys = decisions.filter((d) => d.decision === Decision.BUY);
-  assert.equal(buys.length, 1);
-  assert.equal(buys[0].reason.includes('매수:'), true);
+  assert.equal(buys.length, 2);
+  assert.equal(buys[0].reason.includes('평단가 매수'), true);
+  assert.equal(buys[1].reason.includes('큰수 매수'), true);
   // half = 50_000, qty = floor(50_000 / 49_500) = 1.
   assert.equal(buys[0].quantity, 1);
 });
 
-test('큰 하락일: 큰수 + 작은수 둘 다 체결', () => {
-  // 평단가 50_000, 전일 종가 50_000. smallPrice = 47_500.
-  // 종가 47_000 → 둘 다 체결.
+test('큰 하락일: 평단가 매수 + 큰수 매수 둘 다 체결', () => {
+  // 평단가 50_000, 전일 종가 50_000. 종가 47_000 → 둘 다 체결.
   const state = {
     cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
     investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
@@ -68,8 +68,8 @@ test('큰 하락일: 큰수 + 작은수 둘 다 체결', () => {
   });
   const buys = decisions.filter((d) => d.decision === Decision.BUY);
   assert.equal(buys.length, 2);
-  assert.equal(buys[0].reason.includes('매수:'), true);
-  assert.equal(buys[1].reason.includes('추가 매수'), true);
+  assert.equal(buys[0].reason.includes('평단가 매수'), true);
+  assert.equal(buys[1].reason.includes('큰수 매수'), true);
   // 둘 다 같은 가격 (종가 47_000)에 체결.
   assert.equal(buys[0].price, 47000);
   assert.equal(buys[1].price, 47000);
@@ -92,6 +92,44 @@ test('상승일: 둘 다 한도 초과 → HOLD', () => {
   assert.equal(decisions[0].decision, Decision.HOLD);
   assert.equal(decisions[0].reason.includes('관망'), true);
   assert.equal(nextState.currentRound, 1);
+});
+
+test('큰수 매수 여유율 0%면 큰수 기준가를 넘는 종가에서는 매수하지 않음', () => {
+  const state = {
+    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
+  };
+  const { decisions, nextState } = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 52500, high: 53000, low: 52000, close: 52500 },
+    prevClose: 52000,
+    params: { ...params, bigBuyPremiumRate: 0 },
+    state,
+    tradeDate: '2026-01-05'
+  });
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].decision, Decision.HOLD);
+  assert.match(decisions[0].reason, /큰수 매수 상한/);
+  assert.equal(nextState.currentRound, 1);
+});
+
+test('큰수 매수 여유율 안이면 전일 종가보다 비싸도 매수 가능', () => {
+  const state = {
+    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
+  };
+  const { decisions, nextState } = evaluateDay({
+    mode: TradingMode.BACKTEST,
+    ohlc: { open: 52500, high: 53000, low: 52000, close: 52500 },
+    prevClose: 52000,
+    params: { ...params, totalBudget: 8000000, bigBuyPremiumRate: 0.03 },
+    state,
+    tradeDate: '2026-01-05'
+  });
+  const buys = decisions.filter((d) => d.decision === Decision.BUY);
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].price, 52500);
+  assert.equal(nextState.currentRound, 2);
 });
 
 test('익절 매도: 장중 고가 ≥ 평단가 × (1+목표) → 한도가에 전량 매도', () => {

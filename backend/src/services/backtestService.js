@@ -35,6 +35,10 @@ function validateInput(input) {
   if (!Number.isFinite(totalBudget) || totalBudget <= 0) throw badRequest('총 투자금은 0보다 커야 합니다.');
   const targetProfitRate = Number(input.targetProfitRate);
   if (!Number.isFinite(targetProfitRate) || targetProfitRate <= 0) throw badRequest('목표 수익률은 0보다 커야 합니다.');
+  const bigBuyPremiumRate = Number(input.bigBuyPremiumRate ?? 0.1);
+  if (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0) {
+    throw badRequest('큰수 매수 여유율은 0 이상이어야 합니다.');
+  }
   const splitCountRaw = Number(input.splitCount);
   const splitCount = Number.isInteger(splitCountRaw) && splitCountRaw > 0 ? splitCountRaw : 40;
   return {
@@ -47,6 +51,7 @@ function validateInput(input) {
     totalBudget,
     splitCount,
     targetProfitRate,
+    bigBuyPremiumRate,
     restartAfterSell: input.restartAfterSell !== false
   };
 }
@@ -68,6 +73,7 @@ function publicRun(run) {
     dailyAmount: run.dailyAmount,
     algorithm: run.algorithm,
     targetProfitRate: run.targetProfitRate,
+    bigBuyPremiumRate: run.bigBuyPremiumRate,
     restartAfterSell: run.restartAfterSell,
     status: run.status,
     initialBudget: run.initialBudget,
@@ -134,6 +140,7 @@ export async function createRun(userId, input) {
         totalBudget: params.totalBudget,
         splitCount: params.splitCount,
         targetProfitRate: params.targetProfitRate,
+        bigBuyPremiumRate: params.bigBuyPremiumRate,
         currency: params.currency,
         allowFractionalShares: params.market === 'US',
         restartAfterSell: params.restartAfterSell

@@ -36,19 +36,39 @@ export function evaluateStrategy({ strategy, holding, currentPrice }) {
     return { decision: 'HOLD', quantity: 0, amount: 0, roundNo: strategy.currentRound, reason: 'No remaining buy capacity' };
   }
 
-  const baseQty = Math.floor(strategy.buyAmountPerRound / price);
-  let plannedQty;
+  const bigBuyPremiumRate = Number(strategy.bigBuyPremiumRate ?? 0.1);
+  const baseBudget = Number(strategy.buyAmountPerRound || 0);
+  let plannedBudget;
   let reason;
   if (holding.quantity === 0) {
-    plannedQty = baseQty;
+    plannedBudget = baseBudget;
     reason = '첫 매수: 회차당 기본 수량';
-  } else if (price < holding.averagePrice) {
-    plannedQty = baseQty * 2;
-    reason = '평단가보다 저렴 → 2배 수량 매수';
   } else {
-    plannedQty = Math.max(1, Math.floor(baseQty / 2));
-    reason = '평단가 이상 → 절반 수량 매수';
+    const halfBudget = baseBudget / 2;
+    const previousClose = Number(strategy.previousClose || price);
+    const bigBuyLimit = previousClose * (1 + (Number.isFinite(bigBuyPremiumRate) ? bigBuyPremiumRate : 0.1));
+    const matched = [];
+    plannedBudget = 0;
+    if (price <= holding.averagePrice) {
+      plannedBudget += halfBudget;
+      matched.push('평단가 매수');
+    }
+    if (price <= bigBuyLimit) {
+      plannedBudget += halfBudget;
+      matched.push('큰수 매수');
+    }
+    if (plannedBudget <= 0) {
+      return {
+        decision: 'HOLD',
+        quantity: 0,
+        amount: 0,
+        roundNo: strategy.currentRound,
+        reason: '현재가가 평단가와 큰수 매수 상한을 모두 넘어 관망'
+      };
+    }
+    reason = matched.join(' + ');
   }
+  const plannedQty = Math.floor(plannedBudget / price);
   const cashCappedQty = Math.floor(holding.remainingBudget / price);
   const quantity = Math.min(plannedQty, cashCappedQty);
   if (quantity <= 0) {

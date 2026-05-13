@@ -10,6 +10,7 @@ const initial = {
   totalBudget: 10000,
   splitCount: 40,
   targetProfitPercent: 10,
+  bigBuyPremiumPercent: 10,
   status: 'ACTIVE'
 };
 
@@ -39,7 +40,8 @@ export function StrategyForm({ onSubmit }) {
         ...form,
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
-        targetProfitRate: Number(form.targetProfitPercent) / 100
+        targetProfitRate: Number(form.targetProfitPercent) / 100,
+        bigBuyPremiumRate: Number(form.bigBuyPremiumPercent) / 100
       });
       setForm(initial);
     } finally {
@@ -93,7 +95,7 @@ export function StrategyForm({ onSubmit }) {
         <p className="helper">백테스트와 자동매매 전략 생성에 함께 가져갈 기준 예산입니다.</p>
       </label>
 
-      <div className="form-grid two">
+      <div className="form-grid">
         <label>
           <span>분할 회차</span>
           <div className="input-with-unit">
@@ -120,6 +122,20 @@ export function StrategyForm({ onSubmit }) {
             <em>%</em>
           </div>
           <p className="helper">평균단가 대비 이 수익률에 도달하면 매도 신호가 표시됩니다. 예: 10 = 10%</p>
+        </label>
+        <label>
+          <span>큰수 매수 여유율</span>
+          <div className="input-with-unit">
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={form.bigBuyPremiumPercent}
+              onChange={(e) => update('bigBuyPremiumPercent', nonNegativeInput(e.target.value))}
+            />
+            <em>%</em>
+          </div>
+          <p className="helper">전일 종가보다 몇 % 높은 가격까지 큰수 매수를 허용할지 정합니다. 기본값 10%는 전일 종가의 110%까지입니다.</p>
         </label>
       </div>
 
@@ -151,4 +167,9 @@ function formatMoney(value, currency) {
   const locale = currency === 'KRW' ? 'ko-KR' : 'en-US';
   const maximumFractionDigits = currency === 'KRW' ? 0 : 2;
   return `${Number(value || 0).toLocaleString(locale, { maximumFractionDigits })} ${currency}`;
+}
+
+function nonNegativeInput(value) {
+  if (String(value).startsWith('-')) return '0';
+  return value;
 }
