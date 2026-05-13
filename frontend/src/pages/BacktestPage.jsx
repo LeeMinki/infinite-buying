@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createBacktest, deleteBacktest, listBacktestTrades, listBacktests } from '../api/client.js';
 import { AssetCurveChart } from '../components/AssetCurveChart.jsx';
 import { AveragePriceChart } from '../components/AveragePriceChart.jsx';
+import { LaorStrategyGuide } from '../components/LaorStrategyGuide.jsx';
 import { ResultSummary } from '../components/ResultSummary.jsx';
 import { RiskNotice } from '../components/RiskNotice.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
@@ -41,7 +42,8 @@ export function BacktestPage({ onBack, initialStrategy }) {
       currency: initialStrategy.currency || inferCurrency(market),
       totalBudget: initialStrategy.totalBudget || current.totalBudget,
       splitCount: initialStrategy.splitCount || current.splitCount,
-      targetProfitPercent: Number(initialStrategy.targetProfitRate || 0.1) * 100
+      targetProfitPercent: Number(initialStrategy.targetProfitRate || 0.1) * 100,
+      bigBuyPremiumPercent: Number(initialStrategy.bigBuyPremiumRate ?? 0.1) * 100
     }));
   }, [initialStrategy]);
 
@@ -64,6 +66,7 @@ export function BacktestPage({ onBack, initialStrategy }) {
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
         targetProfitRate: Number(form.targetProfitPercent) / 100,
+        bigBuyPremiumRate: Number(form.bigBuyPremiumPercent) / 100,
         restartAfterSell: form.restartAfterSell
       });
       setSelectedRun(run);
@@ -88,7 +91,7 @@ export function BacktestPage({ onBack, initialStrategy }) {
     <section className="mode-workspace">
       <header className="page-header">
         <div>
-          <h1>BACKTEST</h1>
+          <h1>백테스트</h1>
           <p>KIS에서 조회한 실제 일봉 데이터로 무한매수 전략 결과를 계산합니다.</p>
         </div>
         <button type="button" className="ghost" onClick={onBack}>돌아가기</button>
@@ -150,7 +153,12 @@ export function BacktestPage({ onBack, initialStrategy }) {
           <label>
             <span>목표 수익률 (%)</span>
             <input type="number" min="0.1" step="0.1" value={form.targetProfitPercent} onChange={(e) => setForm({ ...form, targetProfitPercent: e.target.value })} required />
-            <p className="helper">평단가 × (1 + 목표 수익률)에 LOC 매도 주문을 상시 걸어둡니다. 장중 고가가 닿으면 한도가에 전량 매도.</p>
+            <p className="helper">장중 고가가 평단가 × (1 + 목표 수익률)에 닿으면 목표가에 전량 매도한 것으로 계산합니다.</p>
+          </label>
+          <label>
+            <span>큰수 매수 여유율 (%)</span>
+            <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(e) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(e.target.value) })} required />
+            <p className="helper">전일 종가보다 몇 % 높은 가격까지 큰수 매수를 허용할지 정합니다. 기본값 10%는 전일 종가의 110%까지입니다.</p>
           </label>
           <label className="checkbox-field">
             <input type="checkbox" checked={form.restartAfterSell} onChange={(e) => setForm({ ...form, restartAfterSell: e.target.checked })} />
@@ -208,7 +216,8 @@ export function BacktestPage({ onBack, initialStrategy }) {
             { label: '실현손익', value: formatMoney(selectedRun.realizedProfit, selectedRun.currency) },
             { label: '미실현손익', value: formatMoney(selectedRun.unrealizedProfit, selectedRun.currency) },
             { label: '최대 낙폭', value: formatPercent(selectedRun.maxDrawdownRate) },
-            { label: '매수/매도', value: `${selectedRun.totalBuyCount || 0} / ${selectedRun.totalSellCount || 0}` }
+            { label: '매수/매도', value: `${selectedRun.totalBuyCount || 0} / ${selectedRun.totalSellCount || 0}` },
+            { label: '큰수 매수 여유율', value: `+${((selectedRun.bigBuyPremiumRate ?? 0.1) * 100).toFixed(1)}%`, hint: '전일 종가 기준 매수 상한입니다.' }
           ]} />
           {selectedRun.status === 'COMPLETED' && (selectedRun.totalBuyCount || 0) === 0 && (
             <ZeroBuyDiagnostic run={selectedRun} trades={trades} />
@@ -305,76 +314,6 @@ function RunPicker({ runs, selectedRun, onSelectRun, onBulkDelete }) {
   );
 }
 
-function LaorStrategyGuide() {
-  return (
-    <section className="laor-guide">
-      <header>
-        <h3>적용 알고리즘: <code>LAOR_INFINITE_V2</code></h3>
-        <p>총 시드를 여러 회차로 나누고, 매 거래일마다 정해진 예산으로 매수 기회를 잡습니다. 목표 수익률에 닿으면 전량 매도합니다.</p>
-      </header>
-
-      <div className="laor-loc-box">
-        <p><b>LOC (Limit On Close)란?</b></p>
-        <p>종가 기준으로 체결 여부가 정해지는 한도 주문입니다. 백테스트에서는 매수는 종가가 한도 이하일 때, 매도는 장중 고가가 목표가에 닿았을 때 체결된 것으로 계산합니다.</p>
-      </div>
-
-      <div className="laor-step">
-        <span className="step-num">1</span>
-        <div>
-          <h4>분할 회차</h4>
-          <p>사이클 시작 시점의 총 시드를 분할 회차로 나눕니다. 40분할이면 매 회차 예산은 <b>현재 사이클 시드 ÷ 40</b>입니다.</p>
-          <p className="laor-example">
-            예) 총 시드 4,000 USD, 40분할이면 회차당 예산은 100 USD입니다.
-          </p>
-        </div>
-      </div>
-
-      <div className="laor-step">
-        <span className="step-num">2</span>
-        <div>
-          <h4>첫 매수</h4>
-          <p>보유 수량이 없으면 그날 시가로 첫 회차 예산만큼 매수합니다. 소수점 매수가 가능한 종목은 소수점 수량까지 계산합니다.</p>
-          <p className="laor-example">
-            예) 회차 예산 100 USD, 시가 42 USD면 2.380952주를 매수합니다.
-          </p>
-        </div>
-      </div>
-
-      <div className="laor-step">
-        <span className="step-num">3</span>
-        <div>
-          <h4>기준가 매수</h4>
-          <p>첫 매수 이후에는 회차 예산을 둘로 나눕니다. 전일 종가와 평단가를 기준으로 매수 가격을 정하고, 종가가 기준 이하로 내려오면 매수한 것으로 계산합니다.</p>
-          <p className="laor-example">
-            종가가 각 한도 이하이면 해당 주문이 체결된 것으로 계산합니다.
-          </p>
-        </div>
-      </div>
-
-      <div className="laor-step">
-        <span className="step-num">4</span>
-        <div>
-          <h4>목표 수익률 매도</h4>
-          <p>보유 중인 종목의 장중 고가가 <b>평단가 × (1 + 목표 수익률)</b> 이상이면 목표가에 전량 매도한 것으로 계산합니다.</p>
-        </div>
-      </div>
-
-      <div className="laor-step">
-        <span className="step-num">5</span>
-        <div>
-          <h4>회차 소진</h4>
-          <p>분할 회차를 모두 쓰고 현금이 다음 회차 예산보다 적으면, 보유 수량의 4분의 1을 종가에 매도해 다음 매수 자금을 확보합니다. 해외 종목은 소수점 6자리까지, 국내 종목은 최소 1주 단위로 계산합니다.</p>
-          <p className="helper">매도 후 새 사이클 시작을 켜면 목표 매도 이후 늘거나 줄어든 총자산을 다시 분할해 다음 사이클을 시작합니다. 끄면 첫 목표 매도에서 종료합니다.</p>
-        </div>
-      </div>
-
-      <footer className="laor-foot">
-        매수·매도는 모두 백테스트 계산용 가상 체결입니다. 실제 주문은 발생하지 않습니다. 수수료·세금·환율·슬리피지는 0으로 가정합니다.
-      </footer>
-    </section>
-  );
-}
-
 function ZeroBuyDiagnostic({ run, trades }) {
   const buyAmountPerRound = Number(run.buyAmountPerRound || 0);
   const firstPrice = trades.length > 0 ? Number(trades[0].price || 0) : 0;
@@ -419,6 +358,7 @@ function createDefaultForm() {
     totalBudget: 4000,
     splitCount: 40,
     targetProfitPercent: 10,
+    bigBuyPremiumPercent: 10,
     restartAfterSell: false
   };
 }
@@ -433,4 +373,9 @@ function inferCurrency(market) {
 
 function toDateInputValue(date) {
   return date.toISOString().slice(0, 10);
+}
+
+function nonNegativeInput(value) {
+  if (String(value).startsWith('-')) return '0';
+  return value;
 }

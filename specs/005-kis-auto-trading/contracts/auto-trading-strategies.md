@@ -16,7 +16,8 @@ Request:
   "currency": "USD",
   "totalBudget": 4000,
   "splitCount": 40,
-  "targetProfitRate": 0.1
+  "targetProfitRate": 0.1,
+  "bigBuyPremiumRate": 0.1
 }
 ```
 
@@ -34,6 +35,7 @@ Response 201:
   "splitCount": 40,
   "buyAmountPerRound": 100,
   "targetProfitRate": 0.1,
+  "bigBuyPremiumRate": 0.1,
   "currentRound": 0,
   "startedAt": null,
   "stoppedAt": null,
@@ -50,6 +52,7 @@ Validation:
 
 - `symbol`, `market`, and `currency` are required.
 - `totalBudget`, `splitCount`, and `targetProfitRate` must be positive.
+- `bigBuyPremiumRate` must be zero or greater. Default `0.1` means the big-number half can buy up to 10% above the previous close or KIS base price.
 - `buyAmountPerRound` is derived from budget and split count.
 
 The legacy `maxOrderAmount` and `maxDailyOrderAmount` fields are no longer part of this contract. Requests that still include them are ignored. The corresponding DB columns are kept and written as 0 for migration safety.
@@ -94,6 +97,7 @@ Response 200:
   "splitCount": 40,
   "buyAmountPerRound": 100,
   "targetProfitRate": 0.1,
+  "bigBuyPremiumRate": 0.1,
   "currentRound": 3,
   "startedAt": "2026-05-12T05:01:00.000Z",
   "stoppedAt": null,
@@ -116,7 +120,8 @@ Request:
 {
   "totalBudget": 5000,
   "splitCount": 40,
-  "targetProfitRate": 0.1
+  "targetProfitRate": 0.1,
+  "bigBuyPremiumRate": 0.1
 }
 ```
 

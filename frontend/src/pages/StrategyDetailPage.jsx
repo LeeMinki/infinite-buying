@@ -149,6 +149,11 @@ export function StrategyDetailPage({ strategyId, onChanged, onOpenBacktest, onOp
                 <strong>+{Math.round(strategy.targetProfitRate * 100)}%</strong>
                 <span className="metric-hint">평균단가 대비 도달 시 매도</span>
               </div>
+              <div className="metric">
+                <span className="metric-label">큰수 매수 여유율</span>
+                <strong>+{((strategy.bigBuyPremiumRate ?? 0.1) * 100).toFixed(1)}%</strong>
+                <span className="metric-hint">전일 종가 기준 매수 상한</span>
+              </div>
             </div>
 
             <div className="strategy-bridge">

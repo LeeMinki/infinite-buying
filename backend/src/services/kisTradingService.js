@@ -59,6 +59,56 @@ export class KisTradingService {
     return this.placeOverseasOrder(context, { ...order, side: 'SELL' });
   }
 
+  async cancelOpenOrder(order) {
+    const context = await this.requireAccountContext();
+    const market = normalizeMarket(order.market, order.symbol);
+    if (market === 'KR') return this.cancelDomesticOrder(context, order);
+    return this.cancelOverseasOrder(context, order);
+  }
+
+  async cancelDomesticOrder(context, order) {
+    // KIS 국내 정정취소(TTTC0013U). RVSE_CNCL_DVSN_CD=02 = 취소, QTY_ALL_ORD_YN=Y = 잔량 전부 취소.
+    if (!order.kisOrderNo) throw new Error('KIS 주문번호가 없어 취소할 수 없습니다.');
+    const body = {
+      CANO: context.accountNumber,
+      ACNT_PRDT_CD: context.accountProductCode,
+      KRX_FWDG_ORD_ORGNO: order.kisOriginalOrderNo || '',
+      ORGN_ODNO: order.kisOrderNo,
+      ORD_DVSN: '00',
+      RVSE_CNCL_DVSN_CD: '02',
+      ORD_QTY: String(Math.floor(Number(order.remainingQuantity ?? order.quantity ?? 0) || 0)),
+      ORD_UNPR: '0',
+      QTY_ALL_ORD_YN: 'Y'
+    };
+    return this.requestOrder('/uapi/domestic-stock/v1/trading/order-rvsecncl', {
+      trId: 'TTTC0013U',
+      context,
+      body,
+      order
+    });
+  }
+
+  async cancelOverseasOrder(context, order) {
+    // KIS 해외 정정취소(TTTT1004U). 미국 기준 OVRS_EXCG_CD 필요.
+    if (!order.kisOrderNo) throw new Error('KIS 주문번호가 없어 취소할 수 없습니다.');
+    const body = {
+      CANO: context.accountNumber,
+      ACNT_PRDT_CD: context.accountProductCode,
+      OVRS_EXCG_CD: normalizeExchange(order.exchange),
+      PDNO: order.symbol,
+      ORGN_ODNO: order.kisOrderNo,
+      RVSE_CNCL_DVSN_CD: '02',
+      ORD_QTY: String(Number(order.remainingQuantity ?? order.quantity ?? 0) || 0),
+      OVRS_ORD_UNPR: '0'
+    };
+    return this.requestOrder('/uapi/overseas-stock/v1/trading/order-rvsecncl', {
+      trId: 'TTTT1004U',
+      context,
+      body,
+      order
+    });
+  }
+
   async refreshOrder(order) {
     const rows = await this.getOrderHistory(order.symbol, {
       market: order.market,

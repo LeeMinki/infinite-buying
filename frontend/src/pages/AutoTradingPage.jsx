@@ -16,6 +16,7 @@ import {
   stopAutoTradingStrategy,
   updateAutoTradingLiveOrder
 } from '../api/client.js';
+import { LaorStrategyGuide } from '../components/LaorStrategyGuide.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
 
 export function AutoTradingPage({ onBack, initialStrategy }) {
@@ -90,7 +91,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       currency: initialStrategy.currency || inferCurrency(market),
       totalBudget: String(totalBudget),
       splitCount: String(splitCount),
-      targetProfitPercent: String(Number(initialStrategy.targetProfitRate || 0.1) * 100)
+      targetProfitPercent: String(Number(initialStrategy.targetProfitRate || 0.1) * 100),
+      bigBuyPremiumPercent: String(Number(initialStrategy.bigBuyPremiumRate ?? 0.1) * 100)
     }));
   }, [initialStrategy]);
 
@@ -107,7 +109,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         currency: form.currency,
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
-        targetProfitRate: Number(form.targetProfitPercent) / 100
+        targetProfitRate: Number(form.targetProfitPercent) / 100,
+        bigBuyPremiumRate: Number(form.bigBuyPremiumPercent) / 100
       });
       setMessage(`${created.symbol} 자동매매 전략을 만들었습니다.`);
       await refresh(created.id);
@@ -225,7 +228,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           <h2>{settings?.liveOrderEnabled ? '실주문 모드' : '기록 모드'}</h2>
           <p>
             {settings?.liveOrderEnabled
-              ? '실제 주문 전 미체결 주문이 없는지, 같은 주문이 중복되지 않는지, 1회·일일 주문 한도와 매수가능금액·보유 수량이 충분한지 확인합니다. 모두 통과한 주문만 KIS로 전송합니다.'
+              ? '실제 주문 전 미체결 주문이 없는지, 같은 주문이 중복되지 않는지, 주문 수량이 0보다 큰지, 매수가능금액·보유 수량이 충분한지 확인합니다. 모두 통과한 주문만 KIS로 전송합니다.'
               : '자동매매는 계속 평가하지만 주문은 전송하지 않습니다. 현재가, 잔고, 매수가능금액을 확인하고 판단 로그와 모의 주문 기록만 남깁니다.'}
           </p>
         </div>
@@ -257,6 +260,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         <Metric label="최근 판단" value={dashboard?.recentDecisions?.[0]?.decision || '-'} hint={dashboard?.recentDecisions?.[0]?.reason || '아직 판단 없음'} />
       </section>
 
+      <LaorStrategyGuide mode="auto" />
+
       <section className="panel section">
         <div className="panel-heading">
           <div>
@@ -264,7 +269,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
             <p>종목을 선택하고 예산을 정합니다. 기본 분할 회차는 40회, 목표 수익률은 10%입니다.</p>
           </div>
         </div>
-        <form className="mode-form" onSubmit={submitStrategy}>
+        <form className="mode-form auto-strategy-form" onSubmit={submitStrategy}>
           <StockSearchField
             label="종목 검색"
             stockCode={form.symbol}
@@ -306,6 +311,11 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           <label>
             <span>목표 수익률 (%)</span>
             <input type="number" min="0.1" step="0.1" value={form.targetProfitPercent} onChange={(event) => setForm({ ...form, targetProfitPercent: event.target.value })} required />
+          </label>
+          <label>
+            <span>큰수 매수 여유율 (%)</span>
+            <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(event) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(event.target.value) })} required />
+            <p className="helper">전일 종가나 기준가보다 몇 % 높은 가격까지 큰수 매수를 허용할지 정합니다. 기본값 10%는 기준가의 110%까지입니다.</p>
           </label>
           <button type="submit" className="primary" disabled={busy === 'create'}>{busy === 'create' ? '저장 중...' : '전략 생성'}</button>
         </form>
@@ -366,6 +376,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
               <Metric label="회차" value={`${selected.currentRound}/${selected.splitCount}`} hint={`1회 매수금 ${formatMoney(selected.buyAmountPerRound, selected.currency)}`} />
               <Metric label="목표 수익률" value={`${(selected.targetProfitRate * 100).toFixed(1)}%`} hint="평단가 기준" />
+              <Metric label="큰수 매수 여유율" value={`+${((selected.bigBuyPremiumRate ?? 0.1) * 100).toFixed(1)}%`} hint="전일 종가 기준 매수 상한" />
               <Metric label="마지막 판단" value={selected.lastDecision || '-'} hint={selected.lastEvaluatedAt || '아직 없음'} />
             </div>
             <div className="auto-action-row">
@@ -596,7 +607,7 @@ function OrdersTable({ orders, onRefresh, busy }) {
     <section className="subsection">
       <h4>주문 이력</h4>
       <div className="table-wrap">
-        <table>
+        <table className="decision-log-table">
           <thead>
             <tr>
               <th>시간</th>
@@ -637,7 +648,7 @@ function DecisionLogTable({ decisions, currency }) {
     <section className="subsection">
       <h4>판단 로그</h4>
       <p className="helper">
-        스케줄러가 자동으로 평가한 것은 <code>SCHEDULED</code>, 사용자가 "지금 평가" 버튼을 눌러서 만든 것은 <code>MANUAL</code>로 표시됩니다.
+        스케줄러가 자동으로 평가한 것은 스케줄러, 사용자가 "지금 평가" 버튼을 눌러서 만든 것은 수동으로 표시됩니다.
         "목표가까지"는 현재가가 익절 목표가에 도달하기까지 필요한 상승률입니다. 0% 이하면 이미 목표가에 닿았다는 뜻이고, 양수가 클수록 멀었다는 뜻입니다.
       </p>
       <div className="table-wrap">
@@ -700,7 +711,8 @@ function defaultForm() {
     currency: 'USD',
     totalBudget: '4000',
     splitCount: '40',
-    targetProfitPercent: '10'
+    targetProfitPercent: '10',
+    bigBuyPremiumPercent: '10'
   };
 }
 
@@ -742,4 +754,9 @@ function orderStatusLabel(status) {
     DECIDED: '판단됨'
   };
   return labels[status] || status;
+}
+
+function nonNegativeInput(value) {
+  if (String(value).startsWith('-')) return '0';
+  return value;
 }

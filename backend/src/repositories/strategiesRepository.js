@@ -14,8 +14,8 @@ export function createStrategy(userId, input) {
   const result = getDb().prepare(`
     INSERT INTO strategies (
       user_id, name, stock_code, stock_name, total_budget, split_count,
-      buy_amount_per_round, target_profit_rate, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      buy_amount_per_round, target_profit_rate, big_buy_premium_rate, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     userId,
     input.name,
@@ -25,6 +25,7 @@ export function createStrategy(userId, input) {
     input.splitCount,
     buyAmountPerRound,
     input.targetProfitRate,
+    input.bigBuyPremiumRate,
     input.status
   );
   return getStrategy(userId, result.lastInsertRowid);
@@ -35,7 +36,7 @@ export function updateStrategy(userId, id, input) {
   getDb().prepare(`
     UPDATE strategies
     SET name = ?, stock_code = ?, stock_name = ?, total_budget = ?, split_count = ?,
-        buy_amount_per_round = ?, target_profit_rate = ?, status = ?, updated_at = datetime('now')
+        buy_amount_per_round = ?, target_profit_rate = ?, big_buy_premium_rate = ?, status = ?, updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(
     input.name,
@@ -45,6 +46,7 @@ export function updateStrategy(userId, id, input) {
     input.splitCount,
     buyAmountPerRound,
     input.targetProfitRate,
+    input.bigBuyPremiumRate,
     input.status,
     userId,
     id
@@ -75,6 +77,7 @@ function toStrategy(row) {
     splitCount: row.split_count,
     buyAmountPerRound: row.buy_amount_per_round,
     targetProfitRate: row.target_profit_rate,
+    bigBuyPremiumRate: row.big_buy_premium_rate ?? 0.1,
     currentRound: row.current_round,
     status: row.status,
     createdAt: row.created_at,

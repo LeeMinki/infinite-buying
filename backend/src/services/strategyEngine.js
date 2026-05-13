@@ -1,23 +1,21 @@
 import { Decision, TradingMode, isTradingMode } from '../domain/tradingMode.js';
 
-// 알고리즘: LAOR_INFINITE_V2 — 라오어 단기 무한매수법 (정통)
+// 알고리즘: LAOR_INFINITE_V2
 //
-// 매일 두 LOC 한도에 분할 주문:
-//   - 큰수 LOC 한도 = max(전일종가, 평단가)
-//   - 작은수 LOC 한도 = min(전일종가, 평단가) * (1 - smallDiscount)  [기본 5% 할인]
-// 종가가 한도 이하일 때만 한도가에 체결. 해외 종목은 소수점 수량을 허용할 수 있다.
+// 회차 예산을 두 매수 기회로 나눈다.
+//   - 평단가 매수: 종가가 현재 평단가 이하이면 회차 예산의 절반 매수
+//   - 큰수 매수: 종가가 전일 종가 × (1 + 큰수 매수 여유율) 이하이면 회차 예산의 절반 매수
+// 목표 매도는 장중 목표가 도달 시 전량 매도한 것으로 계산한다.
 //
 // 우선순위:
-//   1) 보유 > 0 && 장중 고가 ≥ 평단가 × (1+목표) → LOC 매도 한도가에 전량 매도
+//   1) 보유 > 0 && 장중 고가 ≥ 평단가 × (1+목표) → 목표가에 전량 매도
 //   2) 회차 >= 분할 회차 && 보유 > 0 && 현금 < T → 보유 1/4 매도해 시드 재확보 (회차 1 리셋)
 //   3) 회차 >= 분할 회차 && 보유 == 0 → COMPLETED
 //   4) 첫 매수(보유 0): 시가에 T/시가 수량 매수 (국내는 정수 주 단위)
-//   5) 그 외 일반 매수: 큰수/작은수 LOC 분할 (각 T/2씩)
+//   5) 그 외 일반 매수: 평단가 매수/큰수 매수 분할 (각 T/2씩)
 // 회차 카운터는 실제 매수 체결이 있을 때만 +1.
 // 목표 매도나 시드 재확보로 새 사이클을 시작하면 당시 총자산을 새 사이클 예산으로 삼아
 // 다음 회차 예산을 다시 계산한다.
-
-const DEFAULT_SMALL_DISCOUNT = 0.05;
 
 function assertPositiveNumber(value, label) {
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${label} must be a positive number`);
@@ -37,15 +35,14 @@ function normalizeParams(params) {
   if (!Number.isInteger(splitCount) || splitCount <= 0) {
     throw new Error('splitCount must be a positive integer');
   }
-  const smallDiscount = Number.isFinite(Number(params.smallDiscount)) && Number(params.smallDiscount) > 0 && Number(params.smallDiscount) < 1
-    ? Number(params.smallDiscount)
-    : DEFAULT_SMALL_DISCOUNT;
+  const bigBuyPremiumRate = Number(params.bigBuyPremiumRate ?? 0.1);
+  assertNonNegativeNumber(bigBuyPremiumRate, 'bigBuyPremiumRate');
   return {
     totalBudget,
     splitCount,
     currency: String(params.currency || 'USD').trim().toUpperCase(),
     targetProfitRate,
-    smallDiscount,
+    bigBuyPremiumRate,
     allowFractionalShares: params.allowFractionalShares === true,
     restartAfterSell: params.restartAfterSell !== false
   };
@@ -219,7 +216,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
   const T = perRoundBudget(s, p);
   const nextRoundNo = Math.min(s.currentRound + 1, p.splitCount);
 
-  // 1) LOC 매도: 평단가 × (1+목표) 한도에 매도 주문 → 장중 고가가 한도 도달 시 체결.
+  // 1) 목표 매도: 장중 목표가에 닿으면 전량 매도. 매도한 날에는 재매수하지 않는다.
   if (s.holdingQuantity > 0) {
     const target = s.averagePrice * (1 + p.targetProfitRate);
     if (high >= target) {
@@ -276,33 +273,33 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
     return { decisions: [dec], nextState: { ...dec.nextState, currentRound: roundNo, prevClose: close } };
   }
 
-  // 4) 일반 매수: 큰수/작은수 LOC 분할.
+  // 4) 일반 매수: 평단가 매수/큰수 매수 분할.
   const half = T / 2;
-  const bigPrice = Math.max(prevCloseSafe, s.averagePrice);
-  const smallPrice = Math.min(prevCloseSafe, s.averagePrice) * (1 - p.smallDiscount);
+  const averageBuyPrice = s.averagePrice;
+  const bigBuyPrice = prevCloseSafe * (1 + p.bigBuyPremiumRate);
   const decisions = [];
   let workingState = s;
 
-  // 큰수 LOC: 종가 ≤ bigPrice 면 체결.
-  if (close <= bigPrice) {
+  // 평단가 매수: 종가가 평단가 이하이면 회차 예산의 절반 매수.
+  if (close <= averageBuyPrice) {
     const available = Math.min(half, workingState.cash);
     const qty = quantityForBudget(available, close, p);
     if (qty > 0) {
       const reason =
-        `매수: 종가 ${fmtMoney(close, p)}가 기준가 ${fmtMoney(bigPrice, p)} 이하라 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmtMoney(qty * close, p)}입니다.`;
+        `평단가 매수: 종가 ${fmtMoney(close, p)}가 현재 평단가 ${fmtMoney(averageBuyPrice, p)} 이하라 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmtMoney(qty * close, p)}입니다.`;
       const dec = buyFill({ s: workingState, params: p, qty, fillPrice: close, roundNo, reason, tradeDate });
       decisions.push(dec);
       workingState = dec.nextState;
     }
   }
 
-  // 작은수 LOC: 종가 ≤ smallPrice 면 체결.
-  if (close <= smallPrice) {
+  // 큰수 매수: 전일 종가보다 사용자가 정한 비율만큼 높은 가격까지 매수 허용.
+  if (close <= bigBuyPrice) {
     const available = Math.min(half, workingState.cash);
     const qty = quantityForBudget(available, close, p);
     if (qty > 0) {
       const reason =
-        `추가 매수: 종가 ${fmtMoney(close, p)}가 추가 매수 기준 ${fmtMoney(smallPrice, p)} 이하라 ${fmtQty(qty)}주를 더 매수했습니다. 사용 금액은 ${fmtMoney(qty * close, p)}입니다.`;
+        `큰수 매수: 종가 ${fmtMoney(close, p)}가 전일 종가 기준 매수 상한 ${fmtMoney(bigBuyPrice, p)} 이하라 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmtMoney(qty * close, p)}입니다.`;
       const dec = buyFill({ s: workingState, params: p, qty, fillPrice: close, roundNo, reason, tradeDate });
       decisions.push(dec);
       workingState = dec.nextState;
@@ -312,7 +309,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
   if (decisions.length === 0) {
     const target = s.averagePrice * (1 + p.targetProfitRate);
     const reason =
-      `관망: 종가 ${fmtMoney(close, p)}가 매수 기준 ${fmtMoney(bigPrice, p)}보다 높고, 장중 고가도 목표가 ${fmtMoney(target, p)}에 닿지 않았습니다.`;
+      `관망: 종가 ${fmtMoney(close, p)}가 평단가 ${fmtMoney(averageBuyPrice, p)}보다 높고 큰수 매수 상한 ${fmtMoney(bigBuyPrice, p)}도 넘었습니다. 장중 고가도 목표가 ${fmtMoney(target, p)}에 닿지 않았습니다.`;
     decisions.push(makeHold(s, p, close, roundNo, reason, tradeDate));
   }
 
@@ -334,11 +331,42 @@ export function evaluate({ mode = TradingMode.BACKTEST, price, tradeDate, params
   if (s.currentRound >= p.splitCount && s.holdingQuantity === 0) {
     return makeCompleted(s, p, price, p.splitCount, `${p.splitCount}회차 소진 후 보유 없음`, tradeDate);
   }
-  const qty = quantityForBudget(perRoundBudget(s, p), price, p);
+  let buyBudget = perRoundBudget(s, p);
+  let buyReason = '단일가 평가 매수';
+  if (s.holdingQuantity > 0 && s.averagePrice > 0) {
+    const averageBuyPrice = s.averagePrice;
+    const previousCloseSafe = Number.isFinite(params.previousClose) && params.previousClose > 0
+      ? params.previousClose
+      : (Number.isFinite(s.prevClose) && s.prevClose > 0 ? s.prevClose : price);
+    const bigBuyPrice = previousCloseSafe * (1 + p.bigBuyPremiumRate);
+    const half = buyBudget / 2;
+    const matched = [];
+    buyBudget = 0;
+    if (price <= averageBuyPrice) {
+      buyBudget += half;
+      matched.push('평단가 매수');
+    }
+    if (price <= bigBuyPrice) {
+      buyBudget += half;
+      matched.push('큰수 매수');
+    }
+    if (buyBudget <= 0) {
+      return makeHold(
+        s,
+        p,
+        price,
+        roundNo,
+        `현재가 ${fmtMoney(price, p)}가 평단가와 큰수 매수 상한을 모두 넘어 추가 매수하지 않습니다.`,
+        tradeDate
+      );
+    }
+    buyReason = matched.join(' + ');
+  }
+  const qty = quantityForBudget(buyBudget, price, p);
   if (qty <= 0 || qty * price > s.cash) {
     return makeHold(s, p, price, roundNo, '회차 예산으로 매수할 수 없거나 현금 부족', tradeDate);
   }
-  const dec = buyFill({ s, params: p, qty, fillPrice: price, roundNo, reason: '단일가 평가 매수', tradeDate });
+  const dec = buyFill({ s, params: p, qty, fillPrice: price, roundNo, reason: buyReason, tradeDate });
   dec.nextState.currentRound = roundNo;
   return dec;
 }

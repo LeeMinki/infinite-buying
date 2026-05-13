@@ -39,6 +39,7 @@ export class KisMarketDataProvider {
       market: 'KR',
       exchange: 'KRX',
       price,
+      previousClose: normalizeNumber(row.prdy_clpr ?? row.stck_sdpr ?? row.base ?? row.prev_close),
       currency: 'KRW',
       source: 'KIS_API',
       fetchedAt: new Date().toISOString()
@@ -78,6 +79,7 @@ export class KisMarketDataProvider {
       market: 'US',
       exchange,
       price,
+      previousClose: normalizeNumber(row.base ?? row.prdy_clpr ?? row.ovrs_base_pric ?? row.last_close ?? row.prev_close),
       currency: 'USD',
       source: 'KIS_API',
       fetchedAt: new Date().toISOString()

@@ -100,7 +100,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     await getValidAccessToken(userId);
     contextReady = true;
     const price = await trading.getCurrentPrice(strategy.symbol, { market: strategy.market });
-    const [balance, buyingPower, openOrders] = await Promise.all([
+    const [balance, buyingPower, openOrdersInitial] = await Promise.all([
       trading.getBalance(strategy.symbol, { market: strategy.market, currency: strategy.currency }),
       trading.getBuyingPower(strategy.symbol, {
         market: strategy.market,
@@ -109,6 +109,46 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       }),
       trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency })
     ]);
+
+    // 자동 취소: 실주문 모드이고 이전 평가에서 우리가 KIS에 접수한 주문이 미체결로 남아
+    // 신규 매수/매도를 막고 있으면, 우리 시스템이 만든 주문에 한해 자동으로 취소를 시도한다.
+    // 사용자가 KIS HTS/MTS에서 직접 만든 주문은 절대 건드리지 않는다.
+    const autoCancelNotes = [];
+    let openOrders = openOrdersInitial;
+    if (settings.liveOrderEnabled && Array.isArray(openOrders) && openOrders.length > 0) {
+      const ownedOpen = repo.listOpenOwnedOrders(userId, strategy.id);
+      const ownedOrderNos = new Set(ownedOpen.map((o) => o.kisOrderNo).filter(Boolean));
+      const ownedOpenAtKis = openOrders.filter((row) => row.orderNo && ownedOrderNos.has(row.orderNo));
+      for (const own of ownedOpen) {
+        const cancelTarget = openOrders.find((row) => row.orderNo === own.kisOrderNo);
+        try {
+          const result = await trading.cancelOpenOrder({
+            ...own,
+            remainingQuantity: cancelTarget?.remainingQuantity ?? own.remainingQuantity ?? own.quantity
+          });
+          repo.markOrderCanceled(userId, own.id, {
+            reason: '자동매매가 신규 주문 전 자동 취소했습니다.',
+            responsePayloadMasked: result?.responsePayloadMasked || null
+          });
+          autoCancelNotes.push(`주문 #${own.id} (KIS ${own.kisOrderNo}) 자동 취소`);
+        } catch (err) {
+          autoCancelNotes.push(`주문 #${own.id} 자동 취소 실패: ${err.message || err}`);
+        }
+      }
+      if (ownedOpen.length > 0) {
+        // KIS는 취소가 즉시 잔량 0이 되지 않을 수 있으므로 잠시 후 미체결 목록을 다시 가져온다.
+        try {
+          openOrders = await trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency });
+        } catch (_) {
+          // 재조회 실패는 무시. 기존 목록을 그대로 SafetyGuard 에 넘긴다.
+        }
+        // 우리가 만든 주문 외에 외부 주문이 남아 있을 수 있다. 그 경우 SafetyGuard 가 그대로 차단한다.
+        if (ownedOpenAtKis.length === 0) {
+          autoCancelNotes.push('미체결 주문 목록에 우리가 만든 주문은 없습니다. 외부 주문은 취소하지 않습니다.');
+        }
+      }
+    }
+
     const holdingQuantity = Number(balance.quantity || 0);
     const averagePrice = Number(balance.averagePrice || 0);
     const cashAvailable = Number(buyingPower.cashAvailable || balance.cashAvailable || 0);
@@ -117,13 +157,15 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       market: strategy.market,
       currency: strategy.currency,
       currentPrice: price.price,
+      previousClose: price.previousClose,
       holdingQuantity,
       averagePrice,
       cashAvailable,
       currentRound: strategy.currentRound,
       totalBudget: strategy.totalBudget,
       splitCount: strategy.splitCount,
-      targetProfitRate: strategy.targetProfitRate
+      targetProfitRate: strategy.targetProfitRate,
+      bigBuyPremiumRate: strategy.bigBuyPremiumRate
     });
     // 스냅샷은 평가 결정 직후에 찍어서 "이 시점에 자동매매가 무슨 결정을 내렸는가" 까지 같이 저장한다.
     const snapshot = createSnapshot(userId, strategy, {
@@ -132,11 +174,15 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       cashAvailable,
       decision: decision.decision
     });
+    const baseReason = autoCancelNotes.length > 0
+      ? `${decision.reason} (자동 취소 진행: ${autoCancelNotes.join(' / ')})`
+      : decision.reason;
     const decisionWithContext = {
       ...decision,
-      reason: appendEvaluationContext(decision.reason, {
+      reason: appendEvaluationContext(baseReason, {
         strategy,
         price: price.price,
+        previousClose: price.previousClose,
         holdingQuantity,
         averagePrice,
         cashAvailable,
@@ -164,6 +210,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         reason: appendEvaluationContext(guard.reason, {
           strategy,
           price: price.price,
+          previousClose: price.previousClose,
           holdingQuantity,
           averagePrice,
           cashAvailable,
@@ -502,6 +549,7 @@ function saveSkip(userId, strategy, reason, evaluationSource = 'SCHEDULED') {
 function appendEvaluationContext(reason, {
   strategy,
   price,
+  previousClose,
   holdingQuantity,
   averagePrice,
   cashAvailable,
@@ -510,13 +558,15 @@ function appendEvaluationContext(reason, {
 }) {
   const detail = [
     `현재가 ${fmt(price)} ${strategy.currency}`,
+    previousClose ? `전일종가/기준가 ${fmt(previousClose)} ${strategy.currency}` : null,
     `보유 ${fmtQty(holdingQuantity)}주`,
     `평단 ${fmt(averagePrice)} ${strategy.currency}`,
+    `큰수 매수 여유율 +${fmt((strategy.bigBuyPremiumRate ?? 0.1) * 100)}%`,
     `매수가능금액 ${fmt(cashAvailable)} ${strategy.currency}`,
     `회차 ${strategy.currentRound}/${strategy.splitCount}`,
     `미체결 ${openOrderCount || 0}건`,
     `실주문 ${liveOrderEnabled ? '켜짐' : '꺼짐'}`
-  ].join(', ');
+  ].filter(Boolean).join(', ');
   return `${reason} 확인값: ${detail}.`;
 }
 
@@ -531,6 +581,10 @@ function normalizeStrategyInput(input = {}) {
   if (!Number.isInteger(splitCountRaw) || splitCountRaw <= 0) throw badRequest('분할 회차는 1 이상의 정수여야 합니다.');
   const targetProfitRate = Number(input.targetProfitRate ?? 0.1);
   if (!Number.isFinite(targetProfitRate) || targetProfitRate <= 0) throw badRequest('목표 수익률은 0보다 커야 합니다.');
+  const bigBuyPremiumRate = Number(input.bigBuyPremiumRate ?? 0.1);
+  if (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0) {
+    throw badRequest('큰수 매수 여유율은 0 이상이어야 합니다.');
+  }
   const buyAmountPerRound = Math.floor(totalBudget / splitCountRaw);
   return {
     symbol,
@@ -540,7 +594,8 @@ function normalizeStrategyInput(input = {}) {
     totalBudget,
     splitCount: splitCountRaw,
     buyAmountPerRound,
-    targetProfitRate
+    targetProfitRate,
+    bigBuyPremiumRate
   };
 }
 

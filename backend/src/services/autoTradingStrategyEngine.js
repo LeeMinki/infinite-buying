@@ -3,9 +3,11 @@ export function evaluateAutoTrading(input) {
   const totalBudget = positive(input.totalBudget, 'totalBudget');
   const splitCount = positiveInteger(input.splitCount || 40, 'splitCount');
   const targetProfitRate = positive(input.targetProfitRate || 0.1, 'targetProfitRate');
+  const bigBuyPremiumRate = nonNegative(input.bigBuyPremiumRate ?? 0.1);
   const currentRound = Math.max(0, Math.floor(Number(input.currentRound || 0)));
   const holdingQuantity = nonNegative(input.holdingQuantity || 0);
   const averagePrice = nonNegative(input.averagePrice || 0);
+  const previousClose = nonNegative(input.previousClose || 0);
   const cashAvailable = input.cashAvailable == null ? null : nonNegative(input.cashAvailable);
   // 국내 종목은 정수 주 단위만 가능. 해외 종목은 KIS 소수점매수 서비스를 가정해 소수점을 허용한다.
   // 이렇게 하면 회차 예산이 한 주 값보다 작은 경우(예: $30 vs $80)에도 자동매매가 HOLD로 막히지 않고
@@ -35,7 +37,35 @@ export function evaluateAutoTrading(input) {
     };
   }
 
-  const rawQuantity = buyAmountPerRound / currentPrice;
+  let buyBudget = buyAmountPerRound;
+  let buyReason = '첫 매수';
+  if (holdingQuantity > 0 && averagePrice > 0) {
+    const halfBudget = buyAmountPerRound / 2;
+    const bigBuyBasePrice = previousClose || currentPrice;
+    const bigBuyPrice = bigBuyBasePrice * (1 + bigBuyPremiumRate);
+    const matched = [];
+    buyBudget = 0;
+    if (currentPrice <= averagePrice) {
+      buyBudget += halfBudget;
+      matched.push(`평단가 매수: 현재가 ${fmt(currentPrice)}가 평단가 ${fmt(averagePrice)} 이하`);
+    }
+    if (currentPrice <= bigBuyPrice) {
+      buyBudget += halfBudget;
+      matched.push(`큰수 매수: 현재가 ${fmt(currentPrice)}가 전일 종가 기준 매수 상한 ${fmt(bigBuyPrice)} 이하`);
+    }
+    if (buyBudget <= 0) {
+      return {
+        decision: 'HOLD',
+        expectedQuantity: 0,
+        expectedOrderPrice: currentPrice,
+        expectedAmount: 0,
+        reason: `관망합니다. 현재가 ${fmt(currentPrice)}가 평단가 ${fmt(averagePrice)}보다 높고, 전일 종가 기준 큰수 매수 상한 ${fmt(bigBuyPrice)}도 넘었습니다.`
+      };
+    }
+    buyReason = matched.join(' / ');
+  }
+
+  const rawQuantity = buyBudget / currentPrice;
   const quantity = allowFractional ? Number(rawQuantity.toFixed(6)) : Math.floor(rawQuantity);
   if (quantity <= 0) {
     return {
@@ -43,7 +73,7 @@ export function evaluateAutoTrading(input) {
       expectedQuantity: 0,
       expectedOrderPrice: currentPrice,
       expectedAmount: 0,
-      reason: `1회 매수금 ${fmt(buyAmountPerRound)}으로 현재가 ${fmt(currentPrice)} 기준 매수 가능한 수량이 0이라 관망합니다.`
+      reason: `이번 평가의 매수 예산 ${fmt(buyBudget)}으로 현재가 ${fmt(currentPrice)} 기준 매수 가능한 수량이 0이라 관망합니다.`
     };
   }
 
@@ -64,7 +94,7 @@ export function evaluateAutoTrading(input) {
     expectedQuantity: quantity,
     expectedOrderPrice: currentPrice,
     expectedAmount,
-    reason: `${currentRound + 1}/${splitCount}회차 매수 조건입니다. 현재가 ${fmt(currentPrice)} 기준 ${qtyLabel} 매수를 검토합니다.`
+    reason: `${currentRound + 1}/${splitCount}회차 매수 조건입니다. ${buyReason}. 현재가 ${fmt(currentPrice)} 기준 ${qtyLabel} 매수를 검토합니다.`
   };
 }
 

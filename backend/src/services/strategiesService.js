@@ -49,6 +49,7 @@ function normalizeStrategyInput(input) {
   const totalBudget = Number(input.totalBudget);
   const splitCount = Number(input.splitCount || 40);
   const targetProfitRate = Number(input.targetProfitRate ?? 0.1);
+  const bigBuyPremiumRate = Number(input.bigBuyPremiumRate ?? 0.1);
   if (!input.name || !input.stockCode || !input.stockName) {
     const error = new Error('name, stockCode, and stockName are required');
     error.status = 400;
@@ -59,6 +60,11 @@ function normalizeStrategyInput(input) {
     error.status = 400;
     throw error;
   }
+  if (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0) {
+    const error = new Error('bigBuyPremiumRate must be a non-negative number');
+    error.status = 400;
+    throw error;
+  }
   return {
     name: input.name.trim(),
     stockCode: input.stockCode.trim(),
@@ -66,6 +72,7 @@ function normalizeStrategyInput(input) {
     totalBudget: Math.floor(totalBudget),
     splitCount: Math.floor(splitCount),
     targetProfitRate,
+    bigBuyPremiumRate,
     status: input.status === 'PAUSED' ? 'PAUSED' : 'ACTIVE'
   };
 }

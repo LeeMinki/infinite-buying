@@ -18,6 +18,7 @@ function toRun(row) {
     dailyAmount: row.daily_amount,
     algorithm: row.algorithm || 'LAOR_INFINITE_V2',
     targetProfitRate: row.target_profit_rate,
+    bigBuyPremiumRate: row.big_buy_premium_rate ?? 0.1,
     restartAfterSell: row.restart_after_sell === 1,
     status: row.status,
     initialBudget: row.initial_budget,
@@ -76,10 +77,10 @@ export function createRun(userId, input) {
     .prepare(`
       INSERT INTO backtest_runs (
         user_id, stock_code, stock_name, symbol, market, data_source, currency, from_date, to_date,
-        total_budget, split_count, buy_amount_per_round, target_profit_rate, restart_after_sell,
+        total_budget, split_count, buy_amount_per_round, target_profit_rate, big_buy_premium_rate, restart_after_sell,
         initial_lump_ratio, daily_amount, algorithm,
         status, initial_budget
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
     `)
     .run(
       userId,
@@ -95,6 +96,7 @@ export function createRun(userId, input) {
       splitCount,
       perRoundBudget,
       targetProfitRate,
+      safeFiniteNumber(input.bigBuyPremiumRate, 0.1),
       input.restartAfterSell ? 1 : 0,
       0,
       0,

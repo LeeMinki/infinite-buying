@@ -6,6 +6,7 @@ const tmp = useTempDb();
 const db = await bootstrapDb();
 const credentialService = await import('../src/services/kisCredentialService.js');
 const autoTradingService = await import('../src/services/autoTradingService.js');
+const { evaluateAutoTrading } = await import('../src/services/autoTradingStrategyEngine.js');
 const repo = await import('../src/repositories/autoTradingRepository.js');
 
 const alice = createUser(db, 'alice-auto@example.com');
@@ -18,6 +19,46 @@ credentialService.saveSettings(alice.id, {
 });
 
 test.after(() => tmp.cleanup());
+
+test('auto trading holds when current price is above big-number buy ceiling', () => {
+  const result = evaluateAutoTrading({
+    symbol: 'TQQQ',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 57,
+    holdingQuantity: 1,
+    averagePrice: 55,
+    previousClose: 55,
+    cashAvailable: 1000,
+    currentRound: 1,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.02
+  });
+  assert.equal(result.decision, 'HOLD');
+  assert.match(result.reason, /큰수 매수 상한/);
+});
+
+test('auto trading buys when current price is within big-number buy ceiling', () => {
+  const result = evaluateAutoTrading({
+    symbol: 'TQQQ',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 56,
+    holdingQuantity: 1,
+    averagePrice: 55,
+    previousClose: 55,
+    cashAvailable: 1000,
+    currentRound: 1,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.02
+  });
+  assert.equal(result.decision, 'BUY');
+  assert.equal(result.expectedQuantity, 0.892857);
+});
 
 function mockKis({ orderOk = true } = {}) {
   const calls = [];

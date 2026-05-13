@@ -559,6 +559,10 @@ tbody tr:last-child td {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.strategy-form .form-grid {
+  grid-template-columns: 1fr;
+}
+
 .input-with-unit {
   position: relative;
 }
@@ -932,6 +936,14 @@ button.danger-button:hover:not(:disabled) {
 
 .table-wrap table {
   margin: 0;
+}
+
+.decision-log-table {
+  min-width: 1180px;
+}
+
+.decision-log-table th {
+  white-space: nowrap;
 }
 
 .button-pair {
@@ -1562,6 +1574,11 @@ button.danger-button:hover:not(:disabled) {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.auto-strategy-form {
+  align-items: start;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 /* 종목 검색은 보조 안내가 길어서 폼 전체 가로폭을 쓰는 게 자연스럽다. */
 .mode-form .stock-search-field {
   grid-column: 1 / -1;
@@ -1577,6 +1594,10 @@ button.danger-button:hover:not(:disabled) {
 .mode-form button,
 .mode-form .checkbox-field {
   align-self: end;
+}
+
+.auto-strategy-form > button[type="submit"] {
+  grid-column: 1 / -1;
 }
 
 .checkbox-field {
@@ -1611,6 +1632,10 @@ button.danger-button:hover:not(:disabled) {
   display: grid;
   gap: 14px;
   padding: 18px 20px;
+}
+
+.auto-trading-page .laor-guide {
+  margin-bottom: 18px;
 }
 .laor-guide > header h3 { font-size: 16px; margin: 0 0 4px; }
 .laor-guide > header p { color: var(--text-soft); font-size: 13px; margin: 0; }

@@ -63,7 +63,7 @@ Important sheets:
 
 ## Decision: SafetyGuard runs before any real order and returns a structured outcome
 
-**Rationale**: Live order path must be auditable and deterministic. The guard centralizes status checks, open-order checks, duplicate checks, per-order and daily limits, buying power, sellable quantity, and live-order setting behavior.
+**Rationale**: Live order path must be auditable and deterministic. The guard centralizes status checks, open-order checks, duplicate checks, buying power, sellable quantity, and live-order setting behavior.
 
 **Alternatives considered**:
 
