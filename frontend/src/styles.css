@@ -560,7 +560,12 @@ tbody tr:last-child td {
 }
 
 .strategy-form .form-grid {
-  grid-template-columns: 1fr;
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.strategy-form .form-grid label:last-child {
+  grid-column: 1 / -1;
 }
 
 .input-with-unit {
@@ -943,6 +948,18 @@ button.danger-button:hover:not(:disabled) {
 }
 
 .decision-log-table th {
+  white-space: nowrap;
+}
+
+.half-chip {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  color: #3730a3;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
   white-space: nowrap;
 }
 

@@ -10,7 +10,7 @@ const initial = {
   totalBudget: 10000,
   splitCount: 40,
   targetProfitPercent: 10,
-  bigBuyPremiumPercent: 10,
+  bigBuyPremiumPercent: '',
   status: 'ACTIVE'
 };
 
@@ -41,7 +41,7 @@ export function StrategyForm({ onSubmit }) {
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
         targetProfitRate: Number(form.targetProfitPercent) / 100,
-        bigBuyPremiumRate: Number(form.bigBuyPremiumPercent) / 100
+        bigBuyPremiumRate: form.bigBuyPremiumPercent === '' ? null : Number(form.bigBuyPremiumPercent) / 100
       });
       setForm(initial);
     } finally {
@@ -135,7 +135,10 @@ export function StrategyForm({ onSubmit }) {
             />
             <em>%</em>
           </div>
-          <p className="helper">전일 종가보다 몇 % 높은 가격까지 큰수 매수를 허용할지 정합니다. 기본값 10%는 전일 종가의 110%까지입니다.</p>
+          <p className="helper">
+            비워두면 0.1 ÷ 분할 회차로 자동 계산합니다.
+            현재 적용값: {form.bigBuyPremiumPercent === '' ? `자동 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `${form.bigBuyPremiumPercent}%`}
+          </p>
         </label>
       </div>
 
@@ -144,7 +147,7 @@ export function StrategyForm({ onSubmit }) {
         <div>
           <b>1회 매수금</b>은 자동으로 계산됩니다: <b>{formatMoney(perRoundBuy, form.currency)}</b>
           <br />
-          현재가가 이 금액보다 높으면 해당 회차는 자동으로 관망 처리됩니다.
+          이 시스템은 KIS Open API 기준으로 <b>1주 단위 매수</b>만 지원합니다. 회차 절반 예산이 1주 가격보다 작으면 자동으로 다음 사이클로 이월(carryover)되어 합산 매수합니다.
         </div>
       </div>
 
@@ -167,6 +170,10 @@ function formatMoney(value, currency) {
   const locale = currency === 'KRW' ? 'ko-KR' : 'en-US';
   const maximumFractionDigits = currency === 'KRW' ? 0 : 2;
   return `${Number(value || 0).toLocaleString(locale, { maximumFractionDigits })} ${currency}`;
+}
+
+function formatPercent(rate) {
+  return `${(Number(rate || 0) * 100).toFixed(4)}%`;
 }
 
 function nonNegativeInput(value) {

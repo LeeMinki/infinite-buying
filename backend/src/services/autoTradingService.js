@@ -3,6 +3,7 @@ import { evaluateAutoTrading } from './autoTradingStrategyEngine.js';
 import { validateOrderSafety } from './autoTradingSafetyGuard.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
+import { resolveBigBuyPremiumRate } from './buyAlgorithm.js';
 
 const LOCK_KEY = 'evaluate';
 
@@ -190,45 +191,6 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         openOrderCount: openOrders.length
       })
     };
-    const idempotencyKey = makeIdempotencyKey(strategy, decisionWithContext, tradeDate);
-    const guard = validateOrderSafety({
-      userId,
-      strategy,
-      decision: decisionWithContext,
-      liveOrderEnabled: settings.liveOrderEnabled,
-      buyingPower,
-      balance,
-      openOrders,
-      idempotencyKey,
-      tradeDate
-    });
-
-    if (!guard.ok) {
-      const log = createDecisionLog(userId, strategy, {
-        ...decisionWithContext,
-        decision: guard.decision || 'SKIP',
-        reason: appendEvaluationContext(guard.reason, {
-          strategy,
-          price: price.price,
-          previousClose: price.previousClose,
-          holdingQuantity,
-          averagePrice,
-          cashAvailable,
-          liveOrderEnabled: settings.liveOrderEnabled,
-          openOrderCount: openOrders.length
-        }),
-        liveOrderEnabled: settings.liveOrderEnabled,
-        currentPrice: price.price,
-        averagePrice,
-        holdingQuantity,
-        cashAvailable,
-        openOrderCount: openOrders.length,
-        evaluationSource
-      });
-      repo.markStrategyEvaluation(userId, strategy.id, { decision: log.decision, errorMessage: null });
-      return { strategy: repo.getStrategy(userId, strategy.id), decision: log, snapshot, order: null };
-    }
-
     const log = createDecisionLog(userId, strategy, {
       ...decisionWithContext,
       liveOrderEnabled: settings.liveOrderEnabled,
@@ -239,81 +201,132 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       openOrderCount: openOrders.length,
       evaluationSource
     });
-    if (guard.noOrder || !['BUY', 'SELL'].includes(decisionWithContext.decision)) {
+    if (!['BUY', 'SELL'].includes(decisionWithContext.decision)) {
       repo.markStrategyEvaluation(userId, strategy.id, { decision: log.decision, errorMessage: null });
       return { strategy: repo.getStrategy(userId, strategy.id), decision: log, snapshot, order: null };
     }
 
-    const baseOrder = {
-      strategyId: strategy.id,
-      symbol: strategy.symbol,
-      market: strategy.market,
-      currency: strategy.currency,
-      side: decisionWithContext.decision,
-      quantity: decisionWithContext.expectedQuantity,
-      orderPrice: decisionWithContext.expectedOrderPrice,
-      estimatedAmount: decisionWithContext.expectedAmount,
-      idempotencyKey,
-      decisionReason: decisionWithContext.reason,
-      liveOrderEnabled: settings.liveOrderEnabled
-    };
+    const intents = normalizeOrderIntents(decisionWithContext);
+    const orders = [];
+    let localBuyingPower = { ...buyingPower };
+    let localBalance = { ...balance };
+    for (const intent of intents) {
+      const idempotencyKey = makeIdempotencyKey(strategy, intent.half, tradeDate);
+      const intentDecision = {
+        ...decisionWithContext,
+        expectedQuantity: intent.expectedQuantity,
+        expectedOrderPrice: intent.orderPrice,
+        expectedAmount: intent.expectedAmount,
+        reason: `${decisionWithContext.reason} / ${intent.reason || intent.half}`
+      };
+      const guard = validateOrderSafety({
+        userId,
+        strategy,
+        decision: intentDecision,
+        liveOrderEnabled: settings.liveOrderEnabled,
+        buyingPower: localBuyingPower,
+        balance: localBalance,
+        openOrders,
+        idempotencyKey,
+        tradeDate
+      });
+      if (!guard.ok) {
+        const skipped = repo.createOrder(userId, {
+          strategyId: strategy.id,
+          symbol: strategy.symbol,
+          market: strategy.market,
+          currency: strategy.currency,
+          side: intent.side,
+          quantity: intent.expectedQuantity,
+          orderPrice: intent.orderPrice,
+          estimatedAmount: intent.expectedAmount,
+          idempotencyKey,
+          decisionReason: guard.reason,
+          liveOrderEnabled: settings.liveOrderEnabled,
+          status: 'FAILED',
+          requestPayloadMasked: null,
+          errorMessage: guard.reason,
+          half: intent.half,
+          decisionLogId: log.id
+        });
+        orders.push(skipped);
+        continue;
+      }
 
-    if (!settings.liveOrderEnabled) {
-      const order = repo.createOrder(userId, {
-        ...baseOrder,
-        status: 'DRY_RUN',
-        requestPayloadMasked: maskPayload(baseOrder)
-      });
-      repo.attachOrderIdToDecisionLog(log.id, order.id);
-      repo.markStrategyEvaluation(userId, strategy.id, {
-        decision: decisionWithContext.decision,
-        incrementRound: decisionWithContext.decision === 'BUY',
-        ordered: true
-      });
-      return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: order.id }, snapshot, order };
-    }
-
-    let order;
-    try {
-      const result = decisionWithContext.decision === 'BUY'
-        ? await trading.placeBuyOrder(baseOrder)
-        : await trading.placeSellOrder(baseOrder);
-      order = repo.createOrder(userId, {
-        ...baseOrder,
-        status: result.status || 'ACCEPTED',
-        kisOrderNo: result.orderNo,
-        kisOriginalOrderNo: result.originalOrderNo,
-        requestPayloadMasked: result.requestPayloadMasked || maskPayload(baseOrder),
-        responsePayloadMasked: result.responsePayloadMasked
-      });
-      repo.attachOrderIdToDecisionLog(log.id, order.id);
-      repo.addDailyUsedAmount(userId, strategy.id, {
-        tradeDate,
+      const baseOrder = {
+        strategyId: strategy.id,
+        symbol: strategy.symbol,
         market: strategy.market,
         currency: strategy.currency,
-        amount: decisionWithContext.expectedAmount
-      });
-      repo.markStrategyEvaluation(userId, strategy.id, {
-        decision: decisionWithContext.decision,
-        incrementRound: decisionWithContext.decision === 'BUY',
-        ordered: true
-      });
-      return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: order.id }, snapshot, order };
-    } catch (error) {
-      order = repo.createOrder(userId, {
-        ...baseOrder,
-        status: 'FAILED',
-        requestPayloadMasked: maskPayload(baseOrder),
-        responsePayloadMasked: error.safePayload || null,
-        errorMessage: error.message || 'KIS 주문 요청에 실패했습니다.'
-      });
-      repo.attachOrderIdToDecisionLog(log.id, order.id);
-      repo.markStrategyEvaluation(userId, strategy.id, {
-        decision: decisionWithContext.decision,
-        errorMessage: order.errorMessage
-      });
-      return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: order.id }, snapshot, order };
+        side: intent.side,
+        quantity: intent.expectedQuantity,
+        orderPrice: intent.orderPrice,
+        estimatedAmount: intent.expectedAmount,
+        idempotencyKey,
+        decisionReason: intentDecision.reason,
+        liveOrderEnabled: settings.liveOrderEnabled,
+        half: intent.half,
+        decisionLogId: log.id
+      };
+
+      if (!settings.liveOrderEnabled) {
+        const order = repo.createOrder(userId, {
+          ...baseOrder,
+          status: 'DRY_RUN',
+          requestPayloadMasked: maskPayload(baseOrder)
+        });
+        orders.push(order);
+      } else {
+        try {
+          const result = intent.side === 'BUY'
+            ? await trading.placeBuyOrder(baseOrder)
+            : await trading.placeSellOrder(baseOrder);
+          const order = repo.createOrder(userId, {
+            ...baseOrder,
+            status: result.status || 'ACCEPTED',
+            kisOrderNo: result.orderNo,
+            kisOriginalOrderNo: result.originalOrderNo,
+            requestPayloadMasked: result.requestPayloadMasked || maskPayload(baseOrder),
+            responsePayloadMasked: result.responsePayloadMasked
+          });
+          orders.push(order);
+          repo.addDailyUsedAmount(userId, strategy.id, {
+            tradeDate,
+            market: strategy.market,
+            currency: strategy.currency,
+            amount: intent.expectedAmount
+          });
+        } catch (error) {
+          const order = repo.createOrder(userId, {
+            ...baseOrder,
+            status: 'FAILED',
+            requestPayloadMasked: maskPayload(baseOrder),
+            responsePayloadMasked: error.safePayload || null,
+            errorMessage: error.message || 'KIS 주문 요청에 실패했습니다.'
+          });
+          orders.push(order);
+        }
+      }
+
+      if (intent.side === 'BUY') {
+        localBuyingPower = {
+          ...localBuyingPower,
+          cashAvailable: Math.max(0, Number(localBuyingPower.cashAvailable || 0) - intent.expectedAmount)
+        };
+      } else if (intent.side === 'SELL') {
+        localBalance = {
+          ...localBalance,
+          quantity: Math.max(0, Number(localBalance.quantity || 0) - intent.expectedQuantity)
+        };
+      }
     }
+    if (orders[0]) repo.attachOrderIdToDecisionLog(log.id, orders[0].id);
+    repo.markStrategyEvaluation(userId, strategy.id, {
+      decision: decisionWithContext.decision,
+      incrementRound: decisionWithContext.decision === 'BUY' && orders.some((order) => ['DRY_RUN', 'REQUESTED', 'ACCEPTED'].includes(order.status)),
+      ordered: orders.length > 0
+    });
+    return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: orders[0]?.id || null }, snapshot, order: orders[0] || null, orders };
   } catch (error) {
     const message = contextReady
       ? (error.message || '자동매매 평가에 실패했습니다.')
@@ -561,7 +574,7 @@ function appendEvaluationContext(reason, {
     previousClose ? `전일종가/기준가 ${fmt(previousClose)} ${strategy.currency}` : null,
     `보유 ${fmtQty(holdingQuantity)}주`,
     `평단 ${fmt(averagePrice)} ${strategy.currency}`,
-    `큰수 매수 여유율 +${fmt((strategy.bigBuyPremiumRate ?? 0.1) * 100)}%`,
+    `큰수 매수 여유율 +${fmt((strategy.effectiveBigBuyPremiumRate ?? resolveBigBuyPremiumRate({ override: strategy.bigBuyPremiumRate, splitCount: strategy.splitCount })) * 100)}%`,
     `매수가능금액 ${fmt(cashAvailable)} ${strategy.currency}`,
     `회차 ${strategy.currentRound}/${strategy.splitCount}`,
     `미체결 ${openOrderCount || 0}건`,
@@ -579,10 +592,19 @@ function normalizeStrategyInput(input = {}) {
   if (!Number.isFinite(totalBudget) || totalBudget <= 0) throw badRequest('총 예산은 0보다 커야 합니다.');
   const splitCountRaw = Number(input.splitCount || 40);
   if (!Number.isInteger(splitCountRaw) || splitCountRaw <= 0) throw badRequest('분할 회차는 1 이상의 정수여야 합니다.');
+  const referencePrice = Number(input.referencePrice || input.currentPrice || 0);
+  if (referencePrice > 0) {
+    const maxSplit = Math.max(1, Math.floor(totalBudget / (referencePrice * 2)));
+    if (splitCountRaw > maxSplit) {
+      throw badRequest(`현재가 ${referencePrice} 기준 최대 ${maxSplit}분할까지 가능합니다. (한 회차의 절반이 1주 가격 이상이어야 합니다.)`);
+    }
+  }
   const targetProfitRate = Number(input.targetProfitRate ?? 0.1);
   if (!Number.isFinite(targetProfitRate) || targetProfitRate <= 0) throw badRequest('목표 수익률은 0보다 커야 합니다.');
-  const bigBuyPremiumRate = Number(input.bigBuyPremiumRate ?? 0.1);
-  if (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0) {
+  const bigBuyPremiumRate = input.bigBuyPremiumRate === null || input.bigBuyPremiumRate === undefined || input.bigBuyPremiumRate === ''
+    ? null
+    : Number(input.bigBuyPremiumRate);
+  if (bigBuyPremiumRate !== null && (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0)) {
     throw badRequest('큰수 매수 여유율은 0 이상이어야 합니다.');
   }
   const buyAmountPerRound = Math.floor(totalBudget / splitCountRaw);
@@ -605,15 +627,34 @@ function requireStrategy(userId, id) {
   return strategy;
 }
 
-function makeIdempotencyKey(strategy, decision, tradeDate) {
+function normalizeOrderIntents(decision) {
+  if (Array.isArray(decision.intents) && decision.intents.length > 0) {
+    return decision.intents.map((intent) => ({
+      half: intent.half || (decision.decision === 'SELL' ? 'SELL' : 'BUY'),
+      side: intent.side || decision.decision,
+      orderPrice: Number(intent.orderPrice || decision.expectedOrderPrice),
+      expectedQuantity: Number(intent.expectedQuantity || decision.expectedQuantity),
+      expectedAmount: Number(intent.expectedAmount || decision.expectedAmount),
+      reason: intent.reason || decision.reason
+    }));
+  }
+  return [{
+    half: decision.decision === 'SELL' ? 'SELL' : 'FIRST',
+    side: decision.decision,
+    orderPrice: Number(decision.expectedOrderPrice),
+    expectedQuantity: Number(decision.expectedQuantity),
+    expectedAmount: Number(decision.expectedAmount),
+    reason: decision.reason
+  }];
+}
+
+function makeIdempotencyKey(strategy, half, tradeDate) {
   return [
-    strategy.userId,
+    tradeDate.replaceAll('-', ''),
     strategy.id,
-    tradeDate,
-    decision.decision,
-    strategy.currentRound,
-    Number(decision.expectedOrderPrice || 0).toFixed(6)
-  ].join(':');
+    strategy.currentRound + 1,
+    half
+  ].join('-');
 }
 
 function isMarketSessionOpen(market) {

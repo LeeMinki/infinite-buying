@@ -7,6 +7,7 @@ import {
   getAutoTradingBuyingPowerPreview,
   getAutoTradingDashboard,
   getAutoTradingSettings,
+  getCurrentPrice,
   listAutoTradingDecisions,
   listAutoTradingOrders,
   listAutoTradingPositions,
@@ -30,6 +31,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
   const [accountSummary, setAccountSummary] = useState(null);
   const [budgetPreview, setBudgetPreview] = useState(null);
   const [budgetPreviewLoading, setBudgetPreviewLoading] = useState(false);
+  const [referencePrice, setReferencePrice] = useState(0);
   const [form, setForm] = useState(defaultForm);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
@@ -92,7 +94,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       totalBudget: String(totalBudget),
       splitCount: String(splitCount),
       targetProfitPercent: String(Number(initialStrategy.targetProfitRate || 0.1) * 100),
-      bigBuyPremiumPercent: String(Number(initialStrategy.bigBuyPremiumRate ?? 0.1) * 100)
+      bigBuyPremiumPercent: initialStrategy.bigBuyPremiumRate == null ? '' : String(Number(initialStrategy.bigBuyPremiumRate) * 100)
     }));
   }, [initialStrategy]);
 
@@ -110,7 +112,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
         targetProfitRate: Number(form.targetProfitPercent) / 100,
-        bigBuyPremiumRate: Number(form.bigBuyPremiumPercent) / 100
+        bigBuyPremiumRate: form.bigBuyPremiumPercent === '' ? null : Number(form.bigBuyPremiumPercent) / 100,
+        referencePrice
       });
       setMessage(`${created.symbol} 자동매매 전략을 만들었습니다.`);
       await refresh(created.id);
@@ -140,6 +143,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
   async function loadBudgetPreview({ market, symbol, exchange }) {
     if (!symbol || !market) {
       setBudgetPreview(null);
+      setReferencePrice(0);
       return;
     }
     setBudgetPreviewLoading(true);
@@ -150,6 +154,12 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       setBudgetPreview({ error: err.message });
     } finally {
       setBudgetPreviewLoading(false);
+    }
+    try {
+      const price = await getCurrentPrice(symbol, { market, exchange });
+      setReferencePrice(Number(price?.price) || 0);
+    } catch (err) {
+      setReferencePrice(0);
     }
   }
 
@@ -267,6 +277,9 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           <div>
             <h3>전략 만들기</h3>
             <p>종목을 선택하고 예산을 정합니다. 기본 분할 회차는 40회, 목표 수익률은 10%입니다.</p>
+            <p className="helper">
+              <b>1주 단위 매수만 지원</b>됩니다 (KIS Open API 표준 해외주문 기준). 회차 절반 예산이 1주 가격보다 작으면 다음 사이클로 자동 이월(carryover)됩니다.
+            </p>
           </div>
         </div>
         <form className="mode-form auto-strategy-form" onSubmit={submitStrategy}>
@@ -306,7 +319,28 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           </label>
           <label>
             <span>분할 회차</span>
-            <input type="number" min="1" step="1" value={form.splitCount} onChange={(event) => setForm({ ...form, splitCount: event.target.value })} required />
+            <input
+              type="number"
+              min="1"
+              step="1"
+              max={computeMaxSplit(form.totalBudget, referencePrice) || undefined}
+              value={form.splitCount}
+              onChange={(event) => {
+                const next = event.target.value;
+                const cap = computeMaxSplit(form.totalBudget, referencePrice);
+                if (cap > 0 && Number(next) > cap) {
+                  setForm({ ...form, splitCount: String(cap) });
+                } else {
+                  setForm({ ...form, splitCount: next });
+                }
+              }}
+              required
+            />
+            <p className="helper">
+              {referencePrice > 0
+                ? `현재가 ${formatMoney(referencePrice, form.currency)} 기준 최대 ${computeMaxSplit(form.totalBudget, referencePrice)}분할. 한 회차의 절반이 1주 가격 이상이어야 KIS 표준 주문이 가능합니다.`
+                : '종목 선택 후 현재가 기준 최대 분할 회차가 안내됩니다. 1주 단위 매수만 지원되므로 회차가 너무 많으면 매수가 미뤄집니다.'}
+            </p>
           </label>
           <label>
             <span>목표 수익률 (%)</span>
@@ -314,8 +348,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           </label>
           <label>
             <span>큰수 매수 여유율 (%)</span>
-            <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(event) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(event.target.value) })} required />
-            <p className="helper">전일 종가나 기준가보다 몇 % 높은 가격까지 큰수 매수를 허용할지 정합니다. 기본값 10%는 기준가의 110%까지입니다.</p>
+            <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(event) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(event.target.value) })} />
+            <p className="helper">비워두면 0.1 ÷ 분할 회차로 자동 계산합니다. {form.bigBuyPremiumPercent === '' ? `자동 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}</p>
           </label>
           <button type="submit" className="primary" disabled={busy === 'create'}>{busy === 'create' ? '저장 중...' : '전략 생성'}</button>
         </form>
@@ -376,7 +410,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
               <Metric label="회차" value={`${selected.currentRound}/${selected.splitCount}`} hint={`1회 매수금 ${formatMoney(selected.buyAmountPerRound, selected.currency)}`} />
               <Metric label="목표 수익률" value={`${(selected.targetProfitRate * 100).toFixed(1)}%`} hint="평단가 기준" />
-              <Metric label="큰수 매수 여유율" value={`+${((selected.bigBuyPremiumRate ?? 0.1) * 100).toFixed(1)}%`} hint="전일 종가 기준 매수 상한" />
+              <Metric label="큰수 매수 여유율" value={`+${((selected.effectiveBigBuyPremiumRate ?? selected.bigBuyPremiumRate ?? 0) * 100).toFixed(4)}%`} hint={selected.bigBuyPremiumRate == null ? '분할 회차 기반 자동값' : '사용자 입력값'} />
               <Metric label="마지막 판단" value={selected.lastDecision || '-'} hint={selected.lastEvaluatedAt || '아직 없음'} />
             </div>
             <div className="auto-action-row">
@@ -612,6 +646,7 @@ function OrdersTable({ orders, onRefresh, busy }) {
             <tr>
               <th>시간</th>
               <th>구분</th>
+              <th>주문 종류</th>
               <th>상태</th>
               <th>수량</th>
               <th>가격</th>
@@ -624,6 +659,7 @@ function OrdersTable({ orders, onRefresh, busy }) {
               <tr key={order.id}>
                 <td className="muted">{formatDate(order.createdAt)}</td>
                 <td>{order.side}</td>
+                <td><span className="half-chip">{orderHalfLabel(order.half)}</span></td>
                 <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
                 <td>{formatQuantity(order.quantity)}</td>
                 <td>{formatMoney(order.orderPrice, order.currency)}</td>
@@ -635,7 +671,7 @@ function OrdersTable({ orders, onRefresh, busy }) {
                 </td>
               </tr>
             ))}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="7">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="8">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -712,7 +748,7 @@ function defaultForm() {
     totalBudget: '4000',
     splitCount: '40',
     targetProfitPercent: '10',
-    bigBuyPremiumPercent: '10'
+    bigBuyPremiumPercent: ''
   };
 }
 
@@ -731,6 +767,10 @@ function formatMoney(value, currency = 'KRW') {
 
 function formatQuantity(value) {
   return Number(value || 0).toLocaleString('ko-KR', { maximumFractionDigits: 6 });
+}
+
+function formatPercent(rate) {
+  return `${(Number(rate || 0) * 100).toFixed(4)}%`;
 }
 
 function formatDate(value) {
@@ -756,7 +796,25 @@ function orderStatusLabel(status) {
   return labels[status] || status;
 }
 
+function orderHalfLabel(half) {
+  const labels = {
+    FIRST: '첫 매수',
+    AVG: '평단가 매수',
+    BIG: '큰수 매수',
+    SELL: '매도'
+  };
+  return labels[half] || '-';
+}
+
 function nonNegativeInput(value) {
   if (String(value).startsWith('-')) return '0';
   return value;
+}
+
+function computeMaxSplit(totalBudget, referencePrice) {
+  const budget = Number(totalBudget);
+  const price = Number(referencePrice);
+  if (!Number.isFinite(budget) || budget <= 0) return 0;
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  return Math.max(1, Math.floor(budget / (price * 2)));
 }

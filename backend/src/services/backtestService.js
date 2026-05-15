@@ -35,8 +35,10 @@ function validateInput(input) {
   if (!Number.isFinite(totalBudget) || totalBudget <= 0) throw badRequest('총 투자금은 0보다 커야 합니다.');
   const targetProfitRate = Number(input.targetProfitRate);
   if (!Number.isFinite(targetProfitRate) || targetProfitRate <= 0) throw badRequest('목표 수익률은 0보다 커야 합니다.');
-  const bigBuyPremiumRate = Number(input.bigBuyPremiumRate ?? 0.1);
-  if (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0) {
+  const bigBuyPremiumRate = input.bigBuyPremiumRate === null || input.bigBuyPremiumRate === undefined || input.bigBuyPremiumRate === ''
+    ? null
+    : Number(input.bigBuyPremiumRate);
+  if (bigBuyPremiumRate !== null && (!Number.isFinite(bigBuyPremiumRate) || bigBuyPremiumRate < 0)) {
     throw badRequest('큰수 매수 여유율은 0 이상이어야 합니다.');
   }
   const splitCountRaw = Number(input.splitCount);
@@ -52,7 +54,9 @@ function validateInput(input) {
     splitCount,
     targetProfitRate,
     bigBuyPremiumRate,
-    restartAfterSell: input.restartAfterSell !== false
+    restartAfterSell: input.restartAfterSell !== false,
+    // 기본은 1주 단위 매수(자동매매와 동일). 사용자가 명시적으로 켤 때만 소수점 시뮬레이션.
+    allowFractionalShares: input.allowFractionalShares === true
   };
 }
 
@@ -74,7 +78,9 @@ function publicRun(run) {
     algorithm: run.algorithm,
     targetProfitRate: run.targetProfitRate,
     bigBuyPremiumRate: run.bigBuyPremiumRate,
+    effectiveBigBuyPremiumRate: run.effectiveBigBuyPremiumRate,
     restartAfterSell: run.restartAfterSell,
+    allowFractionalShares: run.allowFractionalShares,
     status: run.status,
     initialBudget: run.initialBudget,
     finalAsset: run.finalAsset,
@@ -142,7 +148,7 @@ export async function createRun(userId, input) {
         targetProfitRate: params.targetProfitRate,
         bigBuyPremiumRate: params.bigBuyPremiumRate,
         currency: params.currency,
-        allowFractionalShares: params.market === 'US',
+        allowFractionalShares: params.allowFractionalShares,
         restartAfterSell: params.restartAfterSell
       },
       dailyRows

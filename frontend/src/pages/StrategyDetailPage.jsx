@@ -151,8 +151,8 @@ export function StrategyDetailPage({ strategyId, onChanged, onOpenBacktest, onOp
               </div>
               <div className="metric">
                 <span className="metric-label">큰수 매수 여유율</span>
-                <strong>+{((strategy.bigBuyPremiumRate ?? 0.1) * 100).toFixed(1)}%</strong>
-                <span className="metric-hint">전일 종가 기준 매수 상한</span>
+                <strong>+{((strategy.effectiveBigBuyPremiumRate ?? strategy.bigBuyPremiumRate ?? 0) * 100).toFixed(4)}%</strong>
+                <span className="metric-hint">{strategy.bigBuyPremiumRate == null ? '분할 회차 기반 자동값' : '사용자 입력값'}</span>
               </div>
             </div>
 

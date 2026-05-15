@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { LAOR_NATIVE_ALGORITHM, resolveBigBuyPremiumRate } from '../services/buyAlgorithm.js';
 
 function toRun(row) {
   if (!row) return null;
@@ -16,10 +17,12 @@ function toRun(row) {
     buyAmountPerRound: row.buy_amount_per_round,
     initialLumpRatio: row.initial_lump_ratio,
     dailyAmount: row.daily_amount,
-    algorithm: row.algorithm || 'LAOR_INFINITE_V2',
+    algorithm: row.algorithm || LAOR_NATIVE_ALGORITHM,
     targetProfitRate: row.target_profit_rate,
-    bigBuyPremiumRate: row.big_buy_premium_rate ?? 0.1,
+    bigBuyPremiumRate: row.big_buy_premium_rate,
+    effectiveBigBuyPremiumRate: resolveBigBuyPremiumRate({ override: row.big_buy_premium_rate, splitCount: row.split_count }),
     restartAfterSell: row.restart_after_sell === 1,
+    allowFractionalShares: row.allow_fractional_shares === 1,
     status: row.status,
     initialBudget: row.initial_budget,
     finalAsset: row.final_asset,
@@ -78,9 +81,9 @@ export function createRun(userId, input) {
       INSERT INTO backtest_runs (
         user_id, stock_code, stock_name, symbol, market, data_source, currency, from_date, to_date,
         total_budget, split_count, buy_amount_per_round, target_profit_rate, big_buy_premium_rate, restart_after_sell,
-        initial_lump_ratio, daily_amount, algorithm,
+        allow_fractional_shares, initial_lump_ratio, daily_amount, algorithm,
         status, initial_budget
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
     `)
     .run(
       userId,
@@ -96,11 +99,12 @@ export function createRun(userId, input) {
       splitCount,
       perRoundBudget,
       targetProfitRate,
-      safeFiniteNumber(input.bigBuyPremiumRate, 0.1),
+      input.bigBuyPremiumRate == null || input.bigBuyPremiumRate === '' ? null : safeFiniteNumber(input.bigBuyPremiumRate, null),
       input.restartAfterSell ? 1 : 0,
+      input.allowFractionalShares ? 1 : 0,
       0,
       0,
-      'LAOR_INFINITE_V2',
+      LAOR_NATIVE_ALGORITHM,
       totalBudget
     );
   return getRun(userId, result.lastInsertRowid);

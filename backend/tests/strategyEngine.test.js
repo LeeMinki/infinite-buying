@@ -70,9 +70,9 @@ test('큰 하락일: 평단가 매수 + 큰수 매수 둘 다 체결', () => {
   assert.equal(buys.length, 2);
   assert.equal(buys[0].reason.includes('평단가 매수'), true);
   assert.equal(buys[1].reason.includes('큰수 매수'), true);
-  // 둘 다 같은 가격 (종가 47_000)에 체결.
-  assert.equal(buys[0].price, 47000);
-  assert.equal(buys[1].price, 47000);
+  // 시가가 지정가보다 낮으면 시가에 체결된다.
+  assert.equal(buys[0].price, 48000);
+  assert.equal(buys[1].price, 48000);
 });
 
 test('상승일: 둘 다 한도 초과 → HOLD', () => {
@@ -101,7 +101,7 @@ test('큰수 매수 여유율 0%면 큰수 기준가를 넘는 종가에서는 �
   };
   const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    ohlc: { open: 52500, high: 53000, low: 52000, close: 52500 },
+    ohlc: { open: 52500, high: 53000, low: 52001, close: 52500 },
     prevClose: 52000,
     params: { ...params, bigBuyPremiumRate: 0 },
     state,
@@ -109,7 +109,7 @@ test('큰수 매수 여유율 0%면 큰수 기준가를 넘는 종가에서는 �
   });
   assert.equal(decisions.length, 1);
   assert.equal(decisions[0].decision, Decision.HOLD);
-  assert.match(decisions[0].reason, /큰수 매수 상한/);
+  assert.match(decisions[0].reason, /큰수 지정가/);
   assert.equal(nextState.currentRound, 1);
 });
 
