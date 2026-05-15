@@ -1,0 +1,48 @@
+# 데이터베이스 모델
+
+SQLite (`better-sqlite3`). 마이그레이션은 `backend/src/db/migrations/0001~0020`. 실행: `npm run migrate`.
+
+모든 도메인 테이블은 `user_id` 컬럼을 가지며 `ON DELETE CASCADE`로 사용자 삭제 시 정리된다.
+
+## 인증·세션
+
+- `users` — `id, email (UNIQUE, NOCASE), password_hash, created_at, updated_at` (`0001`)
+- `sessions` — `express-session` + `better-sqlite3-session-store`가 자동 관리.
+
+## KIS 자격증명
+
+- `kis_credentials` — `user_id UNIQUE`, masked App Key, 암호화 App Key/App Secret/access token/계좌번호/계좌상품코드, 토큰 만료, 상태(`NOT_CONFIGURED`/`CONFIGURED`/`TOKEN_VALID`/`TOKEN_ERROR`), 마지막 토큰 발급 시각, 마지막 에러 메시지 (`0012`).
+
+## 시장 데이터 캐시
+
+- `market_price_cache` — `(user_id, market, symbol, date) UNIQUE`. `open / high / low / close / volume / currency / source`. 현재 source는 `KIS_API` (`0013`).
+
+## (구) 가상 주문 / 전략 초안
+
+- `strategies` — 전략 초안. 종목, 총 예산, 분할 회차, 목표 수익률, 큰수 매수 여유율(`big_buy_premium_rate`, `0020`).
+- `holdings` — 가상 보유.
+- `virtual_orders` — 가상 주문.
+- `decision_logs` — 가상 평가 로그.
+- `user_id` 컬럼 추가 마이그레이션은 `0002`.
+
+> 정확한 컬럼 목록은 초기 마이그레이션(0001 이전에 만들어졌을 가능성)을 본 baseline에서 확인하지 못했다. **구현 확인 필요**: `strategies` / `holdings` / `virtual_orders` / `decision_logs`의 컬럼 정의 원본 파일.
+
+## 백테스트
+
+- `backtest_runs` — 종목, 기간, 총 예산, 분할 회차, 목표 수익률, 알고리즘(`LAOR_INFINITE_V2`), 초기 lump 비율(레거시), 일일 금액(레거시), 큰수 매수 여유율, 상태(`RUNNING`/`COMPLETED`/`FAILED`), 결과 지표 (`0008` → `0014~0016`에서 컬럼 확장 및 REAL 변환 → `0020`).
+- `backtest_trades` — 거래일별 BUY/SELL/HOLD/COMPLETED, 가격, 수량, 회차, 현금, 평단, 손익, 평가금, 총자산, drawdown, reason (`0009`).
+
+## 자동매매 (`0017~0020`)
+
+- `user_trading_settings` — 사용자당 1행. `live_order_enabled` (0/1).
+- `user_trading_setting_histories` — 실주문 설정 변경 이력.
+- `auto_trading_strategies` — 자동매매 전략. status (`CREATED`/`RUNNING`/`STOPPED`/`ERROR`), 총 예산, 분할 회차, 회차당 매수 금액, 목표 수익률, 현재 회차, (레거시) 1회·일일 주문 한도, `big_buy_premium_rate`, started/stopped/last_evaluated/last_order_at, last_decision, last_error_message.
+- `auto_trading_position_snapshots` — 평가 시점 보유 수량·평단·현재가·평가금·미실현·현금 + `decision` (그 시점의 판단).
+- `auto_trading_orders` — 주문 라이프사이클. `idempotency_key` UNIQUE.
+- `auto_trading_decision_logs` — 매 평가의 결정·평가 출처·target_sell_price·distance_to_target_rate·open_order_count·order_id·reason.
+- `auto_trading_locks` — `(strategy_id, lock_key) UNIQUE`. 동시 평가 방지.
+- `daily_order_limit_usages` — `(user_id, strategy_id, trade_date) UNIQUE`. 한도 검사는 현재 비활성, 호환 컬럼만 유지.
+
+## 인덱스 요약
+
+각 도메인 테이블의 `(user_id, ...)` 시작 복합 인덱스가 정의되어 있다 (예: `idx_auto_trading_strategies_user_status`, `idx_backtest_runs_user_symbol`). 상세는 각 마이그레이션 SQL 참고.

@@ -89,5 +89,22 @@ test('full flow: fetch TQQQ KIS daily data, cache it, and run a USD backtest', a
     assert.equal(run.status, 'COMPLETED', `expected COMPLETED, got ${run.status} (${run.errorMessage || ''})`);
     assert.equal(run.currency, 'USD');
     assert.ok(run.totalBuyCount > 0, `expected at least one BUY, got ${run.totalBuyCount}`);
+    // 기본 모드는 1주 단위 매수.
+    assert.equal(run.allowFractionalShares, false);
+    assert.ok(Number.isInteger(run.finalHoldingQuantity), `1주 단위 모드의 최종 보유 수량은 정수여야 함: ${run.finalHoldingQuantity}`);
+
+    // 소수점 매매 옵션을 켜면 소수점 수량 시뮬레이션.
+    const fractionalRun = await backtestService.createRun(alice.id, {
+      symbol: 'TQQQ',
+      fromDate: '2026-01-01',
+      toDate: '2026-04-30',
+      totalBudget: 10000,
+      splitCount: 40,
+      targetProfitRate: 0.1,
+      restartAfterSell: false,
+      allowFractionalShares: true
+    });
+    assert.equal(fractionalRun.status, 'COMPLETED');
+    assert.equal(fractionalRun.allowFractionalShares, true);
   });
 });

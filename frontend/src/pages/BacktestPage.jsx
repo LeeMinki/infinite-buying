@@ -43,7 +43,7 @@ export function BacktestPage({ onBack, initialStrategy }) {
       totalBudget: initialStrategy.totalBudget || current.totalBudget,
       splitCount: initialStrategy.splitCount || current.splitCount,
       targetProfitPercent: Number(initialStrategy.targetProfitRate || 0.1) * 100,
-      bigBuyPremiumPercent: Number(initialStrategy.bigBuyPremiumRate ?? 0.1) * 100
+      bigBuyPremiumPercent: initialStrategy.bigBuyPremiumRate == null ? '' : Number(initialStrategy.bigBuyPremiumRate) * 100
     }));
   }, [initialStrategy]);
 
@@ -66,8 +66,9 @@ export function BacktestPage({ onBack, initialStrategy }) {
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
         targetProfitRate: Number(form.targetProfitPercent) / 100,
-        bigBuyPremiumRate: Number(form.bigBuyPremiumPercent) / 100,
-        restartAfterSell: form.restartAfterSell
+        bigBuyPremiumRate: form.bigBuyPremiumPercent === '' ? null : Number(form.bigBuyPremiumPercent) / 100,
+        restartAfterSell: form.restartAfterSell,
+        allowFractionalShares: form.allowFractionalShares
       });
       setSelectedRun(run);
       await refresh(run);
@@ -157,13 +158,21 @@ export function BacktestPage({ onBack, initialStrategy }) {
           </label>
           <label>
             <span>큰수 매수 여유율 (%)</span>
-            <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(e) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(e.target.value) })} required />
-            <p className="helper">전일 종가보다 몇 % 높은 가격까지 큰수 매수를 허용할지 정합니다. 기본값 10%는 전일 종가의 110%까지입니다.</p>
+            <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(e) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(e.target.value) })} />
+            <p className="helper">비워두면 0.1 ÷ 분할 회차로 자동 계산합니다. {form.bigBuyPremiumPercent === '' ? `자동 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}</p>
           </label>
           <label className="checkbox-field">
             <input type="checkbox" checked={form.restartAfterSell} onChange={(e) => setForm({ ...form, restartAfterSell: e.target.checked })} />
             <span>목표 매도 후 새 사이클 시작</span>
           </label>
+          <label className="checkbox-field">
+            <input type="checkbox" checked={form.allowFractionalShares} onChange={(e) => setForm({ ...form, allowFractionalShares: e.target.checked })} />
+            <span>소수점 매매 시뮬레이션</span>
+          </label>
+          <p className="helper">
+            기본은 자동매매와 동일한 <b>1주 단위 매수</b>입니다. 회차 절반 예산이 1주 가격보다 작으면 다음 사이클로 이월(carryover)됩니다.
+            체크하면 소수점 수량으로 매수하는 시뮬레이션 결과를 봅니다(실거래는 KIS Open API 제약으로 1주 단위만 가능).
+          </p>
           <button type="submit" className="primary" disabled={running}>{running ? '실행 중...' : '백테스트 실행'}</button>
         </form>
       </section>
@@ -217,7 +226,8 @@ export function BacktestPage({ onBack, initialStrategy }) {
             { label: '미실현손익', value: formatMoney(selectedRun.unrealizedProfit, selectedRun.currency) },
             { label: '최대 낙폭', value: formatPercent(selectedRun.maxDrawdownRate) },
             { label: '매수/매도', value: `${selectedRun.totalBuyCount || 0} / ${selectedRun.totalSellCount || 0}` },
-            { label: '큰수 매수 여유율', value: `+${((selectedRun.bigBuyPremiumRate ?? 0.1) * 100).toFixed(1)}%`, hint: '전일 종가 기준 매수 상한입니다.' }
+            { label: '큰수 매수 여유율', value: `+${((selectedRun.effectiveBigBuyPremiumRate ?? selectedRun.bigBuyPremiumRate ?? 0) * 100).toFixed(4)}%`, hint: selectedRun.bigBuyPremiumRate == null ? '분할 회차 기반 자동값입니다.' : '사용자가 직접 입력한 값입니다.' },
+            { label: '매수 단위', value: selectedRun.allowFractionalShares ? '소수점 매매' : '1주 단위', hint: selectedRun.allowFractionalShares ? '소수점 시뮬레이션 결과입니다. 실거래는 1주 단위만 가능합니다.' : '자동매매와 동일한 1주 단위 매수 결과입니다.' }
           ]} />
           {selectedRun.status === 'COMPLETED' && (selectedRun.totalBuyCount || 0) === 0 && (
             <ZeroBuyDiagnostic run={selectedRun} trades={trades} />
@@ -358,8 +368,9 @@ function createDefaultForm() {
     totalBudget: 4000,
     splitCount: 40,
     targetProfitPercent: 10,
-    bigBuyPremiumPercent: 10,
-    restartAfterSell: false
+    bigBuyPremiumPercent: '',
+    restartAfterSell: false,
+    allowFractionalShares: false
   };
 }
 

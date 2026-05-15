@@ -37,10 +37,11 @@ test('auto trading holds when current price is above big-number buy ceiling', ()
     bigBuyPremiumRate: 0.02
   });
   assert.equal(result.decision, 'HOLD');
-  assert.match(result.reason, /큰수 매수 상한/);
+  assert.match(result.reason, /큰수 지정가/);
 });
 
 test('auto trading buys when current price is within big-number buy ceiling', () => {
+  // totalBudget 8000 / 40분할 → 회차 예산 200, 절반 100. 큰수 지정가 56.1 → 1주 매수 가능.
   const result = evaluateAutoTrading({
     symbol: 'TQQQ',
     market: 'US',
@@ -51,13 +52,71 @@ test('auto trading buys when current price is within big-number buy ceiling', ()
     previousClose: 55,
     cashAvailable: 1000,
     currentRound: 1,
-    totalBudget: 4000,
+    totalBudget: 8000,
     splitCount: 40,
     targetProfitRate: 0.1,
     bigBuyPremiumRate: 0.02
   });
   assert.equal(result.decision, 'BUY');
-  assert.equal(result.expectedQuantity, 0.892857);
+  assert.equal(result.intents.length, 1);
+  assert.equal(result.intents[0].half, 'BIG');
+  assert.equal(result.expectedQuantity, 1);
+  assert.equal(result.intents[0].orderPrice, 55 * 1.02);
+});
+
+test('carryover: AVG cannot buy 1 share this cycle, budget rolls to pending_avg_budget', () => {
+  // totalBudget 4000 / 40분할 → 회차 100, 절반 50. 평단가 80 → floor(50/80)=0 → 1주 못 삼.
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 70, // 평단가 80 이하 → AVG 조건 충족, 큰수 조건도 충족
+    holdingQuantity: 1,
+    averagePrice: 80,
+    previousClose: 80,
+    cashAvailable: 1000,
+    currentRound: 1,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.1
+  });
+  // 둘 다 1주 못 삼 → HOLD + carryover 누적 (각 절반 50씩 보존)
+  assert.equal(result.decision, 'HOLD');
+  assert.equal(result.intents.length, 0);
+  assert.equal(result.nextPendingAvgBudget, 50);
+  assert.equal(result.nextPendingBigBudget, 50);
+});
+
+test('carryover: pending + new half budget reaches 1 share, buy fires', () => {
+  // totalBudget 4000 / 40 = 100, 절반 50. 누적 50씩 추가.
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 70,
+    holdingQuantity: 1,
+    averagePrice: 80,
+    previousClose: 80,
+    cashAvailable: 1000,
+    currentRound: 4,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.1,
+    pendingAvgBudget: 50,
+    pendingBigBudget: 50
+  });
+  // availableAvg = 50 + 50 = 100, 평단가 80 → 1주 매수, 잔액 100 - 80 = 20
+  // availableBig = 50 + 50 = 100, 큰수가 80 × 1.1 = 88 → 1주 매수, 잔액 100 - 88 = 12
+  assert.equal(result.decision, 'BUY');
+  assert.equal(result.intents.length, 2);
+  assert.equal(result.intents[0].half, 'AVG');
+  assert.equal(result.intents[0].expectedQuantity, 1);
+  assert.equal(result.intents[1].half, 'BIG');
+  assert.equal(result.intents[1].expectedQuantity, 1);
+  assert.equal(result.nextPendingAvgBudget, 20);
+  assert.equal(result.nextPendingBigBudget, 12);
 });
 
 function mockKis({ orderOk = true } = {}) {

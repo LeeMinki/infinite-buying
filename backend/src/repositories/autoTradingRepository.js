@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { resolveBigBuyPremiumRate } from '../services/buyAlgorithm.js';
 
 export function getSettings(userId) {
   const row = getDb().prepare('SELECT * FROM user_trading_settings WHERE user_id = ?').get(userId);
@@ -264,8 +265,9 @@ export function createOrder(userId, input) {
       user_id, strategy_id, symbol, market, currency, side, quantity, order_price,
       estimated_amount, kis_order_no, kis_original_order_no, status, filled_quantity,
       remaining_quantity, average_filled_price, idempotency_key, decision_reason,
-      live_order_enabled, request_payload_masked, response_payload_masked, error_message
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      live_order_enabled, request_payload_masked, response_payload_masked, error_message,
+      half, decision_log_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     userId,
     input.strategyId,
@@ -287,7 +289,9 @@ export function createOrder(userId, input) {
     input.liveOrderEnabled ? 1 : 0,
     input.requestPayloadMasked || null,
     input.responsePayloadMasked || null,
-    input.errorMessage || null
+    input.errorMessage || null,
+    input.half || null,
+    input.decisionLogId || null
   );
   return getOrder(userId, result.lastInsertRowid);
 }
@@ -472,7 +476,10 @@ function toStrategy(row) {
     splitCount: row.split_count,
     buyAmountPerRound: row.buy_amount_per_round,
     targetProfitRate: row.target_profit_rate,
-    bigBuyPremiumRate: row.big_buy_premium_rate ?? 0.1,
+    bigBuyPremiumRate: row.big_buy_premium_rate,
+    effectiveBigBuyPremiumRate: resolveBigBuyPremiumRate({ override: row.big_buy_premium_rate, splitCount: row.split_count }),
+    pendingAvgBudget: row.pending_avg_budget ?? 0,
+    pendingBigBudget: row.pending_big_budget ?? 0,
     currentRound: row.current_round,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at,
@@ -558,6 +565,8 @@ function toOrder(row) {
     requestPayloadMasked: row.request_payload_masked,
     responsePayloadMasked: row.response_payload_masked,
     errorMessage: row.error_message,
+    half: row.half,
+    decisionLogId: row.decision_log_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { resolveBigBuyPremiumRate } from '../services/buyAlgorithm.js';
 
 export function listStrategies(userId) {
   return getDb().prepare('SELECT * FROM strategies WHERE user_id = ? ORDER BY id DESC').all(userId).map(toStrategy);
@@ -77,7 +78,8 @@ function toStrategy(row) {
     splitCount: row.split_count,
     buyAmountPerRound: row.buy_amount_per_round,
     targetProfitRate: row.target_profit_rate,
-    bigBuyPremiumRate: row.big_buy_premium_rate ?? 0.1,
+    bigBuyPremiumRate: row.big_buy_premium_rate,
+    effectiveBigBuyPremiumRate: resolveBigBuyPremiumRate({ override: row.big_buy_premium_rate, splitCount: row.split_count }),
     currentRound: row.current_round,
     status: row.status,
     createdAt: row.created_at,
