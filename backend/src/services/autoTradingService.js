@@ -166,7 +166,10 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       totalBudget: strategy.totalBudget,
       splitCount: strategy.splitCount,
       targetProfitRate: strategy.targetProfitRate,
-      bigBuyPremiumRate: strategy.bigBuyPremiumRate
+      bigBuyPremiumRate: strategy.bigBuyPremiumRate,
+      pendingAvgBudget: strategy.pendingAvgBudget,
+      pendingBigBudget: strategy.pendingBigBudget,
+      cycleBudget: strategy.cycleBudget
     });
     // 스냅샷은 평가 결정 직후에 찍어서 "이 시점에 자동매매가 무슨 결정을 내렸는가" 까지 같이 저장한다.
     const snapshot = createSnapshot(userId, strategy, {
@@ -202,7 +205,13 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       evaluationSource
     });
     if (!['BUY', 'SELL'].includes(decisionWithContext.decision)) {
-      repo.markStrategyEvaluation(userId, strategy.id, { decision: log.decision, errorMessage: null });
+      // HOLD/SKIP: 매수·매도는 없지만 엔진이 계산한 회차 예산 이월값은 DB에 반영한다.
+      repo.markStrategyEvaluation(userId, strategy.id, {
+        decision: log.decision,
+        errorMessage: null,
+        pendingAvgBudget: decision.nextPendingAvgBudget ?? strategy.pendingAvgBudget,
+        pendingBigBudget: decision.nextPendingBigBudget ?? strategy.pendingBigBudget
+      });
       return { strategy: repo.getStrategy(userId, strategy.id), decision: log, snapshot, order: null };
     }
 
@@ -321,11 +330,54 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       }
     }
     if (orders[0]) repo.attachOrderIdToDecisionLog(log.id, orders[0].id);
-    repo.markStrategyEvaluation(userId, strategy.id, {
-      decision: decisionWithContext.decision,
-      incrementRound: decisionWithContext.decision === 'BUY' && orders.some((order) => ['DRY_RUN', 'REQUESTED', 'ACCEPTED'].includes(order.status)),
-      ordered: orders.length > 0
-    });
+
+    // 평가 후 회차·이월(carryover)·사이클 예산을 실제 주문 결과에 맞춰 DB에 반영한다.
+    const ordered = orders.length > 0;
+    const anySuccess = orders.some((order) => order.status !== 'FAILED');
+    let evalUpdate;
+    if (decisionWithContext.decision === 'SELL') {
+      if (anySuccess && decision.restartCycle) {
+        // 매도 체결 → 사이클 재시작: 회차 0, 이월 0, 다음 사이클 예산을 총자산으로 갱신.
+        evalUpdate = {
+          decision: 'SELL',
+          ordered,
+          resetCycle: true,
+          pendingAvgBudget: 0,
+          pendingBigBudget: 0,
+          cycleBudget: decision.nextCycleBudget
+        };
+      } else {
+        // 매도가 접수되지 않음 → 사이클·이월 그대로 유지.
+        evalUpdate = { decision: 'SELL', ordered };
+      }
+    } else if (anySuccess) {
+      // 매수 회차 진행 → 주문이 실패한 절반의 예산만 이월에 더한다.
+      let nextPendingAvg = decision.nextPendingAvgBudget;
+      let nextPendingBig = decision.nextPendingBigBudget;
+      for (const intent of intents) {
+        const order = orders.find((o) => o.half === intent.half);
+        if (order && order.status !== 'FAILED') continue;
+        if (intent.half === 'AVG') nextPendingAvg += intent.expectedAmount;
+        else if (intent.half === 'BIG') nextPendingBig += intent.expectedAmount;
+      }
+      evalUpdate = {
+        decision: 'BUY',
+        incrementRound: true,
+        splitCount: strategy.splitCount,
+        ordered,
+        pendingAvgBudget: nextPendingAvg,
+        pendingBigBudget: nextPendingBig
+      };
+    } else {
+      // 매수 주문이 하나도 접수되지 않음 → 회차·이월을 평가 전 값으로 유지(다음 tick 재평가).
+      evalUpdate = {
+        decision: 'BUY',
+        ordered,
+        pendingAvgBudget: strategy.pendingAvgBudget,
+        pendingBigBudget: strategy.pendingBigBudget
+      };
+    }
+    repo.markStrategyEvaluation(userId, strategy.id, evalUpdate);
     return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: orders[0]?.id || null }, snapshot, order: orders[0] || null, orders };
   } catch (error) {
     const message = contextReady

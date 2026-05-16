@@ -278,7 +278,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
             <h3>전략 만들기</h3>
             <p>종목을 선택하고 예산을 정합니다. 기본 분할 회차는 40회, 목표 수익률은 10%입니다.</p>
             <p className="helper">
-              <b>1주 단위 매수만 지원</b>됩니다 (KIS Open API 표준 해외주문 기준). 회차 절반 예산이 1주 가격보다 작으면 다음 사이클로 자동 이월(carryover)됩니다.
+              <b>1주 단위 매수만 지원</b>됩니다 (KIS Open API 표준 해외주문 기준). 회차 절반 예산이 1주 값보다 작으면 매수하지 않고 그 돈을 다음 평가로 넘겨, 1주 이상이 모이면 매수합니다.
             </p>
           </div>
         </div>
@@ -349,7 +349,10 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           <label>
             <span>큰수 매수 여유율 (%)</span>
             <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(event) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(event.target.value) })} />
-            <p className="helper">비워두면 0.1 ÷ 분할 회차로 자동 계산합니다. {form.bigBuyPremiumPercent === '' ? `자동 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}</p>
+            <p className="helper">
+              전일 종가(또는 기준가)보다 조금 높은 값까지 매수하는 ‘큰수 매수’ 지정가 여유율. 비워두면 0.1 ÷ 분할 회차로 자동 계산합니다.
+              {' '}{form.bigBuyPremiumPercent === '' ? `현재 자동값 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}
+            </p>
           </label>
           <button type="submit" className="primary" disabled={busy === 'create'}>{busy === 'create' ? '저장 중...' : '전략 생성'}</button>
         </form>
@@ -770,7 +773,7 @@ function formatQuantity(value) {
 }
 
 function formatPercent(rate) {
-  return `${(Number(rate || 0) * 100).toFixed(4)}%`;
+  return `${(Number(rate || 0) * 100).toFixed(2)}%`;
 }
 
 function formatDate(value) {

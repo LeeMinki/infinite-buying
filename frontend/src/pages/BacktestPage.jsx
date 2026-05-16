@@ -159,7 +159,10 @@ export function BacktestPage({ onBack, initialStrategy }) {
           <label>
             <span>큰수 매수 여유율 (%)</span>
             <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(e) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(e.target.value) })} />
-            <p className="helper">비워두면 0.1 ÷ 분할 회차로 자동 계산합니다. {form.bigBuyPremiumPercent === '' ? `자동 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}</p>
+            <p className="helper">
+              전일 종가보다 조금 높은 값까지 매수하는 ‘큰수 매수’ 지정가 여유율. 비워두면 0.1 ÷ 분할 회차로 자동 계산합니다.
+              {' '}{form.bigBuyPremiumPercent === '' ? `현재 자동값 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}
+            </p>
           </label>
           <label className="checkbox-field">
             <input type="checkbox" checked={form.restartAfterSell} onChange={(e) => setForm({ ...form, restartAfterSell: e.target.checked })} />
@@ -170,8 +173,7 @@ export function BacktestPage({ onBack, initialStrategy }) {
             <span>소수점 매매 시뮬레이션</span>
           </label>
           <p className="helper">
-            기본은 자동매매와 동일한 <b>1주 단위 매수</b>입니다. 회차 절반 예산이 1주 가격보다 작으면 다음 사이클로 이월(carryover)됩니다.
-            체크하면 소수점 수량으로 매수하는 시뮬레이션 결과를 봅니다(실거래는 KIS Open API 제약으로 1주 단위만 가능).
+            기본은 자동매매와 동일한 <b>1주 단위 매수</b>입니다. 체크하면 소수점 수량으로 매수하는 시뮬레이션 결과를 봅니다(참고용이며, 실거래는 1주 단위만 가능).
           </p>
           <button type="submit" className="primary" disabled={running}>{running ? '실행 중...' : '백테스트 실행'}</button>
         </form>

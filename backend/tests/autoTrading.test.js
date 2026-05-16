@@ -119,6 +119,77 @@ test('carryover: pending + new half budget reaches 1 share, buy fires', () => {
   assert.equal(result.nextPendingBigBudget, 12);
 });
 
+test('익절 매도 → 사이클 재시작 신호와 다음 사이클 예산(총자산)', () => {
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 111, // 평단가 100 × 1.1 = 110 초과 → 익절
+    holdingQuantity: 10,
+    averagePrice: 100,
+    previousClose: 108,
+    cashAvailable: 500,
+    currentRound: 5,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.1
+  });
+  assert.equal(result.decision, 'SELL');
+  assert.equal(result.restartCycle, true);
+  assert.equal(result.expectedQuantity, 10);
+  // 다음 사이클 예산 = 총자산 = 현금 500 + 보유 10주 × 111 = 1610
+  assert.equal(result.nextCycleBudget, 1610);
+  assert.equal(result.nextPendingAvgBudget, 0);
+  assert.equal(result.nextPendingBigBudget, 0);
+});
+
+test('회차 소진 + 현금 부족 → 보유 1/4 매도 후 사이클 재시작', () => {
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 90,
+    holdingQuantity: 8,
+    averagePrice: 100,
+    previousClose: 95,
+    cashAvailable: 10, // 회차 예산 100보다 적음
+    currentRound: 40,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.1
+  });
+  assert.equal(result.decision, 'SELL');
+  assert.equal(result.restartCycle, true);
+  // 보유 8주의 1/4 = 2주 매도
+  assert.equal(result.expectedQuantity, 2);
+  // 다음 사이클 예산 = 현금 10 + 보유 8주 × 90 = 730
+  assert.equal(result.nextCycleBudget, 730);
+});
+
+test('cycleBudget 입력이 회차 예산 기준이 된다 (복리 재시작 반영)', () => {
+  // cycleBudget 8000 / 40 = 회차 200, 절반 100. 평단가 80 → 1주, 큰수 88 → 1주.
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL',
+    market: 'US',
+    currency: 'USD',
+    currentPrice: 70,
+    holdingQuantity: 1,
+    averagePrice: 80,
+    previousClose: 80,
+    cashAvailable: 5000,
+    currentRound: 2,
+    totalBudget: 4000,
+    splitCount: 40,
+    targetProfitRate: 0.1,
+    bigBuyPremiumRate: 0.1,
+    cycleBudget: 8000
+  });
+  assert.equal(result.decision, 'BUY');
+  assert.equal(result.expectedQuantity, 2);
+});
+
 function mockKis({ orderOk = true } = {}) {
   const calls = [];
   const original = globalThis.fetch;
