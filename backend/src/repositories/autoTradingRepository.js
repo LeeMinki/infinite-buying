@@ -44,9 +44,9 @@ export function createStrategy(userId, input) {
   const result = getDb().prepare(`
     INSERT INTO auto_trading_strategies (
       user_id, symbol, symbol_name, market, currency, total_budget, split_count,
-      buy_amount_per_round, target_profit_rate, big_buy_premium_rate, current_round, max_order_amount,
-      max_daily_order_amount
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+      buy_amount_per_round, target_profit_rate, big_buy_premium_rate, cycle_budget,
+      current_round, max_order_amount, max_daily_order_amount
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
   `).run(
     userId,
     input.symbol,
@@ -57,7 +57,8 @@ export function createStrategy(userId, input) {
     input.splitCount,
     input.buyAmountPerRound,
     input.targetProfitRate,
-    input.bigBuyPremiumRate
+    input.bigBuyPremiumRate,
+    input.totalBudget
   );
   return getStrategy(userId, result.lastInsertRowid);
 }
@@ -129,17 +130,48 @@ export function stopStrategy(userId, id) {
   return getStrategy(userId, id);
 }
 
-export function markStrategyEvaluation(userId, id, { decision, errorMessage = null, incrementRound = false, ordered = false } = {}) {
+export function markStrategyEvaluation(userId, id, {
+  decision,
+  errorMessage = null,
+  incrementRound = false,
+  resetCycle = false,
+  splitCount = null,
+  ordered = false,
+  pendingAvgBudget = null,
+  pendingBigBudget = null,
+  cycleBudget = null
+} = {}) {
+  // resetCycle: 매도로 사이클이 재시작되면 회차를 0으로 되돌린다.
+  // 그 외에는 회차를 +incrementRound 하되 분할 회차 상한을 넘지 않도록 자른다.
   getDb().prepare(`
     UPDATE auto_trading_strategies
     SET last_evaluated_at = datetime('now'),
         last_decision = ?,
         last_error_message = ?,
-        current_round = current_round + ?,
+        current_round = CASE
+          WHEN ? = 1 THEN 0
+          ELSE MIN(current_round + ?, COALESCE(?, current_round + ?))
+        END,
+        pending_avg_budget = COALESCE(?, pending_avg_budget),
+        pending_big_budget = COALESCE(?, pending_big_budget),
+        cycle_budget = COALESCE(?, cycle_budget),
         last_order_at = CASE WHEN ? = 1 THEN datetime('now') ELSE last_order_at END,
         updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
-  `).run(decision || null, errorMessage, incrementRound ? 1 : 0, ordered ? 1 : 0, userId, id);
+  `).run(
+    decision || null,
+    errorMessage,
+    resetCycle ? 1 : 0,
+    incrementRound ? 1 : 0,
+    splitCount,
+    incrementRound ? 1 : 0,
+    pendingAvgBudget,
+    pendingBigBudget,
+    cycleBudget,
+    ordered ? 1 : 0,
+    userId,
+    id
+  );
   return getStrategy(userId, id);
 }
 
@@ -480,6 +512,7 @@ function toStrategy(row) {
     effectiveBigBuyPremiumRate: resolveBigBuyPremiumRate({ override: row.big_buy_premium_rate, splitCount: row.split_count }),
     pendingAvgBudget: row.pending_avg_budget ?? 0,
     pendingBigBudget: row.pending_big_budget ?? 0,
+    cycleBudget: row.cycle_budget > 0 ? row.cycle_budget : row.total_budget,
     currentRound: row.current_round,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at,

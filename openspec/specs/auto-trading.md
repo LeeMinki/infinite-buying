@@ -8,8 +8,8 @@
 
 - `backend/src/routes/autoTradingRoutes.js`
 - `backend/src/services/autoTradingService.js` — 전략 CRUD, evaluate, dashboard, account summary, buying-power preview
-- `backend/src/services/autoTradingStrategyEngine.js` — 자동매매용 의사결정 wrapper (백테스트와 동일 규칙을 현재가/평단가/기준가에 적용)
-- `backend/src/services/strategyCalculator.js` — 실시간 LAOR 판단 (평단가 매수 / 큰수 매수 두 절반)
+- `backend/src/services/autoTradingStrategyEngine.js` — `evaluateAutoTrading`. LAOR_INFINITE_V2_NATIVE 판단(첫 매수 / 평단가·큰수 매수 / 목표 매도 / 회차 소진 1/4 매도 / 사이클 재시작)을 현재가·평단가·기준가에 적용
+- `backend/src/services/buyAlgorithm.js` — 큰수 매수 여유율·멱등키·분할회차 cap 등 공용 산식
 - `backend/src/services/autoTradingSafetyGuard.js` — 안전 검증
 - `backend/src/services/autoTradingScheduler.js` — 주기 평가 tick
 - `backend/src/services/kisTradingService.js` — KIS 잔고, 매수가능금액, 미체결, 주문, 정정취소
@@ -24,7 +24,7 @@
 
 1. 사용자별 `kisAuthService.getAuthContext`로 토큰 확보 (만료 시 자동 재발급).
 2. KIS에서 다음 데이터 조회: 현재가, 전일 종가/기준가, 잔고(보유 수량·평단·평가금), 매수가능금액, 미체결 주문 목록.
-3. `autoTradingStrategyEngine.evaluateAutoTrading`으로 판단 도출. 매수 결정은 `intents` 배열로 분해된다: `FIRST`(첫 매수) 또는 `AVG`(평단가 매수)·`BIG`(큰수 매수) 두 절반. 각 절반은 1주 단위 정수 수량만 만들고, 절반 예산이 1주 가격에 못 미치면 intent를 만들지 않고 carryover로 누적한다.
+3. `autoTradingStrategyEngine.evaluateAutoTrading`으로 판단 도출. 저장된 `pending_avg_budget`/`pending_big_budget`(이월 예산)과 `cycle_budget`(현 사이클 예산)을 입력으로 받는다. 매수 결정은 `intents` 배열로 분해된다: `FIRST`(첫 매수) 또는 `AVG`(평단가 매수)·`BIG`(큰수 매수) 두 절반. 각 절반은 1주 단위 정수 수량만 만들고, 절반 예산이 1주 가격에 못 미치면 intent를 만들지 않고 이월한다. 매도 결정은 단일 `SELL` intent이며, 목표 수익률 도달(전량 매도)과 회차 소진+현금 부족(보유 1/4 매도) 두 경우가 있다.
 4. **자동 취소** (실주문 모드 + 미체결 존재 시): `auto_trading_orders`에서 본 시스템이 이전에 접수한 상태(`REQUESTED` / `ACCEPTED` / `PARTIALLY_FILLED` / `UNKNOWN`)이고 `kis_order_no`가 있는 행만 KIS 정정취소(국내 `TTTC0013U`, 해외 `TTTT1004U`)로 취소, 로컬은 `CANCELED`로 마킹. 사용자가 HTS/MTS로 직접 만든 주문은 절대 건드리지 않는다. DRY_RUN 모드는 자동 취소를 수행하지 않는다.
 5. 자동 취소 후 미체결을 재조회.
 6. `autoTradingSafetyGuard.validateOrderSafety`로 안전 검증:
@@ -71,9 +71,20 @@
 
 `auto_trading_strategies.big_buy_premium_rate` (`migrations/0020`). 값이 NULL이면 산식 `0.1 / splitCount`로 자동 계산, 값이 있으면 사용자 override로 그대로 사용 (`resolveBigBuyPremiumRate`, `buyAlgorithm.js`). 큰수 매수 상한 가격 = 전일 종가 또는 KIS 기준가 × (1 + rate).
 
-## 회차 예산 carryover
+## 회차 예산 이월 (carryover)
 
-`auto_trading_strategies.pending_avg_budget` / `pending_big_budget` (`migrations/0021`, REAL default 0). 회차 절반 예산이 1주 가격보다 작으면 매수 intent를 만들지 않고 해당 절반 예산을 누적한다. 다음 평가에서 `(회차 절반) + pending`을 합산해 1주 이상이 되면 매수. 매수 후 잔액은 다시 누적. 목표 매도로 새 사이클이 시작되면 두 컬럼 모두 0으로 리셋. 자동매매·백테스트(1주 단위 모드) 공통 정책.
+`auto_trading_strategies.pending_avg_budget` / `pending_big_budget` (`migrations/0021`, REAL default 0). 회차 절반 예산이 1주 가격보다 작으면 매수 intent를 만들지 않고 해당 절반 예산을 이월한다. 다음 평가에서 `(회차 절반) + pending`을 합산해 1주 이상이 되면 매수하고, 잔액은 다시 이월한다.
+
+`autoTradingService`가 평가 시 저장된 pending 값을 엔진에 전달하고, 평가 후 `markStrategyEvaluation`으로 다음 pending 값을 DB에 반영한다. 단, 어떤 절반의 주문이 안전 검증에서 막히거나 KIS 거절(`FAILED`)되면 그 절반 예산은 쓰지 않은 것으로 보고 이월에 되돌린다. 매수 주문이 하나도 접수되지 않으면 회차도 진행하지 않고 이월 값을 평가 전 그대로 유지해 다음 tick에서 재평가한다.
+
+## 사이클과 회차 소진
+
+`auto_trading_strategies.cycle_budget` (`migrations/0022`, REAL). 현 사이클의 예산이며 회차 예산 = `cycle_budget / split_count`. 전략 생성 시 `total_budget`으로 채운다.
+
+- **목표 매도**: 현재가 ≥ `평단가 × (1 + 목표 수익률)`이면 보유 전량 매도.
+- **회차 소진 매도**: `current_round ≥ split_count`이고 매수가능금액이 회차 예산보다 적으면 보유 수량의 약 1/4(`ceil(holdingQuantity / 4)`)을 현재가에 매도.
+- 두 매도 모두 접수되면 사이클을 재시작한다: `current_round`를 0으로, `pending_avg_budget`/`pending_big_budget`을 0으로 리셋하고, 그 시점 총자산(`매수가능금액 + 보유수량 × 현재가`)을 새 `cycle_budget`으로 저장한다(복리). 매도가 접수되지 않으면 사이클·이월을 그대로 유지한다.
+- `markStrategyEvaluation`은 매수가 접수되면 `current_round`를 +1 하되 `split_count`를 넘지 않도록 자른다.
 
 ## 분할회차 cap
 

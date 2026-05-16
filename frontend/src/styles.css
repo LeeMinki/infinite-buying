@@ -1601,6 +1601,12 @@ button.danger-button:hover:not(:disabled) {
   grid-column: 1 / -1;
 }
 
+/* 라벨 글자가 한 줄/두 줄로 갈려도 입력 칸 시작 위치를 한 행 안에서 맞춘다. */
+.mode-form label > span {
+  align-self: start;
+  min-height: 32px;
+}
+
 /* 제출 버튼은 마지막에 한 줄 차지하도록 정렬한다. */
 .mode-form > button[type="submit"] {
   grid-column: 1 / -1;
