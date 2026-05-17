@@ -23,7 +23,6 @@ export function evaluateAutoTrading(input) {
   const currentRound = Math.max(0, Math.floor(Number(input.currentRound || 0)));
   const holdingQuantity = nonNegative(input.holdingQuantity || 0);
   const averagePrice = nonNegative(input.averagePrice || 0);
-  const previousClose = nonNegative(input.previousClose || 0);
   const cashAvailable = input.cashAvailable == null ? null : nonNegative(input.cashAvailable);
   const pendingAvgBudget = nonNegative(input.pendingAvgBudget || 0);
   const pendingBigBudget = nonNegative(input.pendingBigBudget || 0);
@@ -130,8 +129,8 @@ export function evaluateAutoTrading(input) {
     const halfBudget = buyAmountPerRound / 2;
     const availableAvg = halfBudget + pendingAvgBudget;
     const availableBig = halfBudget + pendingBigBudget;
-    const bigBuyBasePrice = previousClose || currentPrice;
-    const bigBuyPrice = bigBuyBasePrice * (1 + bigBuyPremiumRate);
+    // 큰수 매수 지정가는 평단가 기준. 평단가보다 큰수 매수 여유율만큼 높은 가격까지 매수한다.
+    const bigBuyPrice = averagePrice * (1 + bigBuyPremiumRate);
 
     if (currentPrice <= averagePrice) {
       const quantity = Math.floor(availableAvg / averagePrice);
@@ -165,7 +164,7 @@ export function evaluateAutoTrading(input) {
           orderPrice: bigBuyPrice,
           expectedQuantity: quantity,
           expectedAmount: amount,
-          reason: `큰수 매수: 현재가 ${fmt(currentPrice)}가 전일종가 기준 지정가 ${fmt(bigBuyPrice)} 이하`
+          reason: `큰수 매수: 현재가 ${fmt(currentPrice)}가 평단가 기준 지정가 ${fmt(bigBuyPrice)} 이하`
         });
         nextPendingBig = availableBig - amount;
       } else {

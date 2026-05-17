@@ -350,8 +350,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
             <span>큰수 매수 여유율 (%)</span>
             <input type="number" min="0" step="0.1" value={form.bigBuyPremiumPercent} onChange={(event) => setForm({ ...form, bigBuyPremiumPercent: nonNegativeInput(event.target.value) })} />
             <p className="helper">
-              전일 종가(또는 기준가)보다 조금 높은 값까지 매수하는 ‘큰수 매수’ 지정가 여유율. 비워두면 0.1 ÷ 분할 회차로 자동 계산합니다.
-              {' '}{form.bigBuyPremiumPercent === '' ? `현재 자동값 ${formatPercent(0.1 / Number(form.splitCount || 40))}` : `직접 입력 ${form.bigBuyPremiumPercent}%`}
+              내 평단가보다 몇 % 높은 가격까지 ‘큰수 매수’ 지정가를 걸지 정합니다. 예: 2를 넣으면 평단가 +2%까지 매수합니다. 비워두면 <b>평단가 +10%</b>로 자동 적용합니다(분할 회차와 무관).
+              {' '}{form.bigBuyPremiumPercent === '' ? '지금은 비어 있어 자동값 10%.' : `직접 입력: ${form.bigBuyPremiumPercent}%.`}
             </p>
           </label>
           <button type="submit" className="primary" disabled={busy === 'create'}>{busy === 'create' ? '저장 중...' : '전략 생성'}</button>
