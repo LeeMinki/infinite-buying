@@ -67,8 +67,9 @@ test('returns HOLD when budget is exhausted', () => {
 });
 
 test('returns HOLD when price is above big-number buy ceiling', () => {
+  // 큰수 매수 상한 = 평단가 50000 × 1.02 = 51000. previousClose(200000)는 무관해야 한다.
   const result = evaluateStrategy({
-    strategy: { ...strategy, previousClose: 51000, bigBuyPremiumRate: 0.02 },
+    strategy: { ...strategy, previousClose: 200000, bigBuyPremiumRate: 0.02 },
     holding: { quantity: 2, averagePrice: 50000, remainingBudget: 1000000 },
     currentPrice: 52100
   });
@@ -76,8 +77,9 @@ test('returns HOLD when price is above big-number buy ceiling', () => {
 });
 
 test('returns BUY when price is within big-number buy ceiling', () => {
+  // 큰수 매수 상한 = 평단가 50000 × 1.05 = 52500. previousClose(5000)는 무관해야 한다.
   const result = evaluateStrategy({
-    strategy: { ...strategy, buyAmountPerRound: 200000, previousClose: 51000, bigBuyPremiumRate: 0.05 },
+    strategy: { ...strategy, buyAmountPerRound: 200000, previousClose: 5000, bigBuyPremiumRate: 0.05 },
     holding: { quantity: 2, averagePrice: 50000, remainingBudget: 1000000 },
     currentPrice: 52000
   });

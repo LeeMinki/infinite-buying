@@ -5,7 +5,7 @@ import { resolveBigBuyPremiumRate } from './buyAlgorithm.js';
 //
 // 회차 예산을 두 매수 기회로 나눈다.
 //   - 평단가 매수: 종가가 현재 평단가 이하이면 회차 예산의 절반 매수
-//   - 큰수 매수: 종가가 전일 종가 × (1 + 큰수 매수 여유율) 이하이면 회차 예산의 절반 매수
+//   - 큰수 매수: 종가가 평단가 × (1 + 큰수 매수 여유율) 이하이면 회차 예산의 절반 매수
 // 목표 매도는 장중 목표가 도달 시 전량 매도한 것으로 계산한다.
 //
 // 우선순위:
@@ -210,7 +210,7 @@ function makeCompleted(s, p, price, roundNo, reason, tradeDate) {
   };
 }
 
-export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, params, state, tradeDate } = {}) {
+export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, params, state, tradeDate } = {}) {
   if (!isTradingMode(mode)) throw new Error(`Unknown trading mode: ${mode}`);
   if (!ohlc || typeof ohlc !== 'object') throw new Error('ohlc is required');
   const { open, high, low, close } = ohlc;
@@ -267,7 +267,6 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
   }
 
   const roundNo = Math.min(s.currentRound + 1, p.splitCount);
-  const prevCloseSafe = Number.isFinite(prevClose) && prevClose > 0 ? prevClose : open;
 
   // 3) 첫 매수 (보유 0): 시가에 회차 예산만큼 매수. 국내는 정수 주 단위.
   if (s.holdingQuantity === 0 || s.averagePrice <= 0) {
@@ -280,13 +279,13 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
     const reason =
       `첫 매수: 시가 ${fmtMoney(open, p)}에 ${fmtQty(qty)}주를 매수했습니다. 사용 금액은 ${fmtMoney(qty * open, p)}입니다.`;
     const dec = buyFill({ s, params: p, qty, fillPrice: open, roundNo, reason, tradeDate, half: 'FIRST' });
-    return { decisions: [dec], nextState: { ...dec.nextState, currentRound: roundNo, prevClose: close } };
+    return { decisions: [dec], nextState: { ...dec.nextState, currentRound: roundNo } };
   }
 
   // 4) 일반 매수: 평단가 매수/큰수 매수 분할.
   const halfBudget = T / 2;
   const averageBuyPrice = s.averagePrice;
-  const bigBuyPrice = prevCloseSafe * (1 + p.bigBuyPremiumRate);
+  const bigBuyPrice = averageBuyPrice * (1 + p.bigBuyPremiumRate);
   const decisions = [];
   let workingState = { ...s, pendingAvgBudget: 0, pendingBigBudget: 0 };
 
@@ -310,7 +309,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
     workingState.pendingAvgBudget = avgBudget;
   }
 
-  // 큰수 매수: 일봉 저가가 전일 종가 기준 지정가에 닿으면 min(시가, 지정가)에 체결.
+  // 큰수 매수: 일봉 저가가 평단가 기준 지정가에 닿으면 min(시가, 지정가)에 체결.
   const bigBudget = halfBudget + s.pendingBigBudget;
   if (low <= bigBuyPrice) {
     const fillPrice = Math.min(open, bigBuyPrice);
@@ -338,7 +337,7 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, prevClose, para
   }
 
   const hasBuy = decisions.some((decision) => decision.decision === Decision.BUY);
-  return { decisions, nextState: { ...workingState, currentRound: hasBuy ? roundNo : s.currentRound, prevClose: close } };
+  return { decisions, nextState: { ...workingState, currentRound: hasBuy ? roundNo : s.currentRound } };
 }
 
 // 단일가 평가 (live evaluation 호환용).
@@ -359,10 +358,7 @@ export function evaluate({ mode = TradingMode.BACKTEST, price, tradeDate, params
   let buyReason = '단일가 평가 매수';
   if (s.holdingQuantity > 0 && s.averagePrice > 0) {
     const averageBuyPrice = s.averagePrice;
-    const previousCloseSafe = Number.isFinite(params.previousClose) && params.previousClose > 0
-      ? params.previousClose
-      : (Number.isFinite(s.prevClose) && s.prevClose > 0 ? s.prevClose : price);
-    const bigBuyPrice = previousCloseSafe * (1 + p.bigBuyPremiumRate);
+    const bigBuyPrice = averageBuyPrice * (1 + p.bigBuyPremiumRate);
     const half = buyBudget / 2;
     const matched = [];
     buyBudget = 0;

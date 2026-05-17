@@ -30,8 +30,8 @@ test('첫 매수: 평단가 없으니 시가에 floor(T/시가)주 매수', () =
 });
 
 test('평단가 매수와 큰수 매수가 모두 체결되는 날', () => {
-  // 평단가 50_000, 전일 종가 50_000, 큰수 매수 상한 55_000.
-  // 종가 49_500 → 평단가 매수와 큰수 매수가 모두 체결.
+  // 평단가 50_000, 큰수 매수 여유율 기본 10% → 큰수 매수 상한 = 50_000 × 1.1 = 55_000.
+  // 일봉 저가 49_000 → 평단가 매수와 큰수 매수가 모두 체결.
   const state = {
     cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
     investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
@@ -53,7 +53,7 @@ test('평단가 매수와 큰수 매수가 모두 체결되는 날', () => {
 });
 
 test('큰 하락일: 평단가 매수 + 큰수 매수 둘 다 체결', () => {
-  // 평단가 50_000, 전일 종가 50_000. 종가 47_000 → 둘 다 체결.
+  // 평단가 50_000, 큰수 매수 상한 55_000. 일봉 저가 46_500 → 둘 다 체결.
   const state = {
     cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
     investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
@@ -75,16 +75,17 @@ test('큰 하락일: 평단가 매수 + 큰수 매수 둘 다 체결', () => {
   assert.equal(buys[1].price, 48000);
 });
 
-test('상승일: 둘 다 한도 초과 → HOLD', () => {
+test('상승일: 평단가·큰수 매수 한도 모두 초과 → HOLD', () => {
+  // 평단가 50_000, 큰수 매수 여유율 5% → 큰수 매수 상한 52_500.
+  // 일봉 저가 53_000 → 평단가(50_000)·큰수(52_500) 한도 모두 초과, 고가 54_000 < 목표가 55_000.
   const state = {
     cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
     investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
   };
   const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    ohlc: { open: 51000, high: 52000, low: 50500, close: 51500 },
-    prevClose: 50000,
-    params,
+    ohlc: { open: 53000, high: 54000, low: 53000, close: 53500 },
+    params: { ...params, bigBuyPremiumRate: 0.05 },
     state,
     tradeDate: '2026-01-05'
   });
@@ -113,22 +114,24 @@ test('큰수 매수 여유율 0%면 큰수 기준가를 넘는 종가에서는 �
   assert.equal(nextState.currentRound, 1);
 });
 
-test('큰수 매수 여유율 안이면 전일 종가보다 비싸도 매수 가능', () => {
+test('큰수 매수: 평단가보다 비싸도 큰수 매수 여유율 안이면 매수', () => {
+  // 평단가 50_000, 큰수 매수 여유율 3% → 큰수 매수 상한 51_500.
+  // 일봉 저가 50_800 → 평단가(50_000)는 초과하지만 큰수 한도(51_500) 안 → 큰수 매수만 체결.
   const state = {
-    cash: 3900000, holdingQuantity: 2, averagePrice: 50000,
+    cash: 7900000, holdingQuantity: 2, averagePrice: 50000,
     investedAmount: 100000, realizedProfit: 0, currentRound: 1, completed: false
   };
   const { decisions, nextState } = evaluateDay({
     mode: TradingMode.BACKTEST,
-    ohlc: { open: 52500, high: 53000, low: 52000, close: 52500 },
-    prevClose: 52000,
+    ohlc: { open: 51000, high: 51400, low: 50800, close: 51200 },
     params: { ...params, totalBudget: 8000000, bigBuyPremiumRate: 0.03 },
     state,
     tradeDate: '2026-01-05'
   });
   const buys = decisions.filter((d) => d.decision === Decision.BUY);
   assert.equal(buys.length, 1);
-  assert.equal(buys[0].price, 52500);
+  assert.equal(buys[0].reason.includes('큰수 매수'), true);
+  assert.equal(buys[0].price, 51000);
   assert.equal(nextState.currentRound, 2);
 });
 

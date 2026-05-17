@@ -1,12 +1,14 @@
 export const LAOR_NATIVE_ALGORITHM = 'LAOR_INFINITE_V2_NATIVE';
 
 export function resolveBigBuyPremiumRate({ override, splitCount }) {
+  // splitCount 는 호출부 호환을 위해 받지만, 큰수 매수 여유율 기본값은 분할 회차와 무관하다.
   const count = Number(splitCount);
   if (!Number.isInteger(count) || count <= 0) {
     throw new Error('splitCount must be a positive integer');
   }
   if (override === null || override === undefined || override === '') {
-    return 0.1 / count;
+    // 라오어 "큰 수"는 평단가보다 충분히 높은 고정 여유율(10%)이다. 분할 회차로 나누지 않는다.
+    return 0.1;
   }
   const value = Number(override);
   if (!Number.isFinite(value) || value < 0) {

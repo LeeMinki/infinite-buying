@@ -45,8 +45,8 @@ export function evaluateStrategy({ strategy, holding, currentPrice }) {
     reason = '첫 매수: 회차당 기본 수량';
   } else {
     const halfBudget = baseBudget / 2;
-    const previousClose = Number(strategy.previousClose || price);
-    const bigBuyLimit = previousClose * (1 + (Number.isFinite(bigBuyPremiumRate) ? bigBuyPremiumRate : 0.1));
+    // 큰수 매수 지정가는 평단가 기준. 평단가보다 큰수 매수 여유율만큼 높은 가격까지 매수한다.
+    const bigBuyLimit = holding.averagePrice * (1 + (Number.isFinite(bigBuyPremiumRate) ? bigBuyPremiumRate : 0.1));
     const matched = [];
     plannedBudget = 0;
     if (price <= holding.averagePrice) {

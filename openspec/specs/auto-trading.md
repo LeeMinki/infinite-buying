@@ -8,7 +8,7 @@
 
 - `backend/src/routes/autoTradingRoutes.js`
 - `backend/src/services/autoTradingService.js` — 전략 CRUD, evaluate, dashboard, account summary, buying-power preview
-- `backend/src/services/autoTradingStrategyEngine.js` — `evaluateAutoTrading`. LAOR_INFINITE_V2_NATIVE 판단(첫 매수 / 평단가·큰수 매수 / 목표 매도 / 회차 소진 1/4 매도 / 사이클 재시작)을 현재가·평단가·기준가에 적용
+- `backend/src/services/autoTradingStrategyEngine.js` — `evaluateAutoTrading`. LAOR_INFINITE_V2_NATIVE 판단(첫 매수 / 평단가·큰수 매수 / 목표 매도 / 회차 소진 1/4 매도 / 사이클 재시작)을 현재가·평단가에 적용
 - `backend/src/services/buyAlgorithm.js` — 큰수 매수 여유율·멱등키·분할회차 cap 등 공용 산식
 - `backend/src/services/autoTradingSafetyGuard.js` — 안전 검증
 - `backend/src/services/autoTradingScheduler.js` — 주기 평가 tick
@@ -69,7 +69,7 @@
 
 ## 큰수 매수 여유율
 
-`auto_trading_strategies.big_buy_premium_rate` (`migrations/0020`). 값이 NULL이면 산식 `0.1 / splitCount`로 자동 계산, 값이 있으면 사용자 override로 그대로 사용 (`resolveBigBuyPremiumRate`, `buyAlgorithm.js`). 큰수 매수 상한 가격 = 전일 종가 또는 KIS 기준가 × (1 + rate).
+`auto_trading_strategies.big_buy_premium_rate` (`migrations/0020`). 값이 NULL이면 분할 회차와 무관하게 기본 `0.1`(10%), 값이 있으면 사용자 override로 그대로 사용 (`resolveBigBuyPremiumRate`, `buyAlgorithm.js`). 큰수 매수 지정가 = 평단가 × (1 + rate).
 
 ## 회차 예산 이월 (carryover)
 

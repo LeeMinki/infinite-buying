@@ -23,14 +23,22 @@ export function runMigrations() {
     .filter((name) => name.endsWith('.sql'))
     .sort();
 
-  for (const name of migrations) {
-    const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(name);
-    if (applied) continue;
-    const sql = fs.readFileSync(path.join(migrationsDir, name), 'utf8');
-    db.transaction(() => {
-      db.exec(sql);
-      db.prepare('INSERT INTO schema_migrations (name) VALUES (?)').run(name);
-    })();
+  // 마이그레이션 중에는 FK 강제를 끈다. 테이블 재생성(create new → drop old → rename)
+  // 시 부모 테이블을 DROP 하면 자식 행이 CASCADE 로 삭제될 수 있어 데이터가 유실된다.
+  // FK 정의 자체는 그대로 보존되며, 마이그레이션이 끝나면 다시 켠다.
+  db.pragma('foreign_keys = OFF');
+  try {
+    for (const name of migrations) {
+      const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(name);
+      if (applied) continue;
+      const sql = fs.readFileSync(path.join(migrationsDir, name), 'utf8');
+      db.transaction(() => {
+        db.exec(sql);
+        db.prepare('INSERT INTO schema_migrations (name) VALUES (?)').run(name);
+      })();
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
   }
 }
 

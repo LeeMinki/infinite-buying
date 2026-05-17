@@ -21,6 +21,7 @@ credentialService.saveSettings(alice.id, {
 test.after(() => tmp.cleanup());
 
 test('auto trading holds when current price is above big-number buy ceiling', () => {
+  // 큰수 매수 상한 = 평단가 55 × 1.02 = 56.1. previousClose(500)는 무관해야 한다.
   const result = evaluateAutoTrading({
     symbol: 'TQQQ',
     market: 'US',
@@ -28,7 +29,7 @@ test('auto trading holds when current price is above big-number buy ceiling', ()
     currentPrice: 57,
     holdingQuantity: 1,
     averagePrice: 55,
-    previousClose: 55,
+    previousClose: 500,
     cashAvailable: 1000,
     currentRound: 1,
     totalBudget: 4000,
@@ -41,7 +42,8 @@ test('auto trading holds when current price is above big-number buy ceiling', ()
 });
 
 test('auto trading buys when current price is within big-number buy ceiling', () => {
-  // totalBudget 8000 / 40분할 → 회차 예산 200, 절반 100. 큰수 지정가 56.1 → 1주 매수 가능.
+  // totalBudget 8000 / 40분할 → 회차 예산 200, 절반 100.
+  // 큰수 지정가 = 평단가 55 × 1.02 = 56.1 → 1주 매수 가능. previousClose(20)는 무관.
   const result = evaluateAutoTrading({
     symbol: 'TQQQ',
     market: 'US',
@@ -49,7 +51,7 @@ test('auto trading buys when current price is within big-number buy ceiling', ()
     currentPrice: 56,
     holdingQuantity: 1,
     averagePrice: 55,
-    previousClose: 55,
+    previousClose: 20,
     cashAvailable: 1000,
     currentRound: 1,
     totalBudget: 8000,
