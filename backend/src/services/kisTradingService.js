@@ -589,8 +589,23 @@ function normalizeMarket(value, symbol) {
   return /^\d{6}$/.test(String(symbol || '')) ? 'KR' : 'US';
 }
 
-function normalizeExchange(value) {
-  return String(value || 'NAS').trim().toUpperCase();
+// KIS 거래소 코드는 시세 조회용(NAS/NYS/AMS)과 거래 API용(NASD/NYSE/AMEX)이 다르다.
+// 종목 검색은 시세용 코드를 주므로, 주문·잔고·매수가능금액 같은 거래 API에 쓰기 전에
+// 거래용 코드로 변환해야 한다. 변환하지 않으면 KIS가 "상품이 없습니다"(APBN0746)로 거절한다.
+const TRADING_EXCHANGE_CODES = {
+  NAS: 'NASD',
+  NASD: 'NASD',
+  NASDAQ: 'NASD',
+  NYS: 'NYSE',
+  NYSE: 'NYSE',
+  AMS: 'AMEX',
+  AMX: 'AMEX',
+  AMEX: 'AMEX'
+};
+
+export function normalizeExchange(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  return TRADING_EXCHANGE_CODES[raw] || raw || 'NASD';
 }
 
 function num(value) {
