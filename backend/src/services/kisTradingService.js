@@ -351,13 +351,15 @@ export class KisTradingService {
   }
 
   async placeDomesticOrder(context, order) {
+    // 국내 주문 구분: '00' 지정가, '01' 시장가. 시장가는 단가에 '0'을 넣는다.
+    const isMarket = order.orderType === 'MARKET';
     const body = {
       CANO: context.accountNumber,
       ACNT_PRDT_CD: context.accountProductCode,
       PDNO: order.symbol,
-      ORD_DVSN: '00',
+      ORD_DVSN: isMarket ? '01' : '00',
       ORD_QTY: String(Math.floor(order.quantity)),
-      ORD_UNPR: String(Math.floor(order.orderPrice))
+      ORD_UNPR: isMarket ? '0' : String(Math.floor(order.orderPrice))
     };
     return this.requestOrder('/uapi/domestic-stock/v1/trading/order-cash', {
       trId: order.side === 'BUY' ? 'TTTC0012U' : 'TTTC0011U',

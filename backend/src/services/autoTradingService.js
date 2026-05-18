@@ -112,21 +112,49 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange })
     ]);
 
-    // 자동 취소: 실주문 모드이고 이전 평가에서 우리가 KIS에 접수한 주문이 미체결로 남아
-    // 신규 매수/매도를 막고 있으면, 우리 시스템이 만든 주문에 한해 자동으로 취소를 시도한다.
+    // 주문 정리: 실주문 모드에서 이전 평가에 우리가 접수한 미체결 주문을 처리한다.
+    //  - 오늘 접수한 주문은 건드리지 않는다 (체결 대기 중일 수 있고, 하루 1회 매수와 맞물려
+    //    "오늘 낸 주문을 취소하고 재주문도 안 함"이 되는 것을 막는다).
+    //  - KIS 미체결 목록에 더 이상 없는 주문은 취소하지 말고 실제 체결 상태로 갱신한다.
+    //  - 이전 거래일의 미체결 주문만 실제로 취소한다.
     // 사용자가 KIS HTS/MTS에서 직접 만든 주문은 절대 건드리지 않는다.
     const autoCancelNotes = [];
     let openOrders = openOrdersInitial;
-    if (settings.liveOrderEnabled && Array.isArray(openOrders) && openOrders.length > 0) {
+    if (settings.liveOrderEnabled) {
       const ownedOpen = repo.listOpenOwnedOrders(userId, strategy.id);
-      const ownedOrderNos = new Set(ownedOpen.map((o) => o.kisOrderNo).filter(Boolean));
-      const ownedOpenAtKis = openOrders.filter((row) => row.orderNo && ownedOrderNos.has(row.orderNo));
+      let touchedAny = false;
       for (const own of ownedOpen) {
-        const cancelTarget = openOrders.find((row) => row.orderNo === own.kisOrderNo);
+        if (own.createdAt && String(own.createdAt).slice(0, 10) === tradeDate) {
+          continue; // 오늘 접수한 주문은 그대로 둔다.
+        }
+        const cancelTarget = Array.isArray(openOrders)
+          ? openOrders.find((row) => row.orderNo === own.kisOrderNo)
+          : null;
+        if (!cancelTarget) {
+          // KIS 미체결 목록에 없음 → 이미 체결됐거나 사라짐. 취소 대신 실제 상태로 갱신.
+          try {
+            const refreshed = await trading.refreshOrder(own);
+            repo.updateOrder(userId, own.id, {
+              status: refreshed.status || 'UNKNOWN',
+              kisOrderNo: refreshed.orderNo,
+              kisOriginalOrderNo: refreshed.originalOrderNo,
+              filledQuantity: refreshed.filledQuantity,
+              remainingQuantity: refreshed.remainingQuantity,
+              averageFilledPrice: refreshed.averageFilledPrice,
+              responsePayloadMasked: refreshed.responsePayloadMasked,
+              errorMessage: null
+            });
+            autoCancelNotes.push(`주문 #${own.id} 상태 갱신: ${refreshed.status || 'UNKNOWN'}`);
+          } catch (err) {
+            autoCancelNotes.push(`주문 #${own.id} 상태 확인 실패: ${err.message || err}`);
+          }
+          touchedAny = true;
+          continue;
+        }
         try {
           const result = await trading.cancelOpenOrder({
             ...own,
-            remainingQuantity: cancelTarget?.remainingQuantity ?? own.remainingQuantity ?? own.quantity
+            remainingQuantity: cancelTarget.remainingQuantity ?? own.remainingQuantity ?? own.quantity
           });
           repo.markOrderCanceled(userId, own.id, {
             reason: '자동매매가 신규 주문 전 자동 취소했습니다.',
@@ -136,17 +164,14 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         } catch (err) {
           autoCancelNotes.push(`주문 #${own.id} 자동 취소 실패: ${err.message || err}`);
         }
+        touchedAny = true;
       }
-      if (ownedOpen.length > 0) {
-        // KIS는 취소가 즉시 잔량 0이 되지 않을 수 있으므로 잠시 후 미체결 목록을 다시 가져온다.
+      if (touchedAny) {
+        // KIS는 취소가 즉시 반영되지 않을 수 있으므로 미체결 목록을 다시 가져온다.
         try {
           openOrders = await trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange });
         } catch (_) {
           // 재조회 실패는 무시. 기존 목록을 그대로 SafetyGuard 에 넘긴다.
-        }
-        // 우리가 만든 주문 외에 외부 주문이 남아 있을 수 있다. 그 경우 SafetyGuard 가 그대로 차단한다.
-        if (ownedOpenAtKis.length === 0) {
-          autoCancelNotes.push('미체결 주문 목록에 우리가 만든 주문은 없습니다. 외부 주문은 취소하지 않습니다.');
         }
       }
     }
