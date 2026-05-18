@@ -374,8 +374,10 @@ export class KisTradingService {
       OVRS_EXCG_CD: normalizeExchange(order.exchange),
       PDNO: order.symbol,
       ORD_DVSN: '00',
-      ORD_QTY: String(order.quantity),
-      OVRS_ORD_UNPR: String(order.orderPrice),
+      ORD_QTY: String(Math.floor(Number(order.quantity) || 0)),
+      // 큰수 매수 지정가(평단가 × 1.1 등)는 소수점이 길게 나온다. KIS 해외주식 주문은
+      // 호가 소수 자릿수를 벗어난 단가를 거절하므로(주문단가 오류) 반드시 정규화한다.
+      OVRS_ORD_UNPR: String(roundOverseasOrderPrice(order.orderPrice)),
       ORD_SVR_DVSN_CD: '0'
     };
     return this.requestOrder('/uapi/overseas-stock/v1/trading/order', {
@@ -606,6 +608,17 @@ const TRADING_EXCHANGE_CODES = {
 export function normalizeExchange(value) {
   const raw = String(value || '').trim().toUpperCase();
   return TRADING_EXCHANGE_CODES[raw] || raw || 'NASD';
+}
+
+// KIS 해외주식 주문 단가를 호가 소수 자릿수에 맞춰 정규화한다.
+// 미국 주식 호가 단위: 1달러 이상은 0.01, 1달러 미만은 0.0001.
+// 계산식으로 나온 긴 소수(예: 평단가 × 1.1 = 60.50000000001)를 그대로 보내면
+// KIS가 주문단가 오류로 거절하므로, 주문 직전에 반드시 반올림한다.
+export function roundOverseasOrderPrice(value) {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  const decimals = price >= 1 ? 2 : 4;
+  return Number(price.toFixed(decimals));
 }
 
 function num(value) {

@@ -256,6 +256,49 @@ export class KisMarketDataProvider {
     };
   }
 
+  // 한국주식 등락률 순위 (KIS 국내주식 등락률 순위 API).
+  // 상승률 기준 내림차순으로 정렬된 종목 목록을 반환한다.
+  // 응답 필드명은 KIS 실응답에 따라 달라질 수 있어 여러 후보 키를 방어적으로 읽는다.
+  async getDomesticFluctuationRanking(options = {}) {
+    const data = await this.requestJson('/uapi/domestic-stock/v1/ranking/fluctuation', {
+      trId: 'FHPST01700000',
+      query: {
+        fid_cond_mrkt_div_code: 'J',
+        fid_cond_scr_div_code: '20170',
+        fid_input_iscd: options.marketCode || '0000', // 0000 전체 / 0001 코스피 / 1001 코스닥
+        fid_rank_sort_cls_code: '0', // 0 = 상승률순
+        fid_input_cnt_1: '0',
+        fid_prc_cls_code: '0',
+        fid_input_price_1: '',
+        fid_input_price_2: '',
+        fid_vol_cnt: '',
+        fid_trgt_cls_code: '0',
+        fid_trgt_exls_cls_code: '0',
+        fid_div_cls_code: '0',
+        fid_rsfl_rate1: '',
+        fid_rsfl_rate2: ''
+      }
+    });
+    const rows = pickRankingArray(data)
+      .map((row) => {
+        const symbol = String(row.stck_shrn_iscd ?? row.mksc_shrn_iscd ?? row.iscd ?? '').trim();
+        const price = normalizeNumber(row.stck_prpr ?? row.price);
+        if (!symbol || !price) return null;
+        return {
+          symbol,
+          name: String(row.hts_kor_isnm ?? row.prdt_name ?? row.name ?? '').trim() || symbol,
+          market: 'KR',
+          price,
+          // prdy_ctrt(전일대비율)은 퍼센트 단위. 0.295 같은 소수 비율로 정규화한다.
+          fluctuationRate: normalizeSignedNumber(row.prdy_ctrt ?? row.fltt_rt ?? row.rate) / 100,
+          source: 'KIS_API'
+        };
+      })
+      .filter(Boolean);
+    rows.sort((a, b) => b.fluctuationRate - a.fluctuationRate);
+    return rows;
+  }
+
   async requestJson(path, { trId, query }) {
     const context = await getAuthContext(this.userId);
     const url = new URL(`${context.baseUrl}${path}`);
@@ -354,6 +397,24 @@ function pickCandleArray(data) {
     if (Array.isArray(value) && value.length > 0) return value;
   }
   return [];
+}
+
+function pickRankingArray(data) {
+  if (!data || typeof data !== 'object') return [];
+  for (const key of ['output', 'output1', 'output2', 'list']) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+// 부호를 보존하는 숫자 파싱 (등락률은 음수일 수 있다).
+function normalizeSignedNumber(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  const number = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(number) ? number : 0;
 }
 
 function isFailureResponse(data) {

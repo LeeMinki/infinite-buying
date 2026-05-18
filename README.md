@@ -12,7 +12,7 @@
 - 국내/해외 종목 일봉 조회 및 `market_price_cache` 저장
 - KIS 일봉 시가·고가·종가 기준 백테스트
 - 백테스트 요약, 거래 이력, 자산 변화 차트, 평균단가 vs 종가 차트
-- 자동매매 전략 생성, 시작, 종료
+- 자동매매 전략 생성, 시작, 종료 (라오어 무한매수법 / 한국 국장 상승률 랭킹 전략)
 - 실주문 실행 설정 토글
 - 실주문 실행 꺼짐: 현재가·잔고·매수가능금액 조회, 전략 판단, 모의 주문 기록, 포지션 스냅샷 저장
 - 실주문 실행 켜짐: 미체결·중복·매수가능금액·보유 수량 검사를 통과한 경우 KIS 주문 API로 실제 매수/매도 주문 전송
@@ -68,6 +68,7 @@ ENABLE_LIVE_ORDER=false
 ENABLE_RESERVED_ORDER=false
 AUTO_TRADING_SCHEDULER_ENABLED=true
 AUTO_TRADING_SCHEDULER_INTERVAL_MS=600000
+KR_RANK_SCHEDULER_INTERVAL_MS=60000
 ```
 
 `SECRET_ENCRYPTION_KEY`는 32바이트 난수를 base64로 인코딩한 값이어야 합니다.
@@ -172,6 +173,17 @@ KIS/한국투자증권_오픈API_전체문서_20260512_030000.xlsx
 
 메인 화면의 공통 전략 초안은 백테스트와 자동매매 전략 생성의 출발점입니다. 전략 상세에서 백테스트로 검증 또는 자동매매 전략 만들기를 누르면 종목, 예산, 분할 회차, 목표 수익률이 해당 화면에 자동으로 채워집니다.
 
+### 한국 국장 상승률 랭킹 전략
+
+자동매매 화면에는 라오어 무한매수법 탭과 별개로 **한국 국장 상승률 랭킹 전략** 탭이 있습니다. 두 전략 종류는 독립적으로 생성·시작·종료·조회되며, 실주문 실행 설정·KIS 연동을 공유합니다. 한국 랭킹 전략은 진입 시각을 놓치지 않도록 1분 간격으로 평가합니다(라오어 전략의 10분 간격과 분리).
+
+- 진입: 오전 9시 10분(선택 시 11시 30분 점심)에 한국주식 등락률 상위 랭킹을 조회합니다. 각 진입은 하루 1회, 진입 구간당 1회만 매수하며 매도했더라도 같은 구간에서 다시 매수하지 않습니다. 점심 진입을 켜면 하루 두 번까지 매수합니다.
+- 진입 구간별 입력: 오전·점심 각각 매수 금액·목표 수익률·손절 기준을 따로 입력합니다. 점심 진입이 꺼져 있으면 오전 값만 입력합니다.
+- 종목 선택: 등락률 30% 이상 종목을 제외하고 남은 첫 번째 종목을 매수 대상으로 고릅니다. 후보가 없으면 매수하지 않고 판단 기록만 남깁니다.
+- 매수: 해당 진입 구간의 매수 금액 한도와 가용 현금 중 작은 값을 기준으로 정수 주 단위(한국주식)로 매수합니다.
+- 매도: 보유분을 만든 진입 구간의 목표 수익률 도달 시 전량 익절, 손절 기준 도달 시 전량 손절합니다.
+- 실주문 실행 설정이 꺼져 있으면 랭킹 조회·종목 선택·판단·주문 예정 기록은 남기되 KIS 주문 API는 호출하지 않습니다. 진입 구간·매도 사유(목표 수익/손절)·실주문 여부를 구분해 기록합니다.
+
 ## 주요 API
 
 ```text
@@ -212,6 +224,19 @@ GET    /api/auto-trading/strategies/:id/positions
 GET    /api/auto-trading/orders
 GET    /api/auto-trading/orders/:id
 POST   /api/auto-trading/orders/:id/refresh
+
+GET    /api/kr-rank/overview
+GET    /api/kr-rank/strategies
+POST   /api/kr-rank/strategies
+GET    /api/kr-rank/strategies/:id
+PUT    /api/kr-rank/strategies/:id
+DELETE /api/kr-rank/strategies/:id
+POST   /api/kr-rank/strategies/:id/start
+POST   /api/kr-rank/strategies/:id/stop
+POST   /api/kr-rank/strategies/:id/evaluate
+GET    /api/kr-rank/strategies/:id/orders
+GET    /api/kr-rank/strategies/:id/decisions
+GET    /api/kr-rank/strategies/:id/entries
 ```
 
 모든 보호 API는 로그인한 사용자의 `userId` 기준으로만 조회/수정/삭제합니다.

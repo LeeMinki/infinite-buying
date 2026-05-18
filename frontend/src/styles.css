@@ -2267,3 +2267,52 @@ td.neutral {
     width: 100%;
   }
 }
+
+/* 자동매매 전략 종류 탭 */
+.strategy-type-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.strategy-type-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 10px 14px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.strategy-type-tab:hover {
+  color: var(--text, #0f172a);
+}
+
+.strategy-type-tab.active {
+  color: #1d4ed8;
+  border-bottom-color: #1d4ed8;
+}
+
+.kr-rank-dry-note {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.kr-rank-rule-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted, #64748b);
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+/* 점심 진입 사용 체크박스가 폼 한 칸 전체를 차지하도록 */
+.kr-rank-form .checkbox-field {
+  grid-column: 1 / -1;
+}

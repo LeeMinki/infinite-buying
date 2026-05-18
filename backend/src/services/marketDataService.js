@@ -46,6 +46,13 @@ export async function searchSymbols(userId, query) {
   return provider.searchSymbols(query);
 }
 
+// 한국주식 등락률 상위 랭킹. 조회 실패·빈 응답 시 에러를 그대로 상위로 전파해
+// 한국 랭킹 전략의 진입 평가가 SKIP/ERROR로 기록되도록 한다.
+export async function getDomesticFluctuationRanking(userId, options = {}) {
+  const provider = new KisMarketDataProvider(userId);
+  return provider.getDomesticFluctuationRanking(options);
+}
+
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase();
 }

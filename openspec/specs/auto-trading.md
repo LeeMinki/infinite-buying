@@ -25,6 +25,7 @@
 1. 사용자별 `kisAuthService.getAuthContext`로 토큰 확보 (만료 시 자동 재발급).
 2. KIS에서 다음 데이터 조회: 현재가, 전일 종가/기준가, 잔고(보유 수량·평단·평가금), 매수가능금액, 미체결 주문 목록.
 3. `autoTradingStrategyEngine.evaluateAutoTrading`으로 판단 도출. 저장된 `pending_avg_budget`/`pending_big_budget`(이월 예산)과 `cycle_budget`(현 사이클 예산)을 입력으로 받는다. 매수 결정은 `intents` 배열로 분해된다: `FIRST`(첫 매수) 또는 `AVG`(평단가 매수)·`BIG`(큰수 매수) 두 절반. 각 절반은 1주 단위 정수 수량만 만들고, 절반 예산이 1주 가격에 못 미치면 intent를 만들지 않고 이월한다. 매도 결정은 단일 `SELL` intent이며, 목표 수익률 도달(전량 매도)과 회차 소진+현금 부족(보유 1/4 매도) 두 경우가 있다.
+3-1. **하루 1회 매수 가드**: 엔진이 BUY로 판단해도, 같은 거래일(UTC 날짜)에 이미 매수 주문 기록이 있으면(`repo.hasBuyOrderToday`) 그 평가의 BUY를 `SKIP`으로 바꾼다. 회차·이월 예산은 평가 전 값으로 유지한다. 스케줄러는 계속 10분마다 평가하지만 매수 주문은 거래일당 최대 1회만 만든다. 보유 0이면 첫 매수(`FIRST`)만, 다음 거래일부터 보유가 생겨 `AVG`/`BIG` 두 절반을 평가한다. 매도(SELL)는 이 가드의 영향을 받지 않는다.
 4. **자동 취소** (실주문 모드 + 미체결 존재 시): `auto_trading_orders`에서 본 시스템이 이전에 접수한 상태(`REQUESTED` / `ACCEPTED` / `PARTIALLY_FILLED` / `UNKNOWN`)이고 `kis_order_no`가 있는 행만 KIS 정정취소(국내 `TTTC0013U`, 해외 `TTTT1004U`)로 취소, 로컬은 `CANCELED`로 마킹. 사용자가 HTS/MTS로 직접 만든 주문은 절대 건드리지 않는다. DRY_RUN 모드는 자동 취소를 수행하지 않는다.
 5. 자동 취소 후 미체결을 재조회.
 6. `autoTradingSafetyGuard.validateOrderSafety`로 안전 검증:
@@ -37,9 +38,10 @@
    - SELL: 보유 수량 ≥ 예상 수량
    - 실주문 + 해외 BUY + `expectedQuantity < 1` → 차단 (KIS 표준 해외주문은 정수 주만 지원; 이상치 방어용. 평가 엔진이 1주 미만을 carryover로 흡수하므로 실제로는 거의 발동하지 않음)
    - SafetyGuard는 `intents` 배열의 각 intent를 독립 평가한다. 한 intent의 SKIP이 다른 intent를 차단하지 않는다.
+   - SafetyGuard가 막은 intent는 `FAILED` 주문 row로 기록하되, **같은 `idempotency_key` 주문이 이미 있으면 row를 새로 만들지 않는다**(UNIQUE 충돌 방지). 판단 로그로만 남는다.
 7. 분기:
    - `liveOrderEnabled = false` → 각 intent를 `auto_trading_orders` row로 `DRY_RUN` 상태 저장.
-   - `liveOrderEnabled = true` → intent를 평단가(`AVG`) → 큰수(`BIG`) 순으로 직렬 접수. KIS 매수/매도 주문 API 호출, 응답에 따라 `REQUESTED` → `ACCEPTED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `FAILED` / `UNKNOWN`. 같은 평가의 모든 주문은 동일 `decision_log_id`로 묶인다.
+   - `liveOrderEnabled = true` → intent를 평단가(`AVG`) → 큰수(`BIG`) 순으로 직렬 접수. KIS 매수/매도 주문 API 호출, 응답에 따라 `REQUESTED` → `ACCEPTED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `FAILED` / `UNKNOWN`. 같은 평가의 모든 주문은 동일 `decision_log_id`로 묶인다. 해외 주문 단가는 호가 소수 자릿수(1달러 이상 2자리, 미만 4자리)로 정규화해 전송한다.
 8. 포지션 스냅샷(`auto_trading_position_snapshots`)에 결정(`decision`)과 함께 저장.
 9. 판단 로그(`auto_trading_decision_logs`)에 시간·결정·평가 출처(MANUAL/SCHEDULED)·현재가·평단가·목표가·목표가까지의 거리·예상 수량·예상 금액·미체결 수·연결된 주문 id·사유 저장.
 
@@ -85,6 +87,10 @@
 - **회차 소진 매도**: `current_round ≥ split_count`이고 매수가능금액이 회차 예산보다 적으면 보유 수량의 약 1/4(`ceil(holdingQuantity / 4)`)을 현재가에 매도.
 - 두 매도 모두 접수되면 사이클을 재시작한다: `current_round`를 0으로, `pending_avg_budget`/`pending_big_budget`을 0으로 리셋하고, 그 시점 총자산(`매수가능금액 + 보유수량 × 현재가`)을 새 `cycle_budget`으로 저장한다(복리). 매도가 접수되지 않으면 사이클·이월을 그대로 유지한다.
 - `markStrategyEvaluation`은 매수가 접수되면 `current_round`를 +1 하되 `split_count`를 넘지 않도록 자른다.
+
+## 한국 국장 상승률 랭킹 전략 (`KR_RANK_MOMENTUM`)
+
+자동매매 도메인은 라오어 무한매수법 외에 한국 국장 상승률 랭킹 전략을 두 번째 독립 전략 종류로 함께 운용한다. 두 전략 종류는 각자의 테이블(`kr_rank_*`)·엔진(`krRankStrategyEngine`/`krRankService`)·평가 경로를 가지며, 실주문 실행 설정(`user_trading_settings.live_order_enabled`)·스케줄러(`autoTradingScheduler`)·KIS 연동(`kisAuthService`/`kisTradingService`)을 공유한다. 라오어 전략의 평가 사이클·상태 머신·기록은 이 전략 추가로 변경되지 않는다. 상세 동작은 `kr-rank-auto-trading` 스펙을 참고한다.
 
 ## 분할회차 cap
 

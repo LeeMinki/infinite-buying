@@ -19,8 +19,10 @@ import {
 } from '../api/client.js';
 import { LaorStrategyGuide } from '../components/LaorStrategyGuide.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
+import { KrRankAutoTradingPanel } from './KrRankAutoTradingPanel.jsx';
 
 export function AutoTradingPage({ onBack, initialStrategy }) {
+  const [tab, setTab] = useState('laor');
   const [settings, setSettings] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [strategies, setStrategies] = useState([]);
@@ -91,6 +93,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       symbolName: initialStrategy.stockName || initialStrategy.symbolName || symbol,
       market,
       currency: initialStrategy.currency || inferCurrency(market),
+      exchange: initialStrategy.exchange || current.exchange,
       totalBudget: String(totalBudget),
       splitCount: String(splitCount),
       targetProfitPercent: String(Number(initialStrategy.targetProfitRate || 0.1) * 100),
@@ -109,6 +112,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         symbolName: form.symbolName,
         market: form.market,
         currency: form.currency,
+        exchange: form.exchange,
         totalBudget: Number(form.totalBudget),
         splitCount: Number(form.splitCount),
         targetProfitRate: Number(form.targetProfitPercent) / 100,
@@ -252,6 +256,33 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         </button>
       </section>
 
+      <nav className="strategy-type-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'laor'}
+          className={`strategy-type-tab ${tab === 'laor' ? 'active' : ''}`}
+          onClick={() => setTab('laor')}
+        >
+          라오어 무한매수법
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'kr-rank'}
+          className={`strategy-type-tab ${tab === 'kr-rank' ? 'active' : ''}`}
+          onClick={() => setTab('kr-rank')}
+        >
+          한국 국장 상승률 랭킹 전략
+        </button>
+      </nav>
+
+      {tab === 'kr-rank' && (
+        <KrRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} />
+      )}
+
+      {tab === 'laor' && (
+        <>
       {selected?.market && selected.market !== 'KR' && (
         <ForeignCurrencyGuide />
       )}
@@ -298,7 +329,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
                 symbol: sym,
                 symbolName: stock.name || stock.stockName || '',
                 market: mkt,
-                currency: cur
+                currency: cur,
+                exchange: exchange || ''
               }));
               loadBudgetPreview({ market: mkt, symbol: sym, exchange });
             }}
@@ -435,6 +467,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
 
       {message && <p className="success">{message}</p>}
       {error && <p className="error">{error}</p>}
+        </>
+      )}
     </section>
   );
 }
@@ -748,6 +782,7 @@ function defaultForm() {
     symbolName: '',
     market: 'US',
     currency: 'USD',
+    exchange: 'NAS',
     totalBudget: '4000',
     splitCount: '40',
     targetProfitPercent: '10',
@@ -778,9 +813,15 @@ function formatPercent(rate) {
 
 function formatDate(value) {
   if (!value) return '-';
-  const date = new Date(value);
+  // SQLite datetime('now')은 'YYYY-MM-DD HH:MM:SS'(UTC, 시간대 표기 없음) 형식이라
+  // JS가 로컬 시각으로 잘못 해석한다. UTC임을 명시해 파싱한 뒤 한국시간으로 표기한다.
+  const raw = String(value).trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('ko-KR');
+  return date.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 }
 
 function orderStatusLabel(status) {
