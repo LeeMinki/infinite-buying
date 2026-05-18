@@ -67,3 +67,4 @@
 - [x] 8.4 1분 폴링 로그 폭주 방지 — idle tick은 KIS 호출 없이 종료, 스케줄러 HOLD/SKIP은 판단 로그 미기록(`touchEvaluation`).
 - [x] 8.5 프론트엔드 — 진입 구간별 매수 금액·목표·손절 입력 폼, 점심 진입 체크박스 UI 크기 정정(`checkbox-field` 재사용).
 - [x] 8.6 테스트·문서(proposal·design·specs·README·database-model) 진입 구간별 예산·손절·1분 폴링 반영.
+- [x] 8.7 오전·점심 매수 금액 입력 칸에 KIS 원화 주문가능현금 조회·채우기 버튼 추가 (라오어 폼 예산 입력과 동일, `getAutoTradingBuyingPowerPreview` 재사용).
