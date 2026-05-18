@@ -18,30 +18,30 @@ const user = createUser(db, 'kr-rank@example.com');
 
 test.after(() => tmp.cleanup());
 
-// ── 7.1 등락률 30% 이상 제외 · 첫 종목 선택 ──────────────────────────────
+// ── 등락률 20% 이상 제외 · 첫 종목 선택 ──────────────────────────────────
 
-test('등락률 30% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
+test('등락률 20% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
   const ranking = [
-    { symbol: '000001', name: '상한가근접', price: 1000, fluctuationRate: 0.32 },
-    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.28 },
-    { symbol: '000003', name: '셋째', price: 3000, fluctuationRate: 0.25 }
+    { symbol: '000001', name: '과열', price: 1000, fluctuationRate: 0.25 },
+    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.18 },
+    { symbol: '000003', name: '셋째', price: 3000, fluctuationRate: 0.15 }
   ];
   const picked = selectRankingCandidate(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE });
   assert.equal(picked.symbol, '000002');
 });
 
-test('등락률 정확히 30%는 제외한다', () => {
+test('등락률 정확히 20%는 제외한다', () => {
   const ranking = [
-    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.30 },
-    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.299 }
+    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.20 },
+    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.199 }
   ];
   assert.equal(selectRankingCandidate(ranking).symbol, '000002');
 });
 
-test('모든 종목이 30% 이상이면 후보가 없다', () => {
+test('모든 종목이 20% 이상이면 후보가 없다', () => {
   const ranking = [
     { symbol: '000001', name: 'a', price: 1000, fluctuationRate: 0.45 },
-    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.31 }
+    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.22 }
   ];
   assert.equal(selectRankingCandidate(ranking), null);
 });

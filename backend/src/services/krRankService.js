@@ -15,6 +15,8 @@ import {
 
 const LOCK_KEY = 'evaluate';
 const RANKING_SNAPSHOT_SIZE = 10;
+// 시장가 매수는 체결가가 조회가보다 살짝 높을 수 있어, 가용 금액의 1%를 슬리피지 여유로 남긴다.
+const MARKET_BUY_CASH_RESERVE = 0.99;
 
 // ── 전략 CRUD ─────────────────────────────────────────────────────────────
 
@@ -110,7 +112,11 @@ export async function evaluateRunningStrategies() {
     try {
       await evaluateStrategy(strategy.userId, strategy.id, { scheduled: true });
     } catch (error) {
-      repo.setStrategyError(strategy.userId, strategy.id, error.message || '자동 평가에 실패했습니다.');
+      // 일시적 오류로 전략을 ERROR(영구 정지)로 만들지 않는다. RUNNING을 유지해 다음 tick에 재시도.
+      repo.markEvaluation(strategy.userId, strategy.id, {
+        decision: 'ERROR',
+        errorMessage: error.message || '자동 평가에 실패했습니다.'
+      });
     }
   }
 }
@@ -154,7 +160,8 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
       evaluationSource,
       reason: message
     });
-    repo.setStrategyError(userId, strategy.id, message);
+    // 일시적 KIS 오류로 전략을 ERROR(영구 정지)시키지 않는다. RUNNING을 유지해 다음 tick에 재시도.
+    repo.markEvaluation(userId, strategy.id, { decision: 'ERROR', errorMessage: message });
     return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order: null };
   }
 }
@@ -233,6 +240,16 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   };
 
   if (!guard.ok) {
+    // 같은 매도 idempotency_key 주문이 이미 있으면 새 row를 INSERT하지 않는다.
+    // (UNIQUE(idempotency_key) 충돌로 평가가 깨지고 전략이 멈추던 버그) — 체결을 기다린다.
+    if (repo.hasDuplicateOrder(idempotencyKey)) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity, liveOrderEnabled, evaluationSource,
+        reason: `${symbol} 매도 주문이 이미 접수돼 있어 체결을 기다립니다.`
+      });
+    }
     const order = repo.createOrder(userId, {
       ...baseOrder, status: 'FAILED', decisionReason: guard.reason, errorMessage: guard.reason
     });
@@ -251,10 +268,8 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     liveOrderEnabled,
     decisionReason: `${symbol} ${reasonLabel} 전량 매도 (수익률 ${profitPct}%).`
   });
-  // 매도 주문이 접수(또는 모의 기록)되면 보유 상태를 해제한다. 같은 진입 구간 재매수는 진입 기록으로 막힌다.
-  if (order.status !== 'FAILED' && order.status !== 'REJECTED') {
-    repo.clearHolding(userId, strategy.id);
-  }
+  // 보유 해제는 여기서 하지 않는다. 접수(ACCEPTED)는 체결이 아니므로, 다음 tick에 KIS 잔고가
+  // 0으로 확인될 때(위 holdingQuantity<=0 분기) 해제한다 — 미체결 매도로 포지션을 잃지 않도록.
   return saveDecision(userId, strategy, {
     decision: 'SELL', entryWindow, sellReason: sell.sellReason,
     selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
@@ -316,11 +331,12 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     });
   }
 
-  // 매수 수량 계산. 진입 구간별 매수 금액 한도와 가용 현금 중 작은 값을 최대한 사용한다.
+  // 매수 수량 계산. 진입 구간별 매수 금액 한도와 가용 현금 중 작은 값을 최대한 사용하되,
+  // 시장가 체결가 변동에 대비해 1% 여유를 남긴다.
   const entryBudget = entryWindow === 'LUNCH' ? strategy.lunchBudget : strategy.morningBudget;
   const buyingPower = await trading.getBuyingPower(candidate.symbol, { market: 'KR', currency: 'KRW', price: candidate.price });
   const cashAvailable = Number(buyingPower.cashAvailable || 0);
-  const spendable = Math.min(entryBudget, cashAvailable);
+  const spendable = Math.min(entryBudget, cashAvailable) * MARKET_BUY_CASH_RESERVE;
   const quantity = computeBuyQuantity(spendable, candidate.price);
   const fluctPct = (candidate.fluctuationRate * 100).toFixed(2);
 
@@ -361,6 +377,16 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
 
   if (!guard.ok) {
     repo.updateEntryOutcome(entry.id, { status: 'SKIPPED', bought: false });
+    // 같은 매수 idempotency_key 주문이 이미 있으면 새 row를 INSERT하지 않는다(UNIQUE 충돌 방지).
+    if (repo.hasDuplicateOrder(idempotencyKey)) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow,
+        selectedSymbol: candidate.symbol, selectedSymbolName: candidate.name,
+        currentPrice: candidate.price, cashAvailable, rankingSnapshot,
+        liveOrderEnabled, evaluationSource,
+        reason: `${ENTRY_WINDOWS[entryWindow].label} 진입: ${candidate.symbol} 매수 주문 기록이 이미 있어 중복 주문을 막았습니다.`
+      });
+    }
     const order = repo.createOrder(userId, {
       ...baseOrder, status: 'FAILED', decisionReason: guard.reason, errorMessage: guard.reason
     });
@@ -404,6 +430,8 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     ...baseOrder,
     market: 'KR',
     currency: 'KRW',
+    // 국장 랭킹 전략은 시장가 — 빠른 모멘텀 종목의 매수 미체결, 하락장 손절 매도 미체결을 막는다.
+    orderType: 'MARKET',
     decisionReason
   };
   if (!liveOrderEnabled) {

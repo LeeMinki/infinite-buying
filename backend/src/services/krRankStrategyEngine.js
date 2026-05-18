@@ -1,8 +1,9 @@
 // 한국 국장 상승률 랭킹 전략(KR_RANK_MOMENTUM)의 순수 판단 로직.
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
-// 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다(가격제한폭 근접 종목 회피).
-export const MAX_FLUCTUATION_RATE = 0.3;
+// 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
+// 20% — 상한가(+30%)까지 헤드룸을 충분히 남겨 목표 수익 도달 여지를 확보한다.
+export const MAX_FLUCTUATION_RATE = 0.2;
 
 // 진입 구간. 스케줄러 tick 간격(기본 10분)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {

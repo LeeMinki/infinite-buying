@@ -106,7 +106,11 @@ export function evaluateAutoTrading(input) {
   const conditionNotes = [];
 
   if (holdingQuantity <= 0 || averagePrice <= 0) {
-    const available = buyAmountPerRound + pendingAvgBudget + pendingBigBudget;
+    const budgetAvailable = buyAmountPerRound + pendingAvgBudget + pendingBigBudget;
+    // 백테스트와 동일하게 가용 현금으로 상한을 둔다(현금이 회차 예산보다 적으면 살 수 있는 만큼만).
+    const available = cashAvailable === null
+      ? budgetAvailable
+      : Math.min(budgetAvailable, cashAvailable);
     const quantity = Math.floor(available / currentPrice);
     if (quantity > 0) {
       intents.push({
