@@ -3,6 +3,7 @@ import {
   createKrRankStrategy,
   deleteKrRankStrategy,
   evaluateKrRankStrategy,
+  getAutoTradingBuyingPowerPreview,
   listKrRankDecisions,
   listKrRankEntries,
   listKrRankOrders,
@@ -23,6 +24,22 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [budgetPreview, setBudgetPreview] = useState(null);
+  const [budgetPreviewLoading, setBudgetPreviewLoading] = useState(false);
+
+  // 매수 금액 칸을 누르면 KIS 계좌의 원화 주문가능현금을 조회해 보여 준다(라오어 폼과 동일).
+  async function loadBudgetPreview() {
+    if (budgetPreviewLoading) return;
+    if (budgetPreview && !budgetPreview.error) return;
+    setBudgetPreviewLoading(true);
+    try {
+      setBudgetPreview(await getAutoTradingBuyingPowerPreview({ market: 'KR' }));
+    } catch (err) {
+      setBudgetPreview({ error: err.message });
+    } finally {
+      setBudgetPreviewLoading(false);
+    }
+  }
 
   const selected = useMemo(
     () => strategies.find((s) => s.id === selectedId) || strategies[0] || null,
@@ -159,8 +176,14 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           <label>
             <span>오전 매수 금액 (KRW)</span>
             <input type="number" min="1" step="1" value={form.morningBudget}
+              onFocus={loadBudgetPreview}
               onChange={(e) => setForm({ ...form, morningBudget: e.target.value })} required />
             <p className="helper">오전 진입에서 이 금액 한도 안에서 가용 현금을 최대한 써 매수합니다.</p>
+            <KrwBalanceHint
+              preview={budgetPreview}
+              loading={budgetPreviewLoading}
+              onApply={(amount) => setForm((f) => ({ ...f, morningBudget: String(Math.floor(amount)) }))}
+            />
           </label>
           <label>
             <span>오전 목표 수익률 (%)</span>
@@ -183,7 +206,13 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
               <label>
                 <span>점심 매수 금액 (KRW)</span>
                 <input type="number" min="1" step="1" value={form.lunchBudget}
+                  onFocus={loadBudgetPreview}
                   onChange={(e) => setForm({ ...form, lunchBudget: e.target.value })} required />
+                <KrwBalanceHint
+                  preview={budgetPreview}
+                  loading={budgetPreviewLoading}
+                  onApply={(amount) => setForm((f) => ({ ...f, lunchBudget: String(Math.floor(amount)) }))}
+                />
               </label>
               <label>
                 <span>점심 목표 수익률 (%)</span>
@@ -284,6 +313,33 @@ function Metric({ label, value, hint }) {
       <span className="metric-label">{label}</span>
       <strong>{value}</strong>
       <span className="metric-hint">{hint}</span>
+    </div>
+  );
+}
+
+// 매수 금액 칸 아래에 KIS 계좌 원화 주문가능현금을 보여 주고, 버튼으로 채워 넣게 한다.
+function KrwBalanceHint({ preview, loading, onApply }) {
+  if (loading) {
+    return <p className="helper">한국투자증권에서 잔액을 확인하는 중입니다…</p>;
+  }
+  if (!preview) {
+    return <p className="helper">칸을 누르면 한국투자증권 주문가능현금을 보여 드립니다.</p>;
+  }
+  if (preview.error) {
+    return <p className="helper">잔액 확인 실패: {preview.error}</p>;
+  }
+  const cash = Number(preview.cashAvailable || 0);
+  if (cash <= 0) {
+    return <p className="helper">한국투자증권 주문가능현금이 0입니다. 계좌에 원화가 있는지 확인하세요.</p>;
+  }
+  return (
+    <div className="budget-hint">
+      <p className="helper">한국투자증권 주문가능현금을 기준으로 채우려면 누르세요. 직접 입력해도 됩니다.</p>
+      <div className="budget-hint-actions">
+        <button type="button" className="ghost sm" onClick={() => onApply(cash)}>
+          현재 잔고로 채우기 · {formatKrw(cash)}
+        </button>
+      </div>
     </div>
   );
 }
