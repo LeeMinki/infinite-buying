@@ -43,16 +43,17 @@ export function createStrategy(userId, input) {
   // SafetyGuard 가 더 이상 이 값을 검사하지 않는다.
   const result = getDb().prepare(`
     INSERT INTO auto_trading_strategies (
-      user_id, symbol, symbol_name, market, currency, total_budget, split_count,
+      user_id, symbol, symbol_name, market, currency, exchange, total_budget, split_count,
       buy_amount_per_round, target_profit_rate, big_buy_premium_rate, cycle_budget,
       current_round, max_order_amount, max_daily_order_amount
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
   `).run(
     userId,
     input.symbol,
     input.symbolName || null,
     input.market,
     input.currency,
+    input.exchange || null,
     input.totalBudget,
     input.splitCount,
     input.buyAmountPerRound,
@@ -90,7 +91,7 @@ export function getStrategy(userId, id) {
 export function updateStrategy(userId, id, input) {
   getDb().prepare(`
     UPDATE auto_trading_strategies
-    SET symbol = ?, symbol_name = ?, market = ?, currency = ?,
+    SET symbol = ?, symbol_name = ?, market = ?, currency = ?, exchange = ?,
         total_budget = ?, split_count = ?, buy_amount_per_round = ?,
         target_profit_rate = ?, big_buy_premium_rate = ?,
         updated_at = datetime('now')
@@ -100,6 +101,7 @@ export function updateStrategy(userId, id, input) {
     input.symbolName || null,
     input.market,
     input.currency,
+    input.exchange || null,
     input.totalBudget,
     input.splitCount,
     input.buyAmountPerRound,
@@ -294,18 +296,19 @@ export function recentDecisionLogs(userId, limit = 20) {
 export function createOrder(userId, input) {
   const result = getDb().prepare(`
     INSERT INTO auto_trading_orders (
-      user_id, strategy_id, symbol, market, currency, side, quantity, order_price,
+      user_id, strategy_id, symbol, market, currency, exchange, side, quantity, order_price,
       estimated_amount, kis_order_no, kis_original_order_no, status, filled_quantity,
       remaining_quantity, average_filled_price, idempotency_key, decision_reason,
       live_order_enabled, request_payload_masked, response_payload_masked, error_message,
       half, decision_log_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     userId,
     input.strategyId,
     input.symbol,
     input.market,
     input.currency,
+    input.exchange || null,
     input.side,
     input.quantity,
     input.orderPrice,
@@ -413,6 +416,19 @@ export function hasDuplicateOrder(idempotencyKey) {
   return Boolean(getDb().prepare('SELECT 1 FROM auto_trading_orders WHERE idempotency_key = ?').get(idempotencyKey));
 }
 
+// 같은 거래일(tradeDate, UTC 기준 — 한 매매 세션은 같은 UTC 날짜에 들어온다)에
+// 이미 매수(BUY) 주문 기록이 있는지. 상태와 무관하게(FAILED 포함) 한 건이라도 있으면 true.
+// 하루 1회 매수 원칙: 오늘 매수했으면 같은 날 추가 매수 주문을 만들지 않는다.
+export function hasBuyOrderToday(userId, strategyId, tradeDate) {
+  const row = getDb().prepare(`
+    SELECT 1 FROM auto_trading_orders
+    WHERE user_id = ? AND strategy_id = ? AND side = 'BUY'
+      AND date(created_at) = date(?)
+    LIMIT 1
+  `).get(userId, strategyId, tradeDate);
+  return Boolean(row);
+}
+
 export function getDailyUsedAmount(userId, strategyId, tradeDate) {
   const row = getDb().prepare(`
     SELECT used_amount FROM daily_order_limit_usages
@@ -503,6 +519,7 @@ function toStrategy(row) {
     symbolName: row.symbol_name || '',
     market: row.market,
     currency: row.currency,
+    exchange: row.exchange || null,
     status: row.status,
     totalBudget: row.total_budget,
     splitCount: row.split_count,
@@ -582,6 +599,7 @@ function toOrder(row) {
     symbol: row.symbol,
     market: row.market,
     currency: row.currency,
+    exchange: row.exchange || null,
     side: row.side,
     quantity: row.quantity,
     orderPrice: row.order_price,

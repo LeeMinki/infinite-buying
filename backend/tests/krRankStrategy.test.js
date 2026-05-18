@@ -1,0 +1,163 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { useTempDb, bootstrapDb, createUser } from './_helpers/dbHarness.js';
+import {
+  selectRankingCandidate,
+  computeBuyQuantity,
+  evaluateSell,
+  resolveEntryWindow,
+  makeKrRankIdempotencyKey,
+  MAX_FLUCTUATION_RATE
+} from '../src/services/krRankStrategyEngine.js';
+
+const tmp = useTempDb();
+const db = await bootstrapDb();
+const repo = await import('../src/repositories/krRankRepository.js');
+
+const user = createUser(db, 'kr-rank@example.com');
+
+test.after(() => tmp.cleanup());
+
+// ── 7.1 등락률 30% 이상 제외 · 첫 종목 선택 ──────────────────────────────
+
+test('등락률 30% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
+  const ranking = [
+    { symbol: '000001', name: '상한가근접', price: 1000, fluctuationRate: 0.32 },
+    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.28 },
+    { symbol: '000003', name: '셋째', price: 3000, fluctuationRate: 0.25 }
+  ];
+  const picked = selectRankingCandidate(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE });
+  assert.equal(picked.symbol, '000002');
+});
+
+test('등락률 정확히 30%는 제외한다', () => {
+  const ranking = [
+    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.30 },
+    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.299 }
+  ];
+  assert.equal(selectRankingCandidate(ranking).symbol, '000002');
+});
+
+test('모든 종목이 30% 이상이면 후보가 없다', () => {
+  const ranking = [
+    { symbol: '000001', name: 'a', price: 1000, fluctuationRate: 0.45 },
+    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.31 }
+  ];
+  assert.equal(selectRankingCandidate(ranking), null);
+});
+
+// ── 7.x 매수 수량 계산 ──────────────────────────────────────────────────
+
+test('가용 현금을 최대한 사용한 정수 매수 수량을 계산한다', () => {
+  assert.equal(computeBuyQuantity(105000, 10000), 10);
+  assert.equal(computeBuyQuantity(9999, 10000), 0); // 1주도 못 사면 0
+  assert.equal(computeBuyQuantity(0, 10000), 0);
+});
+
+test('진입 구간별 매수 금액 한도가 가용 현금보다 작으면 한도 기준으로 매수한다', () => {
+  // 서비스는 computeBuyQuantity(min(진입 금액 한도, 가용 현금), 현재가)로 수량을 정한다.
+  const entryBudget = 50_000;
+  const cashAvailable = 1_000_000;
+  const price = 10_000;
+  assert.equal(computeBuyQuantity(Math.min(entryBudget, cashAvailable), price), 5);
+  // 가용 현금이 한도보다 작으면 현금 기준으로 줄어든다.
+  assert.equal(computeBuyQuantity(Math.min(entryBudget, 23_000), price), 2);
+});
+
+// ── 7.4 목표 수익 / 손절 매도 판단 · 사유 구분 ──────────────────────────
+
+test('목표 수익률 도달 시 목표 수익 매도', () => {
+  const sell = evaluateSell({ currentPrice: 10500, averagePrice: 10000, targetProfitRate: 0.05, stopLossRate: 0.03 });
+  assert.equal(sell.decision, 'SELL');
+  assert.equal(sell.sellReason, 'TARGET');
+});
+
+test('손절 기준 도달 시 손절 매도', () => {
+  const sell = evaluateSell({ currentPrice: 9700, averagePrice: 10000, targetProfitRate: 0.05, stopLossRate: 0.03 });
+  assert.equal(sell.decision, 'SELL');
+  assert.equal(sell.sellReason, 'STOP_LOSS');
+});
+
+test('목표·손절 모두 미도달 시 보유 유지', () => {
+  const sell = evaluateSell({ currentPrice: 10200, averagePrice: 10000, targetProfitRate: 0.05, stopLossRate: 0.03 });
+  assert.equal(sell.decision, 'HOLD');
+  assert.equal(sell.sellReason, null);
+});
+
+// ── 진입 구간 판정 ──────────────────────────────────────────────────────
+
+test('오전 09:10~10:00은 MORNING 진입 구간', () => {
+  // 2026-05-18(월) 09:15 KST = 00:15 UTC
+  assert.equal(resolveEntryWindow(new Date('2026-05-18T00:15:00Z'), { lunchEntryEnabled: false }), 'MORNING');
+});
+
+test('점심 11:30 진입은 lunchEntryEnabled가 켜져 있을 때만', () => {
+  const lunch = new Date('2026-05-18T02:35:00Z'); // 11:35 KST
+  assert.equal(resolveEntryWindow(lunch, { lunchEntryEnabled: false }), null);
+  assert.equal(resolveEntryWindow(lunch, { lunchEntryEnabled: true }), 'LUNCH');
+});
+
+test('진입 구간 밖이면 null, 주말이면 null', () => {
+  assert.equal(resolveEntryWindow(new Date('2026-05-18T05:00:00Z'), { lunchEntryEnabled: true }), null); // 14:00 KST
+  assert.equal(resolveEntryWindow(new Date('2026-05-16T00:15:00Z'), { lunchEntryEnabled: true }), null); // 토요일
+});
+
+// ── 7.3 멱등키 ──────────────────────────────────────────────────────────
+
+test('멱등키는 날짜·전략·구간·방향으로 만들어지고 서로 구분된다', () => {
+  const buy = makeKrRankIdempotencyKey({ tradeDate: '2026-05-18', strategyId: 7, entryWindow: 'MORNING', side: 'BUY' });
+  const sell = makeKrRankIdempotencyKey({ tradeDate: '2026-05-18', strategyId: 7, entryWindow: 'MORNING', side: 'SELL' });
+  const lunch = makeKrRankIdempotencyKey({ tradeDate: '2026-05-18', strategyId: 7, entryWindow: 'LUNCH', side: 'BUY' });
+  assert.equal(buy, '20260518-7-MORNING-BUY');
+  assert.notEqual(buy, sell);
+  assert.notEqual(buy, lunch);
+});
+
+// ── 7.2 진입 구간당 매수 1회 (매도 후 재매수 금지) ──────────────────────
+
+test('같은 날짜·진입 구간에 진입 기록은 한 번만 만들어진다', () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000, lunchBudget: 0,
+    morningTargetProfitRate: 0.05, morningStopLossRate: 0.03,
+    lunchEntryEnabled: false, lunchTargetProfitRate: 0.05, lunchStopLossRate: 0.03
+  });
+  const first = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-05-18', entryWindow: 'MORNING',
+    status: 'BOUGHT', selectedSymbol: '000002', bought: true
+  });
+  assert.ok(first);
+  // 매도 후 같은 구간 재진입 시도 → UNIQUE 위반 → null (재매수 차단)
+  const second = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-05-18', entryWindow: 'MORNING',
+    status: 'SELECTED', selectedSymbol: '000009', bought: false
+  });
+  assert.equal(second, null);
+  // 점심 구간은 별도로 진입 가능
+  const lunch = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-05-18', entryWindow: 'LUNCH',
+    status: 'SELECTED', selectedSymbol: '000003', bought: false
+  });
+  assert.ok(lunch);
+});
+
+// ── 7.3 멱등키 중복 차단 · 7.5 실주문 OFF 기록 ──────────────────────────
+
+test('같은 멱등키 주문은 중복으로 감지된다 (DRY_RUN 기록도 동일)', () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000, lunchBudget: 0,
+    morningTargetProfitRate: 0.05, morningStopLossRate: 0.03,
+    lunchEntryEnabled: false, lunchTargetProfitRate: 0.05, lunchStopLossRate: 0.03
+  });
+  const key = makeKrRankIdempotencyKey({ tradeDate: '2026-05-18', strategyId: strategy.id, entryWindow: 'MORNING', side: 'BUY' });
+  assert.equal(repo.hasDuplicateOrder(key), false);
+  // 실주문 OFF → DRY_RUN 상태로 주문 예정 기록 저장
+  const order = repo.createOrder(user.id, {
+    strategyId: strategy.id, symbol: '000002', side: 'BUY', entryWindow: 'MORNING',
+    quantity: 10, orderPrice: 2000, estimatedAmount: 20000,
+    idempotencyKey: key, decisionReason: '오전 진입', status: 'DRY_RUN', liveOrderEnabled: false
+  });
+  assert.equal(order.status, 'DRY_RUN');
+  assert.equal(order.liveOrderEnabled, false);
+  // 같은 키 재사용 → 중복 감지
+  assert.equal(repo.hasDuplicateOrder(key), true);
+});

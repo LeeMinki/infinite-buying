@@ -100,15 +100,16 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
   try {
     await getValidAccessToken(userId);
     contextReady = true;
-    const price = await trading.getCurrentPrice(strategy.symbol, { market: strategy.market });
+    const price = await trading.getCurrentPrice(strategy.symbol, { market: strategy.market, exchange: strategy.exchange });
     const [balance, buyingPower, openOrdersInitial] = await Promise.all([
-      trading.getBalance(strategy.symbol, { market: strategy.market, currency: strategy.currency }),
+      trading.getBalance(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange }),
       trading.getBuyingPower(strategy.symbol, {
         market: strategy.market,
         currency: strategy.currency,
+        exchange: strategy.exchange,
         price: price.price
       }),
-      trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency })
+      trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange })
     ]);
 
     // 자동 취소: 실주문 모드이고 이전 평가에서 우리가 KIS에 접수한 주문이 미체결로 남아
@@ -139,7 +140,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       if (ownedOpen.length > 0) {
         // KIS는 취소가 즉시 잔량 0이 되지 않을 수 있으므로 잠시 후 미체결 목록을 다시 가져온다.
         try {
-          openOrders = await trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency });
+          openOrders = await trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange });
         } catch (_) {
           // 재조회 실패는 무시. 기존 목록을 그대로 SafetyGuard 에 넘긴다.
         }
@@ -153,7 +154,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     const holdingQuantity = Number(balance.quantity || 0);
     const averagePrice = Number(balance.averagePrice || 0);
     const cashAvailable = Number(buyingPower.cashAvailable || balance.cashAvailable || 0);
-    const decision = evaluateAutoTrading({
+    let decision = evaluateAutoTrading({
       symbol: strategy.symbol,
       market: strategy.market,
       currency: strategy.currency,
@@ -171,6 +172,23 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       pendingBigBudget: strategy.pendingBigBudget,
       cycleBudget: strategy.cycleBudget
     });
+
+    // 하루 1회 매수 원칙: 오늘 이미 매수 주문 기록이 있으면 추가 매수하지 않는다.
+    // 매수 의도(FIRST/AVG/BIG)를 SKIP으로 바꿔 같은 거래일에 10분마다 재주문하는 것을 막는다.
+    // 매도(SELL)는 영향받지 않으며, 가격·잔고 스냅샷과 판단 로그는 그대로 남긴다.
+    if (decision.decision === 'BUY' && repo.hasBuyOrderToday(userId, strategy.id, tradeDate)) {
+      decision = {
+        decision: 'SKIP',
+        intents: [],
+        expectedQuantity: 0,
+        expectedOrderPrice: decision.expectedOrderPrice ?? price.price,
+        expectedAmount: 0,
+        // 매수를 건너뛰므로 회차·이월 예산은 평가 전 값을 그대로 유지한다.
+        nextPendingAvgBudget: strategy.pendingAvgBudget,
+        nextPendingBigBudget: strategy.pendingBigBudget,
+        reason: '오늘 이미 매수 주문을 실행했습니다. 하루 1회 매수 원칙에 따라 추가 매수는 다음 거래일에 평가합니다.'
+      };
+    }
     // 스냅샷은 평가 결정 직후에 찍어서 "이 시점에 자동매매가 무슨 결정을 내렸는가" 까지 같이 저장한다.
     const snapshot = createSnapshot(userId, strategy, {
       currentPrice: price.price,
@@ -240,11 +258,17 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         tradeDate
       });
       if (!guard.ok) {
+        // 같은 idempotencyKey 주문이 이미 있으면 새 row를 INSERT하지 않는다.
+        // (UNIQUE(idempotency_key) 충돌로 평가 전체가 깨지던 버그) — 판단 로그로만 남긴다.
+        if (repo.hasDuplicateOrder(idempotencyKey)) {
+          continue;
+        }
         const skipped = repo.createOrder(userId, {
           strategyId: strategy.id,
           symbol: strategy.symbol,
           market: strategy.market,
           currency: strategy.currency,
+          exchange: strategy.exchange,
           side: intent.side,
           quantity: intent.expectedQuantity,
           orderPrice: intent.orderPrice,
@@ -267,6 +291,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         symbol: strategy.symbol,
         market: strategy.market,
         currency: strategy.currency,
+        exchange: strategy.exchange,
         side: intent.side,
         quantity: intent.expectedQuantity,
         orderPrice: intent.orderPrice,
@@ -464,14 +489,15 @@ export async function getAccountSummary(userId, strategyId) {
   await getValidAccessToken(userId);
   // KIS 초당 거래건수 제한(EGW00201)을 피하기 위해 순차 호출. KisTradingService 내부에서도
   // 호출 간 최소 간격과 backoff 재시도를 적용하지만, 같은 사용자 호출은 직렬화하는 편이 안전하다.
-  const price = await trading.getCurrentPrice(strategy.symbol, { market: strategy.market });
-  const balance = await trading.getBalance(strategy.symbol, { market: strategy.market, currency: strategy.currency });
+  const price = await trading.getCurrentPrice(strategy.symbol, { market: strategy.market, exchange: strategy.exchange });
+  const balance = await trading.getBalance(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange });
   const buyingPower = await trading.getBuyingPower(strategy.symbol, {
     market: strategy.market,
     currency: strategy.currency,
+    exchange: strategy.exchange,
     price: price.price
   });
-  const openOrders = await trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency });
+  const openOrders = await trading.getOpenOrders(strategy.symbol, { market: strategy.market, currency: strategy.currency, exchange: strategy.exchange });
   return {
     liveOrderEnabled: settings.liveOrderEnabled,
     symbol: strategy.symbol,
@@ -660,11 +686,14 @@ function normalizeStrategyInput(input = {}) {
     throw badRequest('큰수 매수 여유율은 0 이상이어야 합니다.');
   }
   const buyAmountPerRound = Math.floor(totalBudget / splitCountRaw);
+  // 종목 검색에서 고른 거래소 코드. 해외 주문·잔고·미체결 조회에 쓰인다.
+  const exchange = String(input.exchange || '').trim().toUpperCase() || null;
   return {
     symbol,
     symbolName: String(input.symbolName || input.stockName || '').trim(),
     market,
     currency,
+    exchange,
     totalBudget,
     splitCount: splitCountRaw,
     buyAmountPerRound,
