@@ -2316,3 +2316,11 @@ td.neutral {
 .kr-rank-form .checkbox-field {
   grid-column: 1 / -1;
 }
+
+/* 주문 실패 사유 — 주문 이력 표에서 빨갛게 강조 */
+.order-error {
+  color: #dc2626;
+  font-weight: 600;
+  margin-top: 4px;
+  white-space: normal;
+}

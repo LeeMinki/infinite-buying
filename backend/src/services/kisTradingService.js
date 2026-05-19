@@ -351,15 +351,26 @@ export class KisTradingService {
   }
 
   async placeDomesticOrder(context, order) {
-    // 국내 주문 구분: '00' 지정가, '01' 시장가. 시장가는 단가에 '0'을 넣는다.
+    // 국내 주문 구분: '00' 지정가, '01' 시장가. 시장가는 단가에 '0'.
+    // 지정가는 KIS 호가 조회로 받은 실제 호가 단위에 맞춰야 APBK0506(호가단위 오류)이 안 난다.
     const isMarket = order.orderType === 'MARKET';
+    let orderUnitPrice = '0';
+    if (!isMarket) {
+      let tick = 0;
+      try {
+        tick = Number((await this.marketData.getDomesticOrderbook(order.symbol)).tick) || 0;
+      } catch (_) {
+        // 호가 조회 실패 시 단위를 모른다. 정수로만 보내고, 거절되면 재시도가 처리한다.
+      }
+      orderUnitPrice = String(snapPriceToTick(order.orderPrice, tick, { roundUp: order.side === 'BUY' }));
+    }
     const body = {
       CANO: context.accountNumber,
       ACNT_PRDT_CD: context.accountProductCode,
       PDNO: order.symbol,
       ORD_DVSN: isMarket ? '01' : '00',
       ORD_QTY: String(Math.floor(order.quantity)),
-      ORD_UNPR: isMarket ? '0' : String(Math.floor(order.orderPrice))
+      ORD_UNPR: orderUnitPrice
     };
     return this.requestOrder('/uapi/domestic-stock/v1/trading/order-cash', {
       trId: order.side === 'BUY' ? 'TTTC0012U' : 'TTTC0011U',
@@ -610,6 +621,19 @@ const TRADING_EXCHANGE_CODES = {
 export function normalizeExchange(value) {
   const raw = String(value || '').trim().toUpperCase();
   return TRADING_EXCHANGE_CODES[raw] || raw || 'NASD';
+}
+
+// 주문 단가를 KIS 호가 조회로 받은 실제 호가 단위(tick)에 맞춘다.
+// 평단가 × (1+여유율) 같은 계산값은 호가 단위에서 벗어나 APBK0506(호가단위 오류)으로 거절된다.
+// 호가 단위는 KIS 호가 데이터에서 받아오므로 가격대 표를 코드에 두지 않는다.
+// 매수는 올림(체결가 이상 유지), 매도는 내림. tick을 모르면(호가 조회 실패) 정수로만 보낸다.
+export function snapPriceToTick(value, tick, { roundUp = false } = {}) {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  const unit = Number(tick);
+  if (!Number.isFinite(unit) || unit <= 0) return Math.round(price);
+  const steps = roundUp ? Math.ceil(price / unit) : Math.floor(price / unit);
+  return steps * unit;
 }
 
 // KIS 해외주식 주문 단가를 호가 소수 자릿수에 맞춰 정규화한다.

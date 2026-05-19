@@ -285,6 +285,20 @@ export function hasDuplicateOrder(idempotencyKey) {
   return Boolean(getDb().prepare('SELECT 1 FROM kr_rank_orders WHERE idempotency_key = ?').get(idempotencyKey));
 }
 
+// 같은 키로 FAILED가 아닌 주문(접수/체결 등)이 있는지 — 있으면 이미 처리된 것으로 본다.
+export function hasNonFailedOrder(idempotencyKey) {
+  return Boolean(getDb().prepare(
+    "SELECT 1 FROM kr_rank_orders WHERE idempotency_key = ? AND status <> 'FAILED' LIMIT 1"
+  ).get(idempotencyKey));
+}
+
+// 같은 키로 누적된 실패 주문 수 — 재시도 한도 판정에 쓴다.
+export function countFailedOrders(idempotencyKey) {
+  return getDb().prepare(
+    "SELECT COUNT(*) AS c FROM kr_rank_orders WHERE idempotency_key = ? AND status = 'FAILED'"
+  ).get(idempotencyKey).c;
+}
+
 export function hasBlockingOpenOrder(userId, strategyId) {
   return Boolean(getDb().prepare(`
     SELECT 1 FROM kr_rank_orders

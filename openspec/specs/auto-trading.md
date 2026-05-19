@@ -24,8 +24,7 @@
 
 1. 사용자별 `kisAuthService.getAuthContext`로 토큰 확보 (만료 시 자동 재발급).
 2. KIS에서 다음 데이터 조회: 현재가, 전일 종가/기준가, 잔고(보유 수량·평단·평가금), 매수가능금액, 미체결 주문 목록.
-3. `autoTradingStrategyEngine.evaluateAutoTrading`으로 판단 도출. 저장된 `pending_avg_budget`/`pending_big_budget`(이월 예산)과 `cycle_budget`(현 사이클 예산)을 입력으로 받는다. 매수 결정은 `intents` 배열로 분해된다: `FIRST`(첫 매수) 또는 `AVG`(평단가 매수)·`BIG`(큰수 매수) 두 절반. 각 절반은 1주 단위 정수 수량만 만들고, 절반 예산이 1주 가격에 못 미치면 intent를 만들지 않고 이월한다. 매도 결정은 단일 `SELL` intent이며, 목표 수익률 도달(전량 매도)과 회차 소진+현금 부족(보유 1/4 매도) 두 경우가 있다.
-3-1. **하루 1회 매수 가드**: 엔진이 BUY로 판단해도, 같은 거래일(UTC 날짜)에 이미 매수 주문 기록이 있으면(`repo.hasBuyOrderToday`) 그 평가의 BUY를 `SKIP`으로 바꾼다. 회차·이월 예산은 평가 전 값으로 유지한다. 스케줄러는 계속 10분마다 평가하지만 매수 주문은 거래일당 최대 1회만 만든다. 보유 0이면 첫 매수(`FIRST`)만, 다음 거래일부터 보유가 생겨 `AVG`/`BIG` 두 절반을 평가한다. 매도(SELL)는 이 가드의 영향을 받지 않는다.
+3. `autoTradingStrategyEngine.evaluateAutoTrading`으로 판단 도출. **회차 모델: 1 회차 = 1 거래일.** 엔진은 그날 이미 접수/체결된 매수 슬롯(`executedHalves`)을 입력으로 받아 아직 안 산 슬롯만 의도로 만든다. 매수 결정은 `intents` 배열: 보유 0이면 `FIRST`(시작가 일괄 매수) 1건, 보유>0이면 `AVG`(평단가 매수)·`BIG`(큰수 매수) 각 회차 예산 절반 — 가격 조건을 만족할 때만. 같은 날 이미 산 슬롯은 다시 만들지 않고, 안 산 슬롯은 그날 안에 조건이 맞으면 그때 매수한다. 매도 결정은 단일 `SELL` intent(목표 수익률 도달 전량 매도 / 회차 소진+현금 부족 시 보유 1/4 매도). 미체결 예산을 다음 회차로 이월하지 않는다.
 4. **주문 정리** (실주문 모드): `auto_trading_orders`에서 본 시스템이 이전에 접수한 비종결 상태(`REQUESTED` / `ACCEPTED` / `PARTIALLY_FILLED` / `UNKNOWN`)이고 `kis_order_no`가 있는 행을 처리한다. ⓐ **오늘(거래일) 접수한 주문은 건드리지 않는다** — 체결 대기 중일 수 있고, 하루 1회 매수 가드와 맞물려 "오늘 낸 주문을 취소하고 재주문도 안 함"이 되는 것을 막는다. ⓑ KIS 미체결 목록에 더 이상 없는 주문은 취소하지 않고 `refreshOrder`로 실제 체결 상태(`FILLED` 등)로 갱신한다. ⓒ 이전 거래일의 미체결 주문만 KIS 정정취소(국내 `TTTC0013U`, 해외 `TTTT1004U`)로 취소하고 로컬을 `CANCELED`로 마킹한다. 사용자가 HTS/MTS로 직접 만든 주문은 절대 건드리지 않는다. DRY_RUN 모드는 수행하지 않는다.
 5. 자동 취소 후 미체결을 재조회.
 6. `autoTradingSafetyGuard.validateOrderSafety`로 안전 검증:
@@ -36,7 +35,7 @@
    - 동일 `idempotency_key` 중복 없음 (`auto_trading_orders.idempotency_key` UNIQUE)
    - BUY: 매수가능금액 ≥ 예상 금액
    - SELL: 보유 수량 ≥ 예상 수량
-   - 실주문 + 해외 BUY + `expectedQuantity < 1` → 차단 (KIS 표준 해외주문은 정수 주만 지원; 이상치 방어용. 평가 엔진이 1주 미만을 carryover로 흡수하므로 실제로는 거의 발동하지 않음)
+   - 실주문 + 해외 BUY + `expectedQuantity < 1` → 차단 (KIS 표준 해외주문은 정수 주만 지원; 이상치 방어용. 엔진이 정수 주만 의도로 만들어 실제로는 거의 발동하지 않음)
    - SafetyGuard는 `intents` 배열의 각 intent를 독립 평가한다. 한 intent의 SKIP이 다른 intent를 차단하지 않는다.
    - SafetyGuard가 막은 intent는 `FAILED` 주문 row로 기록하되, **같은 `idempotency_key` 주문이 이미 있으면 row를 새로 만들지 않는다**(UNIQUE 충돌 방지). 판단 로그로만 남는다.
 7. 분기:
@@ -65,19 +64,19 @@
 - 해외 잔고 응답에는 `frcr_ord_psbl_amt1`(외화 주문가능금액) 외에 `echm_af_ord_psbl_amt`(환전 후 주문가능금액), `echm_af_ord_psbl_qty`, `exrt`(환율)도 표준 응답에 포함.
 - 자산 평가는 종목 통화 기준. KRW 환산값이 필요하면 별도 계산.
 
-## 멱등성과 중복 방지
+## 멱등성·중복 방지·재시도
 
-`makeIdempotencyKey({ tradeDate, strategyId, round, half })`로 `{YYYYMMDD}-{strategyId}-{round}-{half}` 형식 키를 만든다 (`half`는 `FIRST`/`AVG`/`BIG`/`SELL`). `auto_trading_orders.idempotency_key` UNIQUE로 같은 평가의 같은 절반 중복 주문을 차단하되, `AVG`/`BIG` 두 주문은 서로 다른 키를 가지므로 한 평가에서 공존할 수 있다.
+`{YYYYMMDD}-{strategyId}-{half}` 형식의 멱등키를 쓴다 (`half`는 `FIRST`/`AVG`/`BIG`/`SELL`). 날짜가 곧 회차이므로 같은 날 같은 슬롯은 하나의 키를 공유한다. `auto_trading_orders.idempotency_key`에는 UNIQUE 제약이 없고, 중복 방지는 코드에서 한다 — 같은 키로 **`FAILED`가 아닌** 주문(접수/체결 등)이 있으면 이미 처리된 것으로 보고 새 주문을 만들지 않는다(`hasNonFailedOrder`).
+
+주문이 실패(`FAILED`)하면 그 키로는 아직 매수/매도가 안 된 것으로 보고 다음 tick에서 다시 시도한다. 같은 키의 `FAILED` 누적이 한도(`ORDER_RETRY_LIMIT`, 5회)에 이르면 더 시도하지 않는다(`countFailedOrders`). SafetyGuard가 막은 경우(미체결 대기 등)는 주문 행을 만들지 않고 다음 tick에 다시 본다.
 
 ## 큰수 매수 여유율
 
 `auto_trading_strategies.big_buy_premium_rate` (`migrations/0020`). 값이 NULL이면 분할 회차와 무관하게 기본 `0.1`(10%), 값이 있으면 사용자 override로 그대로 사용 (`resolveBigBuyPremiumRate`, `buyAlgorithm.js`). 큰수 매수 지정가 = 평단가 × (1 + rate).
 
-## 회차 예산 이월 (carryover)
+## 회차 진행 (1 회차 = 1 거래일)
 
-`auto_trading_strategies.pending_avg_budget` / `pending_big_budget` (`migrations/0021`, REAL default 0). 회차 절반 예산이 1주 가격보다 작으면 매수 intent를 만들지 않고 해당 절반 예산을 이월한다. 다음 평가에서 `(회차 절반) + pending`을 합산해 1주 이상이 되면 매수하고, 잔액은 다시 이월한다.
-
-`autoTradingService`가 평가 시 저장된 pending 값을 엔진에 전달하고, 평가 후 `markStrategyEvaluation`으로 다음 pending 값을 DB에 반영한다. 단, 어떤 절반의 주문이 안전 검증에서 막히거나 KIS 거절(`FAILED`)되면 그 절반 예산은 쓰지 않은 것으로 보고 이월에 되돌린다. 매수 주문이 하나도 접수되지 않으면 회차도 진행하지 않고 이월 값을 평가 전 그대로 유지해 다음 tick에서 재평가한다.
+`auto_trading_strategies.round_trade_date` (`migrations/0026`)에 현재 회차의 거래일을 저장한다. 매수가 접수되면, 그 거래일이 `round_trade_date`와 다를 때만 `current_round`를 +1 한다(`split_count` 상한). 즉 회차는 거래일당 한 번만 진행하고, 같은 날 두 번째 슬롯(예: 큰수 매수 후 평단가 매수) 매수는 회차를 올리지 않는다. 미체결 예산을 다음 회차로 이월하지 않는다(`pending_avg_budget`/`pending_big_budget` 컬럼은 남아 있으나 사용하지 않음).
 
 ## 사이클과 회차 소진
 
@@ -85,8 +84,7 @@
 
 - **목표 매도**: 현재가 ≥ `평단가 × (1 + 목표 수익률)`이면 보유 전량 매도.
 - **회차 소진 매도**: `current_round ≥ split_count`이고 매수가능금액이 회차 예산보다 적으면 보유 수량의 약 1/4(`ceil(holdingQuantity / 4)`)을 현재가에 매도.
-- 두 매도 모두 접수되면 사이클을 재시작한다: `current_round`를 0으로, `pending_avg_budget`/`pending_big_budget`을 0으로 리셋하고, 그 시점 총자산(`매수가능금액 + 보유수량 × 현재가`)을 새 `cycle_budget`으로 저장한다(복리). 매도가 접수되지 않으면 사이클·이월을 그대로 유지한다.
-- `markStrategyEvaluation`은 매수가 접수되면 `current_round`를 +1 하되 `split_count`를 넘지 않도록 자른다.
+- 두 매도 모두 접수되면 사이클을 재시작한다: `current_round`를 0으로, `round_trade_date`를 비우고, 그 시점 총자산(`매수가능금액 + 보유수량 × 현재가`)을 새 `cycle_budget`으로 저장한다(복리). 매도가 접수되지 않으면 사이클을 그대로 유지한다.
 
 ## 한국 국장 상승률 랭킹 전략 (`KR_RANK_MOMENTUM`)
 

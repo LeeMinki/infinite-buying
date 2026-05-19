@@ -40,6 +40,8 @@ export class KisMarketDataProvider {
       exchange: 'KRX',
       price,
       previousClose: normalizeNumber(row.prdy_clpr ?? row.stck_sdpr ?? row.base ?? row.prev_close),
+      // 상한가(가격제한폭 상단). 시장가 매수는 KIS가 상한가로 증거금을 잡으므로 수량 산정에 쓴다.
+      upperLimitPrice: normalizeNumber(row.stck_mxpr ?? row.mxpr),
       currency: 'KRW',
       source: 'KIS_API',
       fetchedAt: new Date().toISOString()
@@ -254,6 +256,43 @@ export class KisMarketDataProvider {
       sellUnitQuantity: normalizeNumber(row.sll_unit_qty) || 1,
       source: 'KIS_API'
     };
+  }
+
+  // 한국주식 호가 조회 (KIS 주식현재가 호가/예상체결).
+  // 매도호가(askp1~10)·매수호가(bidp1~10) 사다리를 받아온다. 연속 호가의 간격이
+  // 곧 그 종목의 실제 호가 단위라, 주문 단가를 호가 단위에 맞출 때 쓴다.
+  async getDomesticOrderbook(symbol) {
+    const data = await this.requestJson('/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn', {
+      trId: 'FHKST01010200',
+      query: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: normalizeSymbol(symbol)
+      }
+    });
+    const row = data.output1 || data.output || data;
+    const askPrices = [];
+    const bidPrices = [];
+    for (let i = 1; i <= 10; i += 1) {
+      const ask = normalizeNumber(row[`askp${i}`]);
+      const bid = normalizeNumber(row[`bidp${i}`]);
+      if (ask) askPrices.push(ask);
+      if (bid) bidPrices.push(bid);
+    }
+    // 호가 단위 = 연속한 호가의 간격. 매도호가는 오름차순, 매수호가는 내림차순으로 들어온다.
+    let tick = 0;
+    const sortedAsk = [...askPrices].sort((a, b) => a - b);
+    for (let i = 1; i < sortedAsk.length && !tick; i += 1) {
+      const gap = sortedAsk[i] - sortedAsk[i - 1];
+      if (gap > 0) tick = gap;
+    }
+    if (!tick) {
+      const sortedBid = [...bidPrices].sort((a, b) => a - b);
+      for (let i = 1; i < sortedBid.length && !tick; i += 1) {
+        const gap = sortedBid[i] - sortedBid[i - 1];
+        if (gap > 0) tick = gap;
+      }
+    }
+    return { symbol: normalizeSymbol(symbol), tick, askPrices, bidPrices };
   }
 
   // 한국주식 등락률 순위 (KIS 국내주식 등락률 순위 API).

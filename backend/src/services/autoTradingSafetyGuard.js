@@ -1,4 +1,5 @@
-import * as repo from '../repositories/autoTradingRepository.js';
+// 중복 주문 방지·재시도 한도는 서비스(autoTradingService)가 idempotency_key로 직접 검사한다.
+// SafetyGuard는 "지금 이 주문을 내도 되는가"(상태·수량·미체결·잔액·정수주)만 본다.
 
 export function validateOrderSafety({
   userId,
@@ -18,9 +19,6 @@ export function validateOrderSafety({
   }
   if (Array.isArray(openOrders) && openOrders.length > 0) {
     return block('미체결 주문이 있어 신규 주문을 만들지 않습니다.');
-  }
-  if (repo.hasDuplicateOrder(idempotencyKey)) {
-    return block('동일한 판단에 대한 주문 기록이 이미 있어 중복 주문을 막았습니다.');
   }
   if (decision.decision === 'BUY') {
     const cash = Number(buyingPower?.cashAvailable ?? 0);

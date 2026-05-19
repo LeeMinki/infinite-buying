@@ -309,7 +309,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
             <h3>전략 만들기</h3>
             <p>종목을 선택하고 예산을 정합니다. 기본 분할 회차는 40회, 목표 수익률은 10%입니다.</p>
             <p className="helper">
-              <b>1주 단위 매수만 지원</b>됩니다 (KIS Open API 표준 해외주문 기준). 회차 절반 예산이 1주 값보다 작으면 매수하지 않고 그 돈을 다음 평가로 넘겨, 1주 이상이 모이면 매수합니다.
+              <b>1주 단위 매수만 지원</b>됩니다 (KIS Open API 표준 주문 기준). 한 회차는 하루씩 진행하며, 첫날은 시작가에 한 번 매수하고 둘째 날부터 회차 예산을 평단가 매수·큰수 매수로 나눠 하루 최대 두 번 매수합니다.
             </p>
           </div>
         </div>
@@ -700,7 +700,12 @@ function OrdersTable({ orders, onRefresh, busy }) {
                 <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
                 <td>{formatQuantity(order.quantity)}</td>
                 <td>{formatMoney(order.orderPrice, order.currency)}</td>
-                <td className="muted">{order.decisionReason}</td>
+                <td className="muted">
+                  {order.decisionReason}
+                  {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
+                    <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
+                  )}
+                </td>
                 <td>
                   <button type="button" className="ghost sm" disabled={busy === `order-${order.id}` || order.status === 'DRY_RUN'} onClick={() => onRefresh(order.id)}>
                     갱신

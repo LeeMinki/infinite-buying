@@ -1,226 +1,163 @@
-import { resolveBigBuyPremiumRate } from './buyAlgorithm.js';
+// LAOR_INFINITE_V2 라이브 평가 엔진.
+//
+// 회차 모델: 1 회차 = 1 거래일.
+//   - 1회차(보유 0): 시작가(현재가)에 회차 예산을 한 번에 매수한다 (FIRST 1건).
+//   - 2회차부터(보유 > 0): 회차 예산을 절반으로 나눠 평단가 매수(AVG)·큰수 매수(BIG)
+//     두 슬롯으로 평가한다. 각 슬롯은 가격 조건을 만족할 때만 발동하므로, 하루에
+//     최대 2건까지 매수할 수 있다(둘 다 조건 만족 시).
+//
+// executedHalves: 오늘 이미 접수/체결된 매수 슬롯 목록(FAILED 제외). 같은 슬롯은 같은 날
+// 다시 만들지 않으며, 아직 안 산 슬롯은 그날 안에 조건이 충족되면 그때 매수한다.
+// (예: 09시엔 현재가 > 평단가라 평단가 매수 미발동 → 13시에 현재가 ≤ 평단가가 되면 매수.)
+//
+// 회차 진행·사이클 예산은 호출자(autoTradingService)가 관리한다.
 
-// LAOR_INFINITE_V2_NATIVE 평가 엔진.
-//
-// KIS Open API의 해외주식 주문 endpoint는 정수 주만 받는다. 따라서 국내/해외 모두 정수 주
-// 단위로만 매수 의도를 만들고, 한 절반(`AVG` 또는 `BIG`)의 사용 가능 예산이 1주 가격에
-// 못 미치면 그 절반은 intent를 만들지 않고 다음 평가로 이월(carryover)한다.
-//
-// 입력 `pendingAvgBudget` / `pendingBigBudget`는 strategies 테이블의 누적 절반 예산,
-// `cycleBudget`은 현재 사이클의 예산(매도로 사이클이 재시작될 때 그 시점 총자산으로 갱신).
-// 결과의 `nextPendingAvgBudget` / `nextPendingBigBudget` / `nextCycleBudget` / `restartCycle`은
-// 호출자가 DB에 반영해야 한다.
+import { resolveBigBuyPremiumRate } from './buyAlgorithm.js';
 
 export function evaluateAutoTrading(input) {
   const currentPrice = positive(input.currentPrice, 'currentPrice');
   const totalBudget = positive(input.totalBudget, 'totalBudget');
   const splitCount = positiveInteger(input.splitCount || 40, 'splitCount');
   const targetProfitRate = positive(input.targetProfitRate || 0.1, 'targetProfitRate');
-  const bigBuyPremiumRate = resolveBigBuyPremiumRate({
-    override: input.bigBuyPremiumRate,
-    splitCount
-  });
+  const bigBuyPremiumRate = resolveBigBuyPremiumRate({ override: input.bigBuyPremiumRate, splitCount });
   const currentRound = Math.max(0, Math.floor(Number(input.currentRound || 0)));
   const holdingQuantity = nonNegative(input.holdingQuantity || 0);
   const averagePrice = nonNegative(input.averagePrice || 0);
   const cashAvailable = input.cashAvailable == null ? null : nonNegative(input.cashAvailable);
-  const pendingAvgBudget = nonNegative(input.pendingAvgBudget || 0);
-  const pendingBigBudget = nonNegative(input.pendingBigBudget || 0);
-  // 사이클 예산: 매도로 재시작될 때 총자산으로 갱신된다. 미설정(0)이면 총예산을 쓴다.
   const cycleBudget = Number(input.cycleBudget) > 0 ? Number(input.cycleBudget) : totalBudget;
-  const buyAmountPerRound = cycleBudget / splitCount;
+  const executed = new Set(input.executedHalves || []);
 
-  // 매도 시점의 총자산(현금 + 보유 평가액). 다음 사이클 예산이 된다.
+  const roundBudget = cycleBudget / splitCount;
+  const cash = cashAvailable === null ? Infinity : cashAvailable;
+  // 매도 시점 총자산(현금 + 보유 평가액) — 다음 사이클 예산.
   const totalAsset = cashAvailable === null
     ? cycleBudget
     : Math.max(cashAvailable + holdingQuantity * currentPrice, 0) || cycleBudget;
 
-  // 1) 목표 수익률 매도: 보유 전량 매도 후 사이클을 재시작한다.
+  // 1) 목표 수익률 매도: 보유 전량 매도 후 사이클 재시작.
   if (holdingQuantity > 0 && averagePrice > 0 && currentPrice >= averagePrice * (1 + targetProfitRate)) {
-    const sellQuantity = Math.floor(holdingQuantity);
-    const expectedAmount = sellQuantity * currentPrice;
-    return {
-      decision: 'SELL',
-      intents: [{
-        half: 'SELL',
-        side: 'SELL',
-        orderPrice: currentPrice,
-        expectedQuantity: sellQuantity,
-        expectedAmount,
-        reason: '목표 수익률 도달 → 전량 매도'
-      }],
-      expectedQuantity: sellQuantity,
-      expectedOrderPrice: currentPrice,
-      expectedAmount,
-      restartCycle: true,
-      nextPendingAvgBudget: 0,
-      nextPendingBigBudget: 0,
-      nextCycleBudget: totalAsset,
-      reason: `목표 수익률에 도달했습니다. 현재가 ${fmt(currentPrice)}가 목표가 ${fmt(averagePrice * (1 + targetProfitRate))} 이상이므로 보유 수량 전량 매도 후 새 사이클을 시작합니다.`
-    };
+    const target = averagePrice * (1 + targetProfitRate);
+    return sellAll(holdingQuantity, currentPrice, totalAsset,
+      `목표 수익률 도달: 현재가 ${fmt(currentPrice)}가 목표가 ${fmt(target)} 이상이라 보유 전량을 매도하고 새 사이클을 시작합니다.`);
   }
 
-  // 2) 분할 회차 소진: 현금이 회차 예산보다 적으면 보유 1/4을 매도해 자금을 재확보한다.
+  // 2) 회차 소진 + 현금 부족 → 보유 1/4 매도로 자금 재확보.
   if (currentRound >= splitCount) {
-    if (holdingQuantity > 0 && cashAvailable !== null && cashAvailable < buyAmountPerRound) {
-      const sellQuantity = Math.max(1, Math.min(Math.floor(holdingQuantity), Math.ceil(holdingQuantity / 4)));
-      const expectedAmount = sellQuantity * currentPrice;
+    if (holdingQuantity > 0 && cashAvailable !== null && cashAvailable < roundBudget) {
+      const qty = Math.max(1, Math.min(Math.floor(holdingQuantity), Math.ceil(holdingQuantity / 4)));
       return {
         decision: 'SELL',
-        intents: [{
-          half: 'SELL',
-          side: 'SELL',
-          orderPrice: currentPrice,
-          expectedQuantity: sellQuantity,
-          expectedAmount,
-          reason: '회차 소진 + 현금 부족 → 보유 1/4 매도'
-        }],
-        expectedQuantity: sellQuantity,
+        intents: [{ half: 'SELL', side: 'SELL', orderPrice: currentPrice, expectedQuantity: qty, expectedAmount: qty * currentPrice, reason: '회차 소진 + 현금 부족 → 보유 1/4 매도' }],
+        expectedQuantity: qty,
         expectedOrderPrice: currentPrice,
-        expectedAmount,
+        expectedAmount: qty * currentPrice,
         restartCycle: true,
-        nextPendingAvgBudget: 0,
-        nextPendingBigBudget: 0,
         nextCycleBudget: totalAsset,
-        reason: `${splitCount}회차를 모두 사용했지만 목표가에 닿지 않았습니다. 현금이 회차 예산 ${fmt(buyAmountPerRound)}보다 적어 보유 ${sellQuantity}주를 현재가 ${fmt(currentPrice)}에 매도해 다음 매수 자금을 확보하고 새 사이클을 시작합니다.`
+        reason: `${splitCount}회차를 모두 썼지만 목표가에 닿지 않았습니다. 현금이 회차 예산보다 적어 보유 ${qty}주를 매도해 자금을 확보하고 새 사이클을 시작합니다.`
       };
     }
     if (holdingQuantity <= 0) {
-      return {
-        decision: 'HOLD',
-        intents: [],
-        expectedQuantity: 0,
-        expectedOrderPrice: currentPrice,
-        expectedAmount: 0,
-        nextPendingAvgBudget: pendingAvgBudget,
-        nextPendingBigBudget: pendingBigBudget,
-        reason: `${splitCount}회차를 모두 사용했고 보유 수량이 없어 추가 매수를 멈춥니다.`
-      };
+      return hold(currentPrice, `${splitCount}회차를 모두 썼고 보유 수량이 없어 추가 매수를 멈춥니다.`);
     }
-    // 보유가 있고 현금이 회차 예산 이상이면 마지막 회차에서 추가 매수 기회를 계속 평가한다.
+    // 보유가 있고 현금이 충분하면 마지막 회차로 추가 매수를 계속 평가한다.
   }
 
-  const intents = [];
-  let nextPendingAvg = pendingAvgBudget;
-  let nextPendingBig = pendingBigBudget;
-  const conditionNotes = [];
+  // 3) 매수.
+  // 오늘 1회차 첫 매수를 이미 했으면 그날은 끝(1회차는 하루 1매수).
+  if (executed.has('FIRST')) {
+    return hold(currentPrice, '오늘 1회차 첫 매수를 마쳤습니다. 다음 매수는 다음 거래일(2회차)에 평가합니다.');
+  }
 
   if (holdingQuantity <= 0 || averagePrice <= 0) {
-    const budgetAvailable = buyAmountPerRound + pendingAvgBudget + pendingBigBudget;
-    // 백테스트와 동일하게 가용 현금으로 상한을 둔다(현금이 회차 예산보다 적으면 살 수 있는 만큼만).
-    const available = cashAvailable === null
-      ? budgetAvailable
-      : Math.min(budgetAvailable, cashAvailable);
-    const quantity = Math.floor(available / currentPrice);
-    if (quantity > 0) {
-      intents.push({
-        half: 'FIRST',
-        side: 'BUY',
-        orderPrice: currentPrice,
-        expectedQuantity: quantity,
-        expectedAmount: quantity * currentPrice,
-        reason: `첫 매수: 현재가 ${fmt(currentPrice)}에 ${quantity}주`
-      });
-      // 첫 매수가 발생하면 이월 예산은 사이클 시작점이라 0으로 리셋.
-      nextPendingAvg = 0;
-      nextPendingBig = 0;
-    } else {
-      // 1주도 못 사면 모든 누적과 회차 절반을 다음 평가로 이월.
-      nextPendingAvg = pendingAvgBudget + buyAmountPerRound / 2;
-      nextPendingBig = pendingBigBudget + buyAmountPerRound / 2;
+    // 1회차: 시작가(현재가)에 회차 예산 일괄 매수.
+    const budget = Math.min(roundBudget, cash);
+    const qty = Math.floor(budget / currentPrice);
+    if (qty <= 0) {
+      return hold(currentPrice, `회차 예산 ${fmt(roundBudget)}으로 현재가 ${fmt(currentPrice)}에서 1주도 매수할 수 없습니다.`);
     }
-  } else {
-    const halfBudget = buyAmountPerRound / 2;
-    const availableAvg = halfBudget + pendingAvgBudget;
-    const availableBig = halfBudget + pendingBigBudget;
-    // 큰수 매수 지정가는 평단가 기준. 평단가보다 큰수 매수 여유율만큼 높은 가격까지 매수한다.
-    const bigBuyPrice = averagePrice * (1 + bigBuyPremiumRate);
+    return buyResult([{
+      half: 'FIRST', side: 'BUY', orderPrice: currentPrice,
+      expectedQuantity: qty, expectedAmount: qty * currentPrice,
+      reason: `1회차 첫 매수: 현재가 ${fmt(currentPrice)}에 ${qty}주`
+    }], currentRound, splitCount);
+  }
 
+  // 2회차+: 회차 예산을 절반씩 — 평단가 매수(AVG) / 큰수 매수(BIG).
+  const halfBudget = roundBudget / 2;
+  const bigBuyPrice = averagePrice * (1 + bigBuyPremiumRate);
+  const intents = [];
+  const notes = [];
+  let remainingCash = cash;
+
+  if (!executed.has('AVG')) {
     if (currentPrice <= averagePrice) {
-      const quantity = Math.floor(availableAvg / averagePrice);
-      if (quantity > 0) {
-        const amount = quantity * averagePrice;
-        intents.push({
-          half: 'AVG',
-          side: 'BUY',
-          orderPrice: averagePrice,
-          expectedQuantity: quantity,
-          expectedAmount: amount,
-          reason: `평단가 매수: 현재가 ${fmt(currentPrice)}가 평단가 ${fmt(averagePrice)} 이하`
-        });
-        nextPendingAvg = availableAvg - amount;
+      const qty = Math.floor(Math.min(halfBudget, remainingCash) / averagePrice);
+      if (qty > 0) {
+        const amount = qty * averagePrice;
+        intents.push({ half: 'AVG', side: 'BUY', orderPrice: averagePrice, expectedQuantity: qty, expectedAmount: amount,
+          reason: `평단가 매수: 현재가 ${fmt(currentPrice)}가 평단가 ${fmt(averagePrice)} 이하` });
+        remainingCash -= amount;
       } else {
-        nextPendingAvg = availableAvg;
+        notes.push('평단가 매수 예산으로 1주를 살 수 없어 건너뜀');
       }
     } else {
-      // 조건 미충족 시 절반 예산을 다음 평가로 이월.
-      nextPendingAvg = pendingAvgBudget + halfBudget;
-      conditionNotes.push(`현재가 ${fmt(currentPrice)}가 평단가 ${fmt(averagePrice)}를 초과`);
+      notes.push(`현재가 ${fmt(currentPrice)}가 평단가 ${fmt(averagePrice)}를 초과`);
     }
-
+  }
+  if (!executed.has('BIG')) {
     if (currentPrice <= bigBuyPrice) {
-      const quantity = Math.floor(availableBig / bigBuyPrice);
-      if (quantity > 0) {
-        const amount = quantity * bigBuyPrice;
-        intents.push({
-          half: 'BIG',
-          side: 'BUY',
-          orderPrice: bigBuyPrice,
-          expectedQuantity: quantity,
-          expectedAmount: amount,
-          reason: `큰수 매수: 현재가 ${fmt(currentPrice)}가 평단가 기준 지정가 ${fmt(bigBuyPrice)} 이하`
-        });
-        nextPendingBig = availableBig - amount;
+      const qty = Math.floor(Math.min(halfBudget, remainingCash) / bigBuyPrice);
+      if (qty > 0) {
+        const amount = qty * bigBuyPrice;
+        intents.push({ half: 'BIG', side: 'BUY', orderPrice: bigBuyPrice, expectedQuantity: qty, expectedAmount: amount,
+          reason: `큰수 매수: 현재가 ${fmt(currentPrice)}가 큰수 지정가 ${fmt(bigBuyPrice)} 이하` });
+        remainingCash -= amount;
       } else {
-        nextPendingBig = availableBig;
+        notes.push('큰수 매수 예산으로 1주를 살 수 없어 건너뜀');
       }
     } else {
-      nextPendingBig = pendingBigBudget + halfBudget;
-      conditionNotes.push(`현재가 ${fmt(currentPrice)}가 큰수 지정가 ${fmt(bigBuyPrice)}를 초과`);
+      notes.push(`현재가 ${fmt(currentPrice)}가 큰수 지정가 ${fmt(bigBuyPrice)}를 초과`);
     }
   }
 
   if (intents.length === 0) {
-    const baseReason = conditionNotes.length > 0
-      ? `관망합니다. ${conditionNotes.join(', ')}했습니다.`
-      : `이번 평가는 매수 조건을 만족했더라도 1주를 살 만큼 예산이 모이지 않아 다음 평가로 이월합니다.`;
-    return {
-      decision: 'HOLD',
-      intents: [],
-      expectedQuantity: 0,
-      expectedOrderPrice: currentPrice,
-      expectedAmount: 0,
-      nextPendingAvgBudget: nextPendingAvg,
-      nextPendingBigBudget: nextPendingBig,
-      reason: baseReason
-    };
+    const done = [];
+    if (executed.has('AVG')) done.push('평단가 매수');
+    if (executed.has('BIG')) done.push('큰수 매수');
+    const doneNote = done.length > 0 ? ` (오늘 ${done.join('·')} 완료)` : '';
+    return hold(currentPrice, `관망${doneNote}. ${notes.join(', ')}.`);
   }
+  return buyResult(intents, currentRound, splitCount);
+}
 
-  const expectedAmount = intents.reduce((sum, intent) => sum + intent.expectedAmount, 0);
-  if (cashAvailable !== null && cashAvailable < expectedAmount) {
-    return {
-      decision: 'HOLD',
-      intents: [],
-      expectedQuantity: 0,
-      expectedOrderPrice: currentPrice,
-      expectedAmount: 0,
-      nextPendingAvgBudget: pendingAvgBudget,
-      nextPendingBigBudget: pendingBigBudget,
-      reason: `매수가능금액이 부족합니다. 필요 금액은 ${fmt(expectedAmount)}, 확인된 매수가능금액은 ${fmt(cashAvailable)}입니다.`
-    };
-  }
+function sellAll(qty, price, totalAsset, reason) {
+  return {
+    decision: 'SELL',
+    intents: [{ half: 'SELL', side: 'SELL', orderPrice: price, expectedQuantity: qty, expectedAmount: qty * price, reason }],
+    expectedQuantity: qty,
+    expectedOrderPrice: price,
+    expectedAmount: qty * price,
+    restartCycle: true,
+    nextCycleBudget: totalAsset,
+    reason
+  };
+}
 
-  const totalQuantity = intents.reduce((sum, intent) => sum + intent.expectedQuantity, 0);
+function hold(price, reason) {
+  return { decision: 'HOLD', intents: [], expectedQuantity: 0, expectedOrderPrice: price, expectedAmount: 0, reason };
+}
+
+function buyResult(intents, currentRound, splitCount) {
+  const totalQuantity = intents.reduce((sum, i) => sum + i.expectedQuantity, 0);
+  const totalAmount = intents.reduce((sum, i) => sum + i.expectedAmount, 0);
   const roundLabel = Math.min(currentRound + 1, splitCount);
   return {
     decision: 'BUY',
     intents,
     expectedQuantity: totalQuantity,
     expectedOrderPrice: intents[0].orderPrice,
-    expectedAmount,
-    nextPendingAvgBudget: nextPendingAvg,
-    nextPendingBigBudget: nextPendingBig,
-    reason: `${roundLabel}/${splitCount}회차 매수 조건입니다. ${intents.map((intent) => intent.reason).join(' / ')}. 총 ${totalQuantity}주 매수를 검토합니다.`
+    expectedAmount: totalAmount,
+    reason: `${roundLabel}/${splitCount}회차 매수. ${intents.map((i) => i.reason).join(' / ')}.`
   };
 }
 
