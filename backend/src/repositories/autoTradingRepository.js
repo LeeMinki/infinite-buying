@@ -135,27 +135,21 @@ export function stopStrategy(userId, id) {
 export function markStrategyEvaluation(userId, id, {
   decision,
   errorMessage = null,
-  incrementRound = false,
+  currentRound = null,
+  roundTradeDate = null,
+  cycleBudget = null,
   resetCycle = false,
-  splitCount = null,
-  ordered = false,
-  pendingAvgBudget = null,
-  pendingBigBudget = null,
-  cycleBudget = null
+  ordered = false
 } = {}) {
-  // resetCycle: 매도로 사이클이 재시작되면 회차를 0으로 되돌린다.
-  // 그 외에는 회차를 +incrementRound 하되 분할 회차 상한을 넘지 않도록 자른다.
+  // 회차 모델: 1 회차 = 1 거래일. current_round·round_trade_date는 서비스가 직접 정해 넘긴다.
+  // resetCycle: 매도로 사이클 재시작 → 회차 0, 회차 거래일 비움.
   getDb().prepare(`
     UPDATE auto_trading_strategies
     SET last_evaluated_at = datetime('now'),
         last_decision = ?,
         last_error_message = ?,
-        current_round = CASE
-          WHEN ? = 1 THEN 0
-          ELSE MIN(current_round + ?, COALESCE(?, current_round + ?))
-        END,
-        pending_avg_budget = COALESCE(?, pending_avg_budget),
-        pending_big_budget = COALESCE(?, pending_big_budget),
+        current_round = CASE WHEN ? = 1 THEN 0 ELSE COALESCE(?, current_round) END,
+        round_trade_date = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, round_trade_date) END,
         cycle_budget = COALESCE(?, cycle_budget),
         last_order_at = CASE WHEN ? = 1 THEN datetime('now') ELSE last_order_at END,
         updated_at = datetime('now')
@@ -164,11 +158,9 @@ export function markStrategyEvaluation(userId, id, {
     decision || null,
     errorMessage,
     resetCycle ? 1 : 0,
-    incrementRound ? 1 : 0,
-    splitCount,
-    incrementRound ? 1 : 0,
-    pendingAvgBudget,
-    pendingBigBudget,
+    currentRound,
+    resetCycle ? 1 : 0,
+    roundTradeDate,
     cycleBudget,
     ordered ? 1 : 0,
     userId,
@@ -416,6 +408,30 @@ export function hasDuplicateOrder(idempotencyKey) {
   return Boolean(getDb().prepare('SELECT 1 FROM auto_trading_orders WHERE idempotency_key = ?').get(idempotencyKey));
 }
 
+// 같은 키로 FAILED가 아닌 주문(접수/체결/취소 등)이 있는지 — 있으면 이미 처리된 것으로 본다.
+export function hasNonFailedOrder(idempotencyKey) {
+  return Boolean(getDb().prepare(
+    "SELECT 1 FROM auto_trading_orders WHERE idempotency_key = ? AND status <> 'FAILED' LIMIT 1"
+  ).get(idempotencyKey));
+}
+
+// 같은 키로 누적된 실패 주문 수 — 재시도 한도 판정에 쓴다.
+export function countFailedOrders(idempotencyKey) {
+  return getDb().prepare(
+    "SELECT COUNT(*) AS c FROM auto_trading_orders WHERE idempotency_key = ? AND status = 'FAILED'"
+  ).get(idempotencyKey).c;
+}
+
+// 오늘(거래일) 접수/체결된 매수 슬롯(half) 목록. FAILED는 아직 안 산 것으로 본다.
+export function getExecutedBuyHalvesToday(userId, strategyId, tradeDate) {
+  return getDb().prepare(`
+    SELECT DISTINCT half FROM auto_trading_orders
+    WHERE user_id = ? AND strategy_id = ? AND side = 'BUY'
+      AND status <> 'FAILED' AND half IS NOT NULL
+      AND date(created_at) = date(?)
+  `).all(userId, strategyId, tradeDate).map((r) => r.half);
+}
+
 // 같은 거래일(tradeDate, UTC 기준 — 한 매매 세션은 같은 UTC 날짜에 들어온다)에
 // 이미 매수(BUY) 주문 기록이 있는지. 상태와 무관하게(FAILED 포함) 한 건이라도 있으면 true.
 // 하루 1회 매수 원칙: 오늘 매수했으면 같은 날 추가 매수 주문을 만들지 않는다.
@@ -531,6 +547,7 @@ function toStrategy(row) {
     pendingBigBudget: row.pending_big_budget ?? 0,
     cycleBudget: row.cycle_budget > 0 ? row.cycle_budget : row.total_budget,
     currentRound: row.current_round,
+    roundTradeDate: row.round_trade_date || null,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at,
     lastEvaluatedAt: row.last_evaluated_at,

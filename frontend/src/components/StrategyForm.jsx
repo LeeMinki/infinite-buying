@@ -147,7 +147,7 @@ export function StrategyForm({ onSubmit }) {
         <div>
           <b>1회 매수금</b>은 자동으로 계산됩니다: <b>{formatMoney(perRoundBuy, form.currency)}</b>
           <br />
-          이 시스템은 KIS Open API 기준으로 <b>1주 단위 매수</b>만 지원합니다. 회차 절반 예산이 1주 가격보다 작으면 자동으로 다음 사이클로 이월(carryover)되어 합산 매수합니다.
+          이 시스템은 KIS Open API 기준으로 <b>1주 단위 매수</b>만 지원합니다. 회차 예산으로 살 수 있는 정수 주만 매수합니다.
         </div>
       </div>
 

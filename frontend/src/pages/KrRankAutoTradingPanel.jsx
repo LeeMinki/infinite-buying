@@ -414,7 +414,12 @@ function OrdersTable({ orders }) {
                 <td className="muted">{order.liveOrderEnabled ? '실주문' : '기록만'}</td>
                 <td>{formatNumber(order.quantity)}주</td>
                 <td>{formatKrw(order.orderPrice)}</td>
-                <td className="muted">{order.decisionReason}</td>
+                <td className="muted">
+                  {order.decisionReason}
+                  {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
+                    <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
+                  )}
+                </td>
               </tr>
             ))}
             {orders.length === 0 && <tr><td className="empty-row" colSpan="9">아직 주문 이력이 없습니다.</td></tr>}
@@ -464,12 +469,12 @@ function EntryTable({ entries }) {
 function defaultForm() {
   return {
     morningBudget: '1000000',
-    morningTargetProfitPercent: '5',
-    morningStopLossPercent: '3',
+    morningTargetProfitPercent: '2',
+    morningStopLossPercent: '5',
     lunchEntryEnabled: false,
     lunchBudget: '1000000',
-    lunchTargetProfitPercent: '3',
-    lunchStopLossPercent: '3'
+    lunchTargetProfitPercent: '2',
+    lunchStopLossPercent: '5'
   };
 }
 

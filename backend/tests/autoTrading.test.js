@@ -66,84 +66,70 @@ test('auto trading buys when current price is within big-number buy ceiling', ()
   assert.equal(result.intents[0].orderPrice, 55 * 1.02);
 });
 
-test('carryover: AVG cannot buy 1 share this cycle, budget rolls to pending_avg_budget', () => {
-  // totalBudget 4000 / 40분할 → 회차 100, 절반 50. 평단가 80 → floor(50/80)=0 → 1주 못 삼.
+test('회차 예산으로 1주도 못 사면 HOLD (이월 없이 관망)', () => {
+  // 회차 예산 4000/40=100, 절반 50. 평단가 80 → floor(50/80)=0 → 두 슬롯 모두 1주 못 삼.
   const result = evaluateAutoTrading({
-    symbol: 'AAPL',
-    market: 'US',
-    currency: 'USD',
-    currentPrice: 70, // 평단가 80 이하 → AVG 조건 충족, 큰수 조건도 충족
-    holdingQuantity: 1,
-    averagePrice: 80,
-    previousClose: 80,
-    cashAvailable: 1000,
-    currentRound: 1,
-    totalBudget: 4000,
-    splitCount: 40,
-    targetProfitRate: 0.1,
-    bigBuyPremiumRate: 0.1
+    symbol: 'AAPL', market: 'US', currency: 'USD',
+    currentPrice: 70, holdingQuantity: 1, averagePrice: 80,
+    cashAvailable: 1000, currentRound: 1,
+    totalBudget: 4000, splitCount: 40, targetProfitRate: 0.1, bigBuyPremiumRate: 0.1
   });
-  // 둘 다 1주 못 삼 → HOLD + carryover 누적 (각 절반 50씩 보존)
   assert.equal(result.decision, 'HOLD');
   assert.equal(result.intents.length, 0);
-  assert.equal(result.nextPendingAvgBudget, 50);
-  assert.equal(result.nextPendingBigBudget, 50);
 });
 
-test('carryover: pending + new half budget reaches 1 share, buy fires', () => {
-  // totalBudget 4000 / 40 = 100, 절반 50. 누적 50씩 추가.
+test('2회차 매수: 평단가 매수·큰수 매수가 같은 평가에서 함께 나온다', () => {
+  // 회차 예산 8000/40=200, 절반 100. 평단가 80 → AVG 1주, 큰수가 88 → BIG 1주.
   const result = evaluateAutoTrading({
-    symbol: 'AAPL',
-    market: 'US',
-    currency: 'USD',
-    currentPrice: 70,
-    holdingQuantity: 1,
-    averagePrice: 80,
-    previousClose: 80,
-    cashAvailable: 1000,
-    currentRound: 4,
-    totalBudget: 4000,
-    splitCount: 40,
-    targetProfitRate: 0.1,
-    bigBuyPremiumRate: 0.1,
-    pendingAvgBudget: 50,
-    pendingBigBudget: 50
+    symbol: 'AAPL', market: 'US', currency: 'USD',
+    currentPrice: 70, holdingQuantity: 1, averagePrice: 80,
+    cashAvailable: 10000, currentRound: 4,
+    totalBudget: 8000, splitCount: 40, targetProfitRate: 0.1, bigBuyPremiumRate: 0.1
   });
-  // availableAvg = 50 + 50 = 100, 평단가 80 → 1주 매수, 잔액 100 - 80 = 20
-  // availableBig = 50 + 50 = 100, 큰수가 80 × 1.1 = 88 → 1주 매수, 잔액 100 - 88 = 12
   assert.equal(result.decision, 'BUY');
   assert.equal(result.intents.length, 2);
+  assert.deepEqual(result.intents.map((i) => i.half), ['AVG', 'BIG']);
+});
+
+test('이미 산 슬롯(executedHalves)은 같은 날 다시 매수하지 않는다', () => {
+  // 오늘 큰수 매수는 이미 했고 평단가 매수만 남음 → AVG 슬롯만 나온다.
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL', market: 'US', currency: 'USD',
+    currentPrice: 70, holdingQuantity: 1, averagePrice: 80,
+    cashAvailable: 10000, currentRound: 4,
+    totalBudget: 8000, splitCount: 40, targetProfitRate: 0.1, bigBuyPremiumRate: 0.1,
+    executedHalves: ['BIG']
+  });
+  assert.equal(result.decision, 'BUY');
+  assert.equal(result.intents.length, 1);
   assert.equal(result.intents[0].half, 'AVG');
-  assert.equal(result.intents[0].expectedQuantity, 1);
-  assert.equal(result.intents[1].half, 'BIG');
-  assert.equal(result.intents[1].expectedQuantity, 1);
-  assert.equal(result.nextPendingAvgBudget, 20);
-  assert.equal(result.nextPendingBigBudget, 12);
+});
+
+test('1회차 첫 매수를 마친 날은 추가 매수하지 않는다', () => {
+  const result = evaluateAutoTrading({
+    symbol: 'AAPL', market: 'US', currency: 'USD',
+    currentPrice: 70, holdingQuantity: 5, averagePrice: 70,
+    cashAvailable: 10000, currentRound: 1,
+    totalBudget: 8000, splitCount: 40, targetProfitRate: 0.1, bigBuyPremiumRate: 0.1,
+    executedHalves: ['FIRST']
+  });
+  assert.equal(result.decision, 'HOLD');
+  assert.equal(result.intents.length, 0);
 });
 
 test('익절 매도 → 사이클 재시작 신호와 다음 사이클 예산(총자산)', () => {
   const result = evaluateAutoTrading({
-    symbol: 'AAPL',
-    market: 'US',
-    currency: 'USD',
+    symbol: 'AAPL', market: 'US', currency: 'USD',
     currentPrice: 111, // 평단가 100 × 1.1 = 110 초과 → 익절
-    holdingQuantity: 10,
-    averagePrice: 100,
-    previousClose: 108,
-    cashAvailable: 500,
-    currentRound: 5,
-    totalBudget: 4000,
-    splitCount: 40,
-    targetProfitRate: 0.1,
-    bigBuyPremiumRate: 0.1
+    holdingQuantity: 10, averagePrice: 100,
+    cashAvailable: 500, currentRound: 5,
+    totalBudget: 4000, splitCount: 40, targetProfitRate: 0.1, bigBuyPremiumRate: 0.1
   });
   assert.equal(result.decision, 'SELL');
   assert.equal(result.restartCycle, true);
   assert.equal(result.expectedQuantity, 10);
   // 다음 사이클 예산 = 총자산 = 현금 500 + 보유 10주 × 111 = 1610
   assert.equal(result.nextCycleBudget, 1610);
-  assert.equal(result.nextPendingAvgBudget, 0);
-  assert.equal(result.nextPendingBigBudget, 0);
 });
 
 test('회차 소진 + 현금 부족 → 보유 1/4 매도 후 사이클 재시작', () => {

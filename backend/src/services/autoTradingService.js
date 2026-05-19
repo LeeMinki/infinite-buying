@@ -6,6 +6,8 @@ import { getValidAccessToken } from './kisTokenManager.js';
 import { resolveBigBuyPremiumRate } from './buyAlgorithm.js';
 
 const LOCK_KEY = 'evaluate';
+// 같은 (거래일·전략·슬롯) 주문이 실패로 누적되면 더 시도하지 않는 한도.
+const ORDER_RETRY_LIMIT = 5;
 
 export function getSettings(userId) {
   return {
@@ -179,12 +181,13 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     const holdingQuantity = Number(balance.quantity || 0);
     const averagePrice = Number(balance.averagePrice || 0);
     const cashAvailable = Number(buyingPower.cashAvailable || balance.cashAvailable || 0);
-    let decision = evaluateAutoTrading({
+    // 오늘 이미 접수/체결된 매수 슬롯(FAILED 제외). 같은 슬롯(FIRST/AVG/BIG)은 같은 날 다시 만들지 않는다.
+    const executedHalves = repo.getExecutedBuyHalvesToday(userId, strategy.id, tradeDate);
+    const decision = evaluateAutoTrading({
       symbol: strategy.symbol,
       market: strategy.market,
       currency: strategy.currency,
       currentPrice: price.price,
-      previousClose: price.previousClose,
       holdingQuantity,
       averagePrice,
       cashAvailable,
@@ -193,28 +196,10 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       splitCount: strategy.splitCount,
       targetProfitRate: strategy.targetProfitRate,
       bigBuyPremiumRate: strategy.bigBuyPremiumRate,
-      pendingAvgBudget: strategy.pendingAvgBudget,
-      pendingBigBudget: strategy.pendingBigBudget,
-      cycleBudget: strategy.cycleBudget
+      cycleBudget: strategy.cycleBudget,
+      executedHalves
     });
-
-    // 하루 1회 매수 원칙: 오늘 이미 매수 주문 기록이 있으면 추가 매수하지 않는다.
-    // 매수 의도(FIRST/AVG/BIG)를 SKIP으로 바꿔 같은 거래일에 10분마다 재주문하는 것을 막는다.
-    // 매도(SELL)는 영향받지 않으며, 가격·잔고 스냅샷과 판단 로그는 그대로 남긴다.
-    if (decision.decision === 'BUY' && repo.hasBuyOrderToday(userId, strategy.id, tradeDate)) {
-      decision = {
-        decision: 'SKIP',
-        intents: [],
-        expectedQuantity: 0,
-        expectedOrderPrice: decision.expectedOrderPrice ?? price.price,
-        expectedAmount: 0,
-        // 매수를 건너뛰므로 회차·이월 예산은 평가 전 값을 그대로 유지한다.
-        nextPendingAvgBudget: strategy.pendingAvgBudget,
-        nextPendingBigBudget: strategy.pendingBigBudget,
-        reason: '오늘 이미 매수 주문을 실행했습니다. 하루 1회 매수 원칙에 따라 추가 매수는 다음 거래일에 평가합니다.'
-      };
-    }
-    // 스냅샷은 평가 결정 직후에 찍어서 "이 시점에 자동매매가 무슨 결정을 내렸는가" 까지 같이 저장한다.
+    // 스냅샷은 평가 결정 직후에 찍어서 "이 시점에 무슨 결정을 내렸는가"까지 같이 저장한다.
     const snapshot = createSnapshot(userId, strategy, {
       currentPrice: price.price,
       balance,
@@ -222,14 +207,13 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       decision: decision.decision
     });
     const baseReason = autoCancelNotes.length > 0
-      ? `${decision.reason} (자동 취소 진행: ${autoCancelNotes.join(' / ')})`
+      ? `${decision.reason} (주문 정리: ${autoCancelNotes.join(' / ')})`
       : decision.reason;
     const decisionWithContext = {
       ...decision,
       reason: appendEvaluationContext(baseReason, {
         strategy,
         price: price.price,
-        previousClose: price.previousClose,
         holdingQuantity,
         averagePrice,
         cashAvailable,
@@ -248,13 +232,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       evaluationSource
     });
     if (!['BUY', 'SELL'].includes(decisionWithContext.decision)) {
-      // HOLD/SKIP: 매수·매도는 없지만 엔진이 계산한 회차 예산 이월값은 DB에 반영한다.
-      repo.markStrategyEvaluation(userId, strategy.id, {
-        decision: log.decision,
-        errorMessage: null,
-        pendingAvgBudget: decision.nextPendingAvgBudget ?? strategy.pendingAvgBudget,
-        pendingBigBudget: decision.nextPendingBigBudget ?? strategy.pendingBigBudget
-      });
+      repo.markStrategyEvaluation(userId, strategy.id, { decision: log.decision, errorMessage: null });
       return { strategy: repo.getStrategy(userId, strategy.id), decision: log, snapshot, order: null };
     }
 
@@ -264,6 +242,10 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     let localBalance = { ...balance };
     for (const intent of intents) {
       const idempotencyKey = makeIdempotencyKey(strategy, intent.half, tradeDate);
+      // 같은 키로 FAILED 아닌 주문이 이미 있으면 = 이미 접수/체결됨 → 중복 주문을 만들지 않는다.
+      if (repo.hasNonFailedOrder(idempotencyKey)) continue;
+      // 재시도 한도: 같은 키로 실패가 누적되면 그만 시도한다(영구 실패 무한 재시도 방지).
+      if (repo.countFailedOrders(idempotencyKey) >= ORDER_RETRY_LIMIT) continue;
       const intentDecision = {
         ...decisionWithContext,
         expectedQuantity: intent.expectedQuantity,
@@ -283,31 +265,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         tradeDate
       });
       if (!guard.ok) {
-        // 같은 idempotencyKey 주문이 이미 있으면 새 row를 INSERT하지 않는다.
-        // (UNIQUE(idempotency_key) 충돌로 평가 전체가 깨지던 버그) — 판단 로그로만 남긴다.
-        if (repo.hasDuplicateOrder(idempotencyKey)) {
-          continue;
-        }
-        const skipped = repo.createOrder(userId, {
-          strategyId: strategy.id,
-          symbol: strategy.symbol,
-          market: strategy.market,
-          currency: strategy.currency,
-          exchange: strategy.exchange,
-          side: intent.side,
-          quantity: intent.expectedQuantity,
-          orderPrice: intent.orderPrice,
-          estimatedAmount: intent.expectedAmount,
-          idempotencyKey,
-          decisionReason: guard.reason,
-          liveOrderEnabled: settings.liveOrderEnabled,
-          status: 'FAILED',
-          requestPayloadMasked: null,
-          errorMessage: guard.reason,
-          half: intent.half,
-          decisionLogId: log.id
-        });
-        orders.push(skipped);
+        // 안전 검증 미통과는 "지금은 못 함"(미체결 대기 등). 주문 행을 만들지 않고 다음 tick에 다시 본다.
         continue;
       }
 
@@ -329,26 +287,24 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       };
 
       if (!settings.liveOrderEnabled) {
-        const order = repo.createOrder(userId, {
+        orders.push(repo.createOrder(userId, {
           ...baseOrder,
           status: 'DRY_RUN',
           requestPayloadMasked: maskPayload(baseOrder)
-        });
-        orders.push(order);
+        }));
       } else {
         try {
           const result = intent.side === 'BUY'
             ? await trading.placeBuyOrder(baseOrder)
             : await trading.placeSellOrder(baseOrder);
-          const order = repo.createOrder(userId, {
+          orders.push(repo.createOrder(userId, {
             ...baseOrder,
             status: result.status || 'ACCEPTED',
             kisOrderNo: result.orderNo,
             kisOriginalOrderNo: result.originalOrderNo,
             requestPayloadMasked: result.requestPayloadMasked || maskPayload(baseOrder),
             responsePayloadMasked: result.responsePayloadMasked
-          });
-          orders.push(order);
+          }));
           repo.addDailyUsedAmount(userId, strategy.id, {
             tradeDate,
             market: strategy.market,
@@ -356,14 +312,13 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
             amount: intent.expectedAmount
           });
         } catch (error) {
-          const order = repo.createOrder(userId, {
+          orders.push(repo.createOrder(userId, {
             ...baseOrder,
             status: 'FAILED',
             requestPayloadMasked: maskPayload(baseOrder),
             responsePayloadMasked: error.safePayload || null,
             errorMessage: error.message || 'KIS 주문 요청에 실패했습니다.'
-          });
-          orders.push(order);
+          }));
         }
       }
 
@@ -379,56 +334,33 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         };
       }
     }
-    if (orders[0]) repo.attachOrderIdToDecisionLog(log.id, orders[0].id);
+    const placedOrder = orders.find((o) => o.status !== 'FAILED') || orders[0] || null;
+    if (placedOrder) repo.attachOrderIdToDecisionLog(log.id, placedOrder.id);
 
-    // 평가 후 회차·이월(carryover)·사이클 예산을 실제 주문 결과에 맞춰 DB에 반영한다.
-    const ordered = orders.length > 0;
+    // 회차·사이클을 실제 주문 결과에 맞춰 반영한다.
     const anySuccess = orders.some((order) => order.status !== 'FAILED');
-    let evalUpdate;
     if (decisionWithContext.decision === 'SELL') {
       if (anySuccess && decision.restartCycle) {
-        // 매도 체결 → 사이클 재시작: 회차 0, 이월 0, 다음 사이클 예산을 총자산으로 갱신.
-        evalUpdate = {
-          decision: 'SELL',
-          ordered,
-          resetCycle: true,
-          pendingAvgBudget: 0,
-          pendingBigBudget: 0,
-          cycleBudget: decision.nextCycleBudget
-        };
+        // 매도 접수 → 사이클 재시작: 회차 0, 다음 사이클 예산을 총자산으로 갱신.
+        repo.markStrategyEvaluation(userId, strategy.id, {
+          decision: 'SELL', ordered: true, resetCycle: true, cycleBudget: decision.nextCycleBudget
+        });
       } else {
-        // 매도가 접수되지 않음 → 사이클·이월 그대로 유지.
-        evalUpdate = { decision: 'SELL', ordered };
+        repo.markStrategyEvaluation(userId, strategy.id, { decision: 'SELL', ordered: orders.length > 0 });
       }
     } else if (anySuccess) {
-      // 매수 회차 진행 → 주문이 실패한 절반의 예산만 이월에 더한다.
-      let nextPendingAvg = decision.nextPendingAvgBudget;
-      let nextPendingBig = decision.nextPendingBigBudget;
-      for (const intent of intents) {
-        const order = orders.find((o) => o.half === intent.half);
-        if (order && order.status !== 'FAILED') continue;
-        if (intent.half === 'AVG') nextPendingAvg += intent.expectedAmount;
-        else if (intent.half === 'BIG') nextPendingBig += intent.expectedAmount;
-      }
-      evalUpdate = {
-        decision: 'BUY',
-        incrementRound: true,
-        splitCount: strategy.splitCount,
-        ordered,
-        pendingAvgBudget: nextPendingAvg,
-        pendingBigBudget: nextPendingBig
-      };
+      // 매수 성공 → 회차는 거래일당 한 번만 진행한다(같은 날 두 번째 슬롯 매수는 회차를 올리지 않음).
+      const isNewRoundDay = strategy.roundTradeDate !== tradeDate;
+      const nextRound = isNewRoundDay
+        ? Math.min(strategy.currentRound + 1, strategy.splitCount)
+        : strategy.currentRound;
+      repo.markStrategyEvaluation(userId, strategy.id, {
+        decision: 'BUY', ordered: true, currentRound: nextRound, roundTradeDate: tradeDate
+      });
     } else {
-      // 매수 주문이 하나도 접수되지 않음 → 회차·이월을 평가 전 값으로 유지(다음 tick 재평가).
-      evalUpdate = {
-        decision: 'BUY',
-        ordered,
-        pendingAvgBudget: strategy.pendingAvgBudget,
-        pendingBigBudget: strategy.pendingBigBudget
-      };
+      repo.markStrategyEvaluation(userId, strategy.id, { decision: 'BUY', ordered: false });
     }
-    repo.markStrategyEvaluation(userId, strategy.id, evalUpdate);
-    return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: orders[0]?.id || null }, snapshot, order: orders[0] || null, orders };
+    return { strategy: repo.getStrategy(userId, strategy.id), decision: { ...log, orderId: placedOrder?.id || null }, snapshot, order: placedOrder, orders };
   } catch (error) {
     const message = contextReady
       ? (error.message || '자동매매 평가에 실패했습니다.')
@@ -755,12 +687,8 @@ function normalizeOrderIntents(decision) {
 }
 
 function makeIdempotencyKey(strategy, half, tradeDate) {
-  return [
-    tradeDate.replaceAll('-', ''),
-    strategy.id,
-    strategy.currentRound + 1,
-    half
-  ].join('-');
+  // 날짜가 곧 회차다(1 회차 = 1 거래일). 같은 날 같은 슬롯(half)은 하나의 키를 공유한다.
+  return [tradeDate.replaceAll('-', ''), strategy.id, half].join('-');
 }
 
 function isMarketSessionOpen(market) {
