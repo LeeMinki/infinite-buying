@@ -60,8 +60,6 @@ function normalizeState(state, params) {
   const realizedProfit = Number.isFinite(state.realizedProfit) ? state.realizedProfit : 0;
   const currentRound = Number.isFinite(state.currentRound) && state.currentRound >= 0 ? state.currentRound : 0;
   const cycleBudget = Number.isFinite(state.cycleBudget) && state.cycleBudget > 0 ? state.cycleBudget : params.totalBudget;
-  const pendingAvgBudget = Number.isFinite(state.pendingAvgBudget) && state.pendingAvgBudget >= 0 ? state.pendingAvgBudget : 0;
-  const pendingBigBudget = Number.isFinite(state.pendingBigBudget) && state.pendingBigBudget >= 0 ? state.pendingBigBudget : 0;
   const completed = state.completed === true;
   assertNonNegativeNumber(cash, 'cash');
   assertNonNegativeNumber(holdingQuantity, 'holdingQuantity');
@@ -70,7 +68,7 @@ function normalizeState(state, params) {
   }
   assertNonNegativeNumber(averagePrice, 'averagePrice');
   assertNonNegativeNumber(investedAmount, 'investedAmount');
-  return { cash, holdingQuantity, averagePrice, investedAmount, realizedProfit, currentRound, cycleBudget, pendingAvgBudget, pendingBigBudget, completed };
+  return { cash, holdingQuantity, averagePrice, investedAmount, realizedProfit, currentRound, cycleBudget, completed };
 }
 
 export function initialState(params) {
@@ -83,8 +81,6 @@ export function initialState(params) {
     realizedProfit: 0,
     currentRound: 0,
     cycleBudget: p.totalBudget,
-    pendingAvgBudget: 0,
-    pendingBigBudget: 0,
     completed: false
   };
 }
@@ -144,8 +140,6 @@ function sellQty(s, p, sellPrice, qty, roundNo, reason, tradeDate, restartCycle 
     realizedProfit: s.realizedProfit + realizedDelta,
     currentRound: restartCycle ? 0 : s.currentRound,
     cycleBudget: restartCycle ? (s.cash + proceeds + remainingQty * sellPrice) : s.cycleBudget,
-    pendingAvgBudget: restartCycle ? 0 : s.pendingAvgBudget,
-    pendingBigBudget: restartCycle ? 0 : s.pendingBigBudget,
     completed: completeRun
   };
   return {
@@ -283,17 +277,17 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, params, state, 
   }
 
   // 4) 일반 매수: 평단가 매수/큰수 매수 분할.
+  // 2회차부터: 회차 예산을 절반씩 — 평단가 매수 / 큰수 매수. 미체결 예산은 이월하지 않는다.
   const halfBudget = T / 2;
   const averageBuyPrice = s.averagePrice;
   const bigBuyPrice = averageBuyPrice * (1 + p.bigBuyPremiumRate);
   const decisions = [];
-  let workingState = { ...s, pendingAvgBudget: 0, pendingBigBudget: 0 };
+  let workingState = { ...s };
 
   // 평단가 매수: 일봉 저가가 지정가에 닿으면 min(시가, 지정가)에 체결.
-  const avgBudget = halfBudget + s.pendingAvgBudget;
   if (low <= averageBuyPrice) {
     const fillPrice = Math.min(open, averageBuyPrice);
-    const available = Math.min(avgBudget, workingState.cash);
+    const available = Math.min(halfBudget, workingState.cash);
     const qty = quantityForBudget(available, fillPrice, p);
     if (qty > 0) {
       const usedAmount = qty * fillPrice;
@@ -301,19 +295,14 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, params, state, 
         `평단가 매수: 일봉 저가 ${fmtMoney(low, p)}가 평단가 지정가 ${fmtMoney(averageBuyPrice, p)}에 닿아 ${fmtQty(qty)}주를 ${fmtMoney(fillPrice, p)}에 매수했습니다. 사용 금액은 ${fmtMoney(usedAmount, p)}입니다.`;
       const dec = buyFill({ s: workingState, params: p, qty, fillPrice, roundNo, reason, tradeDate, half: 'AVG' });
       decisions.push(dec);
-      workingState = { ...dec.nextState, pendingAvgBudget: Math.max(0, avgBudget - usedAmount) };
-    } else {
-      workingState.pendingAvgBudget = avgBudget;
+      workingState = dec.nextState;
     }
-  } else {
-    workingState.pendingAvgBudget = avgBudget;
   }
 
   // 큰수 매수: 일봉 저가가 평단가 기준 지정가에 닿으면 min(시가, 지정가)에 체결.
-  const bigBudget = halfBudget + s.pendingBigBudget;
   if (low <= bigBuyPrice) {
     const fillPrice = Math.min(open, bigBuyPrice);
-    const available = Math.min(bigBudget, workingState.cash);
+    const available = Math.min(halfBudget, workingState.cash);
     const qty = quantityForBudget(available, fillPrice, p);
     if (qty > 0) {
       const usedAmount = qty * fillPrice;
@@ -321,18 +310,14 @@ export function evaluateDay({ mode = TradingMode.BACKTEST, ohlc, params, state, 
         `큰수 매수: 일봉 저가 ${fmtMoney(low, p)}가 큰수 지정가 ${fmtMoney(bigBuyPrice, p)}에 닿아 ${fmtQty(qty)}주를 ${fmtMoney(fillPrice, p)}에 매수했습니다. 사용 금액은 ${fmtMoney(usedAmount, p)}입니다.`;
       const dec = buyFill({ s: workingState, params: p, qty, fillPrice, roundNo, reason, tradeDate, half: 'BIG' });
       decisions.push(dec);
-      workingState = { ...dec.nextState, pendingBigBudget: Math.max(0, bigBudget - usedAmount) };
-    } else {
-      workingState.pendingBigBudget = bigBudget;
+      workingState = dec.nextState;
     }
-  } else {
-    workingState.pendingBigBudget = bigBudget;
   }
 
   if (decisions.length === 0) {
     const target = s.averagePrice * (1 + p.targetProfitRate);
     const reason =
-      `관망: 일봉 저가 ${fmtMoney(low, p)}가 평단가 지정가 ${fmtMoney(averageBuyPrice, p)}와 큰수 지정가 ${fmtMoney(bigBuyPrice, p)} 모두에 닿지 않았습니다. 장중 고가도 목표가 ${fmtMoney(target, p)}에 닿지 않았습니다. 미사용 예산은 다음 평가로 이월합니다.`;
+      `관망: 일봉 저가 ${fmtMoney(low, p)}가 평단가 지정가 ${fmtMoney(averageBuyPrice, p)}와 큰수 지정가 ${fmtMoney(bigBuyPrice, p)} 모두에 닿지 않았습니다. 장중 고가도 목표가 ${fmtMoney(target, p)}에 닿지 않았습니다.`;
     decisions.push(makeHold(workingState, p, close, roundNo, reason, tradeDate));
   }
 
