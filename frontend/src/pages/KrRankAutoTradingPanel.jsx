@@ -26,8 +26,21 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
   const [error, setError] = useState('');
   const [budgetPreview, setBudgetPreview] = useState(null);
   const [budgetPreviewLoading, setBudgetPreviewLoading] = useState(false);
+  const [accountSummary, setAccountSummary] = useState(null);
+  const [accountSummaryLoading, setAccountSummaryLoading] = useState(false);
 
-  // 매수 금액 칸을 누르면 KIS 계좌의 원화 주문가능현금을 조회해 보여 준다(라오어 폼과 동일).
+  async function loadAccountSummary() {
+    setAccountSummaryLoading(true);
+    try {
+      setAccountSummary(await getAutoTradingBuyingPowerPreview({ market: 'KR' }));
+    } catch (err) {
+      setAccountSummary({ error: err.message });
+    } finally {
+      setAccountSummaryLoading(false);
+    }
+  }
+
+  // 매수 금액 칸을 누르면 KIS 계좌의 원화 매수가능금액을 조회해 보여 준다(라오어 폼과 동일).
   async function loadBudgetPreview() {
     if (budgetPreviewLoading) return;
     if (budgetPreview && !budgetPreview.error) return;
@@ -69,6 +82,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
 
   useEffect(() => {
     refresh().catch((err) => setError(err.message));
+    loadAccountSummary().catch(() => {});
   }, []);
 
   async function submitStrategy(event) {
@@ -151,16 +165,22 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
         </p>
       )}
 
+      <KrRankAccountSummaryPanel
+        summary={accountSummary}
+        loading={accountSummaryLoading}
+        onRefresh={loadAccountSummary}
+      />
+
       <section className="panel section">
         <div className="panel-heading">
           <div>
             <h3>한국 국장 상승률 랭킹 전략이란?</h3>
-            <p>오전 9시 10분(선택 시 11시 30분 점심)에 한국주식 등락률 상위 랭킹을 조회해, 등락률 20% 미만 종목 중 1위를 진입 금액 한도 안에서 시장가로 매수하고 목표 수익·손절로 청산합니다. 서버가 1분 간격으로 평가합니다.</p>
+            <p>오전 9시 10분(선택 시 11시 30분 점심)에 한국주식 등락률 상위 랭킹을 조회해, 등락률 25% 미만 종목 중 1위를 진입 금액 한도 안에서 시장가로 매수하고 목표 수익·손절로 청산합니다. 서버가 1분 간격으로 평가합니다.</p>
           </div>
         </div>
         <ul className="kr-rank-rule-list">
           <li>오전·점심 각 진입 구간에서 하루 한 번씩 매수합니다. 점심 진입을 켜면 하루 두 번까지 매수할 수 있습니다. 매도했더라도 같은 구간에서 다시 매수하지 않습니다.</li>
-          <li>등락률 20% 이상 종목은 매수 대상에서 제외합니다 (상한가까지 여유 확보).</li>
+          <li>등락률 25% 이상 종목은 매수 대상에서 제외합니다 (상한가까지 여유 확보).</li>
           <li>진입 구간별(오전/점심)로 매수 금액·목표 수익률·손절 기준을 따로 정합니다.</li>
         </ul>
       </section>
@@ -317,30 +337,88 @@ function Metric({ label, value, hint }) {
   );
 }
 
-// 매수 금액 칸 아래에 KIS 계좌 원화 주문가능현금을 보여 주고, 버튼으로 채워 넣게 한다.
+// 매수 금액 칸 아래에 KIS 계좌 매수가능금액을 보여 주고, 버튼으로 채워 넣게 한다.
 function KrwBalanceHint({ preview, loading, onApply }) {
   if (loading) {
     return <p className="helper">한국투자증권에서 잔액을 확인하는 중입니다…</p>;
   }
   if (!preview) {
-    return <p className="helper">칸을 누르면 한국투자증권 주문가능현금을 보여 드립니다.</p>;
+    return <p className="helper">칸을 누르면 한국투자증권 매수가능금액을 보여 드립니다.</p>;
   }
   if (preview.error) {
     return <p className="helper">잔액 확인 실패: {preview.error}</p>;
   }
   const cash = Number(preview.cashAvailable || 0);
   if (cash <= 0) {
-    return <p className="helper">한국투자증권 주문가능현금이 0입니다. 계좌에 원화가 있는지 확인하세요.</p>;
+    return <p className="helper">한국투자증권 매수가능금액이 0입니다. 계좌에 원화가 있는지 확인하세요.</p>;
   }
   return (
     <div className="budget-hint">
-      <p className="helper">한국투자증권 주문가능현금을 기준으로 채우려면 누르세요. 직접 입력해도 됩니다.</p>
+      <p className="helper">한국투자증권 매수가능금액을 기준으로 채우려면 누르세요. 직접 입력해도 됩니다.</p>
       <div className="budget-hint-actions">
         <button type="button" className="ghost sm" onClick={() => onApply(cash)}>
           현재 잔고로 채우기 · {formatKrw(cash)}
         </button>
       </div>
     </div>
+  );
+}
+
+function KrRankAccountSummaryPanel({ summary, loading, onRefresh }) {
+  if (loading && !summary) {
+    return (
+      <section className="panel section account-summary-panel">
+        <div className="panel-heading">
+          <div>
+            <h3>연결 계좌</h3>
+            <p>한국투자증권에서 계좌 정보를 가져오는 중입니다.</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+  if (summary?.error) {
+    return (
+      <section className="panel section account-summary-panel warning">
+        <div className="panel-heading">
+          <div>
+            <h3>연결 계좌 조회 실패</h3>
+            <p>
+              {summary.error}
+              <br />
+              <span className="helper">
+                대부분의 원인: KIS 설정 화면에서 계좌번호 또는 계좌 상품코드가 비어 있거나, App Key·App Secret이 잘못되었거나,
+                서버에 IP가 등록되어 있지 않은 경우입니다.
+              </span>
+            </p>
+          </div>
+          <button type="button" className="ghost sm" onClick={onRefresh} disabled={loading}>
+            다시 조회
+          </button>
+        </div>
+      </section>
+    );
+  }
+  const cash = Number(summary?.cashAvailable || 0);
+  return (
+    <section className="panel section account-summary-panel">
+      <div className="panel-heading">
+        <div>
+          <h3>연결 계좌</h3>
+          <p>한국투자증권에서 조회한 원화 매수가능금액입니다. 계좌번호 원문은 표시하지 않습니다.</p>
+        </div>
+        <button type="button" className="ghost sm" onClick={onRefresh} disabled={loading}>
+          {loading ? '조회 중…' : '다시 조회'}
+        </button>
+      </div>
+      <div className="metric-grid compact-grid">
+        <Metric
+          label="매수가능금액"
+          value={formatKrw(cash)}
+          hint={cash > 0 ? '바로 주문 가능' : '계좌에 원화 잔고가 없거나 매도 결제가 남아 있지 않음'}
+        />
+      </div>
+    </section>
   );
 }
 

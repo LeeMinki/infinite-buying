@@ -2,8 +2,8 @@
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
 // 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
-// 20% — 상한가(+30%)까지 헤드룸을 충분히 남겨 목표 수익 도달 여지를 확보한다.
-export const MAX_FLUCTUATION_RATE = 0.2;
+// 25% — 상한가(+30%)까지 헤드룸을 남겨 목표 수익 도달 여지를 확보한다.
+export const MAX_FLUCTUATION_RATE = 0.25;
 
 // 진입 구간. 스케줄러 tick 간격(기본 10분)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {
@@ -24,7 +24,7 @@ export function resolveEntryWindow(now = new Date(), { lunchEntryEnabled = false
   return null;
 }
 
-// 등락률 상위 랭킹에서 등락률 30% 이상 종목을 제외하고 남은 첫 종목을 고른다.
+// 등락률 상위 랭킹에서 등락률 25% 이상 종목을 제외하고 남은 첫 종목을 고른다.
 // 후보가 없으면 null.
 export function selectRankingCandidate(rankingList = [], { maxFluctuationRate = MAX_FLUCTUATION_RATE } = {}) {
   if (!Array.isArray(rankingList)) return null;

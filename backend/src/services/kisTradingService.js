@@ -218,12 +218,17 @@ export class KisTradingService {
       }
     });
     const row = data.output || data.output1 || data;
+    // KIS 국내 매수가능금액 응답 필드:
+    //   nrcvb_buy_amt / nrcvb_buy_qty : 미수없는매수금액·수량. 예수금 + 매도결제잔액(D+2 재사용금) 등을
+    //                                    합산한, 신용 미수 없이 살 수 있는 실제 금액. 자동매매가 사용하기에 적합.
+    //   ord_psbl_cash                : 주문가능현금. 즉시 출금 가능한 현금만 잡힌다.
+    //   max_buy_amt / max_buy_qty    : 신용 미수까지 포함한 최대 매수가능금액. 미수는 사용하지 않으므로 보수적 fallback.
     return {
       symbol,
       market: 'KR',
       currency: 'KRW',
-      cashAvailable: num(row.ord_psbl_cash ?? row.max_buy_amt ?? row.nrcvb_buy_amt),
-      buyableQuantity: num(row.ord_psbl_qty ?? row.max_buy_qty),
+      cashAvailable: num(row.nrcvb_buy_amt ?? row.ord_psbl_cash ?? row.max_buy_amt),
+      buyableQuantity: num(row.nrcvb_buy_qty ?? row.ord_psbl_qty ?? row.max_buy_qty),
       source: 'KIS'
     };
   }
