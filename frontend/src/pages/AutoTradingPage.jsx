@@ -20,6 +20,7 @@ import {
 import { LaorStrategyGuide } from '../components/LaorStrategyGuide.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
 import { KrRankAutoTradingPanel } from './KrRankAutoTradingPanel.jsx';
+import { UsRankAutoTradingPanel } from './UsRankAutoTradingPanel.jsx';
 
 export function AutoTradingPage({ onBack, initialStrategy }) {
   const [tab, setTab] = useState('laor');
@@ -275,10 +276,23 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         >
           한국 국장 상승률 랭킹 전략
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'us-rank'}
+          className={`strategy-type-tab ${tab === 'us-rank' ? 'active' : ''}`}
+          onClick={() => setTab('us-rank')}
+        >
+          미국 국장 상승률 랭킹 전략
+        </button>
       </nav>
 
       {tab === 'kr-rank' && (
         <KrRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} />
+      )}
+
+      {tab === 'us-rank' && (
+        <UsRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} />
       )}
 
       {tab === 'laor' && (

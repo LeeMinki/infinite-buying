@@ -338,6 +338,45 @@ export class KisMarketDataProvider {
     return rows;
   }
 
+  // 해외주식 상승율/하락율 (KIS 해외주식-041).
+  // KIS 문서: GET /uapi/overseas-stock/v1/ranking/updown-rate, TR HHDFS76290000.
+  // GUBN=1 상승율, GUBN=0 하락율. 이 앱은 상승률 랭킹만 사용한다.
+  async getOverseasFluctuationRanking(options = {}) {
+    const exchanges = normalizeRankingExchanges(options.exchange);
+    const rows = [];
+    for (const exchange of exchanges) {
+      const data = await this.requestJson('/uapi/overseas-stock/v1/ranking/updown-rate', {
+        trId: 'HHDFS76290000',
+        query: {
+          KEYB: '',
+          AUTH: '',
+          EXCD: exchange,
+          GUBN: '1'
+        }
+      });
+      for (const row of pickRankingArray(data)) {
+        const symbol = String(row.symb ?? row.symbol ?? row.pdno ?? '').trim().toUpperCase();
+        const price = normalizeNumber(row.last ?? row.price ?? row.ovrs_nmix_prpr ?? row.stck_prpr);
+        const rawRate = row.rate ?? row.prdy_ctrt ?? row.fluctuationRate;
+        if (rawRate === undefined || rawRate === null || rawRate === '') continue;
+        const rate = normalizeSignedNumber(rawRate);
+        if (!symbol || !price || !Number.isFinite(rate)) continue;
+        rows.push({
+          symbol,
+          name: String(row.name ?? row.ename ?? row.prdt_name ?? symbol).trim() || symbol,
+          market: 'US',
+          exchange,
+          price,
+          fluctuationRate: rate / 100,
+          rank: normalizeNumber(row.rank) || null,
+          source: 'KIS_API'
+        });
+      }
+    }
+    rows.sort((a, b) => b.fluctuationRate - a.fluctuationRate);
+    return rows;
+  }
+
   async requestJson(path, { trId, query }) {
     const context = await getAuthContext(this.userId);
     const url = new URL(`${context.baseUrl}${path}`);
@@ -451,9 +490,9 @@ function pickRankingArray(data) {
 
 // 부호를 보존하는 숫자 파싱 (등락률은 음수일 수 있다).
 function normalizeSignedNumber(value) {
-  if (value === undefined || value === null || value === '') return 0;
-  const number = Number(String(value).replace(/,/g, ''));
-  return Number.isFinite(number) ? number : 0;
+  if (value === undefined || value === null || value === '') return Number.NaN;
+  const number = Number(String(value).replace(/,/g, '').replace('%', '').replace('+', '').trim());
+  return Number.isFinite(number) ? number : Number.NaN;
 }
 
 function isFailureResponse(data) {
@@ -480,6 +519,13 @@ function normalizeMarket(value, symbol) {
 
 function normalizeExchange(value) {
   return String(value || DEFAULT_EXCHANGE).trim().toUpperCase();
+}
+
+function normalizeRankingExchanges(value) {
+  const raw = String(value || 'NAS').trim().toUpperCase();
+  if (!raw || raw === 'ALL') return uniqueExchanges();
+  const exchange = normalizeExchange(raw);
+  return uniqueExchanges().includes(exchange) ? [exchange] : [exchange];
 }
 
 function uniqueExchanges() {

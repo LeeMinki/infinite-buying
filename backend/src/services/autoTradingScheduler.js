@@ -1,13 +1,16 @@
 import { env } from '../config/env.js';
 import { evaluateRunningStrategies } from './autoTradingService.js';
 import { evaluateRunningStrategies as evaluateRunningKrRankStrategies } from './krRankService.js';
+import { evaluateRunningStrategies as evaluateRunningUsRankStrategies } from './usRankService.js';
 
-// 라오어 무한매수법은 기본 10분 간격, 한국 국장 상승률 랭킹 전략은 진입 시각(09:10·11:30)을
-// 놓치지 않도록 1분 간격으로 평가한다. 두 스케줄러는 별도 타이머로 독립 동작한다.
+// 라오어 무한매수법은 기본 10분 간격, 랭킹 전략은 진입·청산 시각을 놓치지 않도록 1분 간격으로 평가한다.
+// 각 스케줄러는 별도 타이머로 독립 동작한다.
 let laorTimer = null;
 let krRankTimer = null;
+let usRankTimer = null;
 let laorRunning = false;
 let krRankRunning = false;
+let usRankRunning = false;
 
 export function startAutoTradingScheduler() {
   if (!env.autoTradingSchedulerEnabled) return;
@@ -21,13 +24,20 @@ export function startAutoTradingScheduler() {
     krRankTimer = setInterval(krRankTick, interval);
     krRankTimer.unref?.();
   }
+  if (!usRankTimer) {
+    const interval = Math.max(10_000, env.usRankSchedulerIntervalMs);
+    usRankTimer = setInterval(usRankTick, interval);
+    usRankTimer.unref?.();
+  }
 }
 
 export function stopAutoTradingScheduler() {
   if (laorTimer) clearInterval(laorTimer);
   if (krRankTimer) clearInterval(krRankTimer);
+  if (usRankTimer) clearInterval(usRankTimer);
   laorTimer = null;
   krRankTimer = null;
+  usRankTimer = null;
 }
 
 async function laorTick() {
@@ -51,5 +61,17 @@ async function krRankTick() {
     console.error('KR rank scheduler failed:', error.message);
   } finally {
     krRankRunning = false;
+  }
+}
+
+async function usRankTick() {
+  if (usRankRunning) return;
+  usRankRunning = true;
+  try {
+    await evaluateRunningUsRankStrategies();
+  } catch (error) {
+    console.error('US rank scheduler failed:', error.message);
+  } finally {
+    usRankRunning = false;
   }
 }

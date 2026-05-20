@@ -161,3 +161,50 @@ test('KIS provider searches overseas product info including fractional flags', a
     assert.ok(items.some((item) => item.fractionalTradingAvailable === true));
   });
 });
+
+test('KIS provider normalizes overseas fluctuation ranking and filters invalid rates', async () => {
+  await withMockedFetch(async (url) => {
+    const text = String(url);
+    if (text.endsWith('/oauth2/tokenP')) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok-market-rank', expires_in: 3600 }) };
+    }
+    assert.ok(text.includes('/uapi/overseas-stock/v1/ranking/updown-rate'));
+    const parsed = new URL(text);
+    assert.equal(parsed.searchParams.get('EXCD'), 'NAS');
+    assert.equal(parsed.searchParams.get('GUBN'), '1');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        rt_cd: '0',
+        output2: [
+          { symb: 'AAA', name: 'Alpha', last: '10.5', rate: 'bad', rank: '1' },
+          { symb: 'BBB', name: 'Beta', last: '20', rate: '+12.3%', rank: '2' },
+          { symb: 'CCC', name: 'Gamma', last: '30', rate: '4.5', rank: '3' }
+        ]
+      })
+    };
+  }, async () => {
+    const provider = new KisMarketDataProvider(alice.id);
+    const rows = await provider.getOverseasFluctuationRanking({ exchange: 'NAS' });
+    assert.deepEqual(rows.map((row) => row.symbol), ['BBB', 'CCC']);
+    assert.equal(rows[0].market, 'US');
+    assert.equal(rows[0].exchange, 'NAS');
+    assert.equal(rows[0].price, 20);
+    assert.ok(Math.abs(rows[0].fluctuationRate - 0.123) < 0.000001);
+  });
+});
+
+test('KIS provider returns empty overseas ranking response as an empty list', async () => {
+  await withMockedFetch(async (url) => {
+    const text = String(url);
+    if (text.endsWith('/oauth2/tokenP')) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok-market-rank-empty', expires_in: 3600 }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ rt_cd: '0', output2: [] }) };
+  }, async () => {
+    const provider = new KisMarketDataProvider(alice.id);
+    const rows = await provider.getOverseasFluctuationRanking({ exchange: 'NAS' });
+    assert.deepEqual(rows, []);
+  });
+});

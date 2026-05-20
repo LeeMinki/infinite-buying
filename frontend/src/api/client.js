@@ -144,6 +144,22 @@ export const listKrRankOrders = (id) => request(`/api/kr-rank/strategies/${id}/o
 export const listKrRankDecisions = (id) => request(`/api/kr-rank/strategies/${id}/decisions`);
 export const listKrRankEntries = (id) => request(`/api/kr-rank/strategies/${id}/entries`);
 
+// 미국 국장 상승률 랭킹 자동매매 전략
+export const getUsRankOverview = () => request('/api/us-rank/overview');
+export const listUsRankStrategies = () => request('/api/us-rank/strategies');
+export const createUsRankStrategy = (payload) => request('/api/us-rank/strategies', {
+  method: 'POST',
+  body: JSON.stringify(payload)
+});
+export const getUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}`);
+export const deleteUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}`, { method: 'DELETE' });
+export const startUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/start`, { method: 'POST' });
+export const stopUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/stop`, { method: 'POST' });
+export const evaluateUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/evaluate`, { method: 'POST' });
+export const listUsRankTrades = (id) => request(`/api/us-rank/strategies/${id}/trades`);
+export const listUsRankOrders = (id) => request(`/api/us-rank/strategies/${id}/orders`);
+export const listUsRankDecisions = (id) => request(`/api/us-rank/strategies/${id}/decisions`);
+
 function normalizeMarket(value, symbol) {
   const market = String(value || '').trim().toUpperCase();
   if (market === 'KR' || market === 'KOSPI' || market === 'KOSDAQ') return 'KR';
