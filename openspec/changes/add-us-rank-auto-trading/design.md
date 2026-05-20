@@ -16,7 +16,7 @@
 - 매수 → +2% 익절 → 다음 매수 → ... 반복. 어느 매매든 -5% 손절이 한 번이라도 발생하면 그날 신규 매수 정지.
 - KST 04:30 일률 청산 + 신규 매수 정지.
 - DST 자동 감지(미국 동부 시각 변환).
-- KIS 해외주식 등락률 상위 랭킹 → 등락률 상한 필터 → 1순위 종목 현재가 지정가 매수.
+- KIS 해외주식 등락률 상위 랭킹 → 첫 유효 1순위 종목 현재가 지정가 매수. 미국장은 가격제한폭이 없어 별도 상승률 상한 필터를 두지 않는다.
 - 매수 금액 기본은 자동 예산(KIS 매수가능금액 전액). 고정 USD 금액 입력 옵션도 제공.
 - 실주문 실행 설정·1분 스케줄러·안전 검증·멱등성·판단 로그·주문 이력 패턴을 KR 랭킹과 공유.
 
@@ -25,7 +25,7 @@
 - 자동 환전 — 한국 랭킹과 마찬가지로 사용자가 KIS 통합증거금/환전을 미리 처리해야 함.
 - 프리마켓·애프터마켓(정규장 외) 매매.
 - 다종목 동시 보유 — 한 전략은 한 시점에 한 종목만 보유.
-- 동일 종목 재매수 차단 — top gainer가 자주 바뀌므로 자연스럽게 회피되며, 강제 차단 규칙은 두지 않는다.
+- 동일 종목 왕복 매매 — 보유 종목이 현재 랭킹의 첫 유효 종목이면 익절 기준에 닿아도 매도하지 않는다.
 - 백테스트 지원, 손절 후 회복(같은 날 다시 매수 시작).
 - 주문 실패 자동 재시도 한도 초과 시 자동 복구.
 
@@ -36,9 +36,9 @@
 KR 랭킹과 동일한 근거: 기존 두 전략의 테이블·FK·인덱스에 분기를 끼워 넣으면 회귀 위험이 크다.
 
 **결정**: 다음 다섯 테이블을 새로 만든다.
-- `us_rank_strategies` — 전략 본체. status, 자동 예산 여부, 고정 매수 금액(USD), 익절 비율, 손절 비율, 등락률 상한, 강제 청산 시각(KST), 거래소 코드(NASDAQ/NYSE/AMEX 또는 전체), 통화, 보유 정보, 오늘 잠금 여부(`day_locked_out`), 오늘 잠금 기준 거래일.
-- `us_rank_trades` — **한 거래일 안의 매매 사이클 단위 기록**. KR 랭킹은 진입 구간당 1회였지만 US는 반복이라 진입 구간 개념 대신 "trade cycle"로 부른다. trade_date·trade_seq(그날 N번째 매매)·symbol·entry_price·exit_price·exit_reason(TARGET/STOP_LOSS/FORCE_CLOSE)·profit_rate·status(`SELECTED`/`BOUGHT`/`CLOSED`/`FAILED`)를 저장.
-- `us_rank_orders` — 주문 라이프사이클. `idempotency_key` 형식은 `{YYYYMMDD}-{strategyId}-{tradeSeq}-{BUY|SELL}`. sell_reason은 `TARGET`/`STOP_LOSS`/`FORCE_CLOSE`.
+- `us_rank_strategies` — 전략 본체. status, 자동 예산 여부, 고정 매수 금액(USD), 익절 비율, 손절 비율, 강제 청산 시각(KST), 거래소 코드(NASDAQ/NYSE/AMEX 또는 전체), 통화, 누적 목표 수익률과 시작 기준 자본, 보유 정보, 오늘 잠금 여부(`day_locked_out`), 오늘 잠금 기준 거래일.
+- `us_rank_trades` — **한 거래일 안의 매매 사이클 단위 기록**. KR 랭킹은 진입 구간당 1회였지만 US는 반복이라 진입 구간 개념 대신 "trade cycle"로 부른다. trade_date·trade_seq(그날 N번째 매매)·symbol·entry_price·exit_price·exit_reason(TARGET/STOP_LOSS/FORCE_CLOSE/CYCLE_COMPLETE)·profit_rate·status(`SELECTED`/`BOUGHT`/`CLOSED`/`FAILED`)를 저장.
+- `us_rank_orders` — 주문 라이프사이클. `idempotency_key` 형식은 `{YYYYMMDD}-{strategyId}-{tradeSeq}-{BUY|SELL}`. sell_reason은 `TARGET`/`STOP_LOSS`/`FORCE_CLOSE`/`CYCLE_COMPLETE`.
 - `us_rank_decision_logs` — 매 평가의 판단·trade_seq·랭킹/선택 종목·사유.
 - `us_rank_locks` — `(strategy_id, lock_key) UNIQUE` 동시 평가 방지.
 
@@ -81,7 +81,7 @@ KR 랭킹과 같은 이유로 1분 폴링이 필요하다. 정규장 시작(23:3
 - 주요 입력: `KEYB=''`, `AUTH=''`, `EXCD`(`NAS`/`NYS`/`AMS`), `GUBN='1'`(상승율)
 - 주요 응답: `symb`(종목코드), `name`/`ename`(종목명), `last`(현재가), `rate`(등락률), `rank`(순위)
 
-응답에서 종목코드·종목명·현재가·등락률·거래소를 정규화해 등락률 내림차순 리스트로 반환한다. 진입 시 등락률 ≥ `max_fluctuation_rate`(기본 0.20 = 20%) 종목을 제외하고 남은 첫 종목을 선택한다. 미국주식은 가격제한폭이 없지만, 일중 급등 종목은 변동성이 극단적이라 상한 필터를 KR 랭킹과 동일하게 적용한다.
+응답에서 종목코드·종목명·현재가·등락률·거래소를 정규화해 등락률 내림차순 리스트로 반환한다. 진입 시에는 가격·등락률·종목코드가 유효한 첫 종목을 그대로 선택한다. 미국주식은 한국처럼 가격제한폭이 없으므로 상승률 상한 필터를 두지 않는다.
 
 선택 종목이 없으면 매수하지 않고 판단 기록을 남긴다. 랭킹 조회 자체가 실패하면 ERROR/SKIP로 기록하고 trade 행을 만들지 않아 다음 tick에서 재시도된다.
 
@@ -115,28 +115,33 @@ KR 랭킹은 `kr_rank_entries(strategy_id, trade_date, entry_window)` UNIQUE로 
 
 ### 7. 익절·손절·강제 청산 — 매도 사유 세 가지
 
-`us_rank_orders.sell_reason` CHECK: `('TARGET', 'STOP_LOSS', 'FORCE_CLOSE')`.
+`us_rank_orders.sell_reason` CHECK: `('TARGET', 'STOP_LOSS', 'FORCE_CLOSE', 'CYCLE_COMPLETE')`.
 
 매도 판단(`evaluateSellPath` 변형):
 1. profit_rate = (current - avg) / avg
-2. profit_rate >= target_profit_rate → SELL TARGET (기본 +2%)
+2. 누적 목표 수익률이 설정되어 있고 총자산이 시작 기준 자본 대비 목표에 닿음 → SELL CYCLE_COMPLETE 후 전략 STOPPED
 3. profit_rate <= -stop_loss_rate → SELL STOP_LOSS (기본 -5%, 매도 후 `day_locked_out=true`)
-4. `isUsForceCloseTime(now, force_close_kst)` true → SELL FORCE_CLOSE (`day_locked_out=true`, 신규 매수 정지)
-5. 위 셋 다 아니면 HOLD
+4. profit_rate >= target_profit_rate → 현재 랭킹 첫 유효 종목 확인. 보유 종목이 계속 1위이면 HOLD, 아니면 SELL TARGET
+5. `isUsForceCloseTime(now, force_close_kst)` true → SELL FORCE_CLOSE (`day_locked_out=true`, 신규 매수 정지)
+6. 위 조건이 모두 아니면 HOLD
 
 KIS 미국 일반 매수 주문은 문서상 일반 시장가 주문이 아니라 지정가·LOO·LOC·TWAP·VWAP 중심으로 제공된다. 1차 구현은 KIS 표준 해외 주문 경로를 재사용해 현재가 지정가로 주문한다. 매도도 같은 주문 경로를 사용하되, 주문 상태와 미체결은 다음 tick에서 다시 확인한다.
 
-### 8. 실주문 실행 설정·안전 검증 재사용
+### 8. 누적 목표 수익률 종료
+
+사용자는 선택적으로 누적 목표 수익률을 설정할 수 있다. 전략 시작 시점의 USD 매수가능금액을 `cycle_baseline_usd`로 저장하고, 평가 시점 총자산(`cashAvailable + holdingQuantity * currentPrice`)이 기준 자본 대비 목표 수익률에 도달하면 사이클을 끝낸다. 보유 종목이 있으면 `CYCLE_COMPLETE` 사유로 정리한 뒤 전략을 `STOPPED`로 바꾸고, 무보유 상태라면 주문 없이 전략을 `STOPPED`로 바꾼다.
+
+### 9. 실주문 실행 설정·안전 검증 재사용
 
 `user_trading_settings.live_order_enabled` 그대로 사용. 안전 검증은 KR 랭킹과 동일 패턴 — 미체결 주문·중복 주문·주문 수량 0·매수가능금액 부족·보유 수량 부족을 평가 시 차단.
 
 해외 주문은 라오어 미국 종목에서 이미 구현된 `placeOverseasOrder` 경로를 재사용한다(거래소 코드 정규화 포함).
 
-### 9. 판단 로그·주문 이력·진입 기록 UI 패턴 재사용
+### 10. 판단 로그·주문 이력·진입 기록 UI 패턴 재사용
 
 KR 랭킹 패널을 본떠 `UsRankAutoTradingPanel.jsx`를 만든다 — 연결 계좌 패널(USD 매수가능금액), 전략 만들기 폼, 전략 목록 카드, 전략 상세 metric, 판단 로그 테이블(평가금액 컬럼 포함), 주문 이력 테이블(총 금액 컬럼 포함), 진입(매매 사이클) 기록 테이블. `AutoTradingPage`에 세 번째 탭 추가.
 
-### 10. 휴장일·종목 비유효 시간 처리
+### 11. 휴장일·종목 비유효 시간 처리
 
 미국 휴장일(추수감사절·크리스마스·노동절 등)은 별도 캘린더가 없으면 알 수 없다. KIS API가 휴장일에 등락률 응답을 빈 리스트로 돌려주면 `selectRankingCandidate`가 null을 반환해 자연스럽게 SKIP된다. 응답 자체가 오류면 그 tick은 ERROR로 기록되고 다음 tick 재시도(아무것도 안 사고 끝나는 정상 동작). 이 1차 방어가 충분하지 않다고 판단되면 후속 change에서 휴장일 캘린더 도입을 검토한다(Open Questions).
 
@@ -162,8 +167,7 @@ KR 랭킹 패널을 본떠 `UsRankAutoTradingPanel.jsx`를 만든다 — 연결 
 
 ## Open Questions
 
-- 등락률 상한 기본값 20%가 미국 시장에 적합한지 — 한국은 가격제한폭(+30%)과 연결되지만 미국은 제한이 없어 실제 데이터로 조정 가능성. 1차 출시는 20%로 시작.
 - 강제 청산 시각(KST 04:30) 기본값이 미국 정규장 종료(KST 06:00 / 서머타임 05:00)보다 1시간 30분~30분 빠른데, 사용자가 종료 직전(예: KST 05:50)으로 더 미루고 싶을 수 있음. 폼 입력으로 받아 유연하게.
 - 미국 휴장일을 명시적으로 다룰지 — 1차 출시는 KIS 응답에만 의존, 후속 change에서 결정.
 - `day_locked_out` 해제 타이밍을 새 거래일 첫 평가로 잡았는데, "거래일"의 정의를 KST 기준(자정) vs ET 기준(미국 동부 자정) 중 무엇으로 할지. 정규장이 KST 자정을 가로지르므로 ET 거래일을 기준으로 잡는 게 자연스러움 — 구현 시 확정.
-- 동일 종목 연속 재매수 차단 옵션을 폼에 노출할지(기본은 차단 없음). 사용자 피드백 받고 결정.
+- 보유 종목이 현재 랭킹 1위일 때 익절 매도를 보류하는 규칙을 폼 옵션으로 노출할지. 현재는 기본 규칙으로 고정한다.

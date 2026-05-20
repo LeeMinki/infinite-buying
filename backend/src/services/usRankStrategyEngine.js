@@ -1,7 +1,6 @@
-// 미국 국장 상승률 랭킹 전략(US_RANK_MOMENTUM)의 순수 판단 로직.
+// 미국 상승률 랭킹 전략(US_RANK_MOMENTUM)의 순수 판단 로직.
 // KIS 호출·DB 기록은 usRankService 가 담당하고, 여기서는 시간 판정과 매수/매도 판단만 한다.
 
-export const MAX_FLUCTUATION_RATE = 0.20;
 export const DEFAULT_TARGET_PROFIT_RATE = 0.02;
 export const DEFAULT_STOP_LOSS_RATE = 0.05;
 export const DEFAULT_FORCE_CLOSE_KST = '04:30';
@@ -65,13 +64,14 @@ export function parseHhmmMinutes(value) {
   return hours * 60 + minutes;
 }
 
-export function selectRankingCandidate(rankingList = [], { maxFluctuationRate = MAX_FLUCTUATION_RATE } = {}) {
+// 미국장은 한국처럼 가격제한폭(상한가)이 없어 등락률 상한 필터를 두지 않는다.
+// 가장 상승률 높은 종목부터 검사해 유효한 첫 종목을 반환한다.
+export function selectRankingCandidate(rankingList = []) {
   if (!Array.isArray(rankingList)) return null;
   for (const item of rankingList) {
     if (!item || !item.symbol) continue;
     const rate = Number(item.fluctuationRate);
     if (!Number.isFinite(rate)) continue;
-    if (rate >= Number(maxFluctuationRate)) continue;
     const price = Number(item.price);
     if (!Number.isFinite(price) || price <= 0) continue;
     return {
@@ -85,6 +85,17 @@ export function selectRankingCandidate(rankingList = [], { maxFluctuationRate = 
   return null;
 }
 
+// 누적 평가 자산 = 현금(USD 매수가능금액) + 보유 평가액. baseline 대비 변화율로 사이클 목표 달성 여부를 본다.
+export function computeCycleProfitRate({ baselineUsd, cashAvailable, holdingQuantity, currentPrice }) {
+  const baseline = Number(baselineUsd);
+  if (!Number.isFinite(baseline) || baseline <= 0) return null;
+  const cash = Number(cashAvailable || 0);
+  const qty = Number(holdingQuantity || 0);
+  const price = Number(currentPrice || 0);
+  const totalAsset = cash + Math.max(0, qty) * Math.max(0, price);
+  return (totalAsset - baseline) / baseline;
+}
+
 export function computeBuyQuantity(cashAvailable, price) {
   const cash = Number(cashAvailable);
   const unit = Number(price);
@@ -92,12 +103,17 @@ export function computeBuyQuantity(cashAvailable, price) {
   return Math.floor(cash / unit);
 }
 
+// 우선순위: 사이클 목표 달성(CYCLE_COMPLETE) > 손절(STOP_LOSS) > 익절(TARGET) > 강제 청산(FORCE_CLOSE).
+//  - 사이클 완료가 1순위 — 영구 정지 트리거이므로 다른 조건보다 먼저 잡아 종료한다.
+//  - 손절은 익절보다 먼저 — 손실 보호가 항상 우선.
+//  - 강제 청산은 시간 도달인 만큼 익절·손절이 자연 발생하면 그쪽 사유로 기록.
 export function evaluateSell({
   currentPrice,
   averagePrice,
   targetProfitRate = DEFAULT_TARGET_PROFIT_RATE,
   stopLossRate = DEFAULT_STOP_LOSS_RATE,
-  forceCloseTriggered = false
+  forceCloseTriggered = false,
+  cycleTargetReached = false
 } = {}) {
   const price = Number(currentPrice);
   const avg = Number(averagePrice);
@@ -105,11 +121,14 @@ export function evaluateSell({
     return { decision: 'HOLD', sellReason: null, profitRate: 0 };
   }
   const profitRate = (price - avg) / avg;
-  if (profitRate >= Number(targetProfitRate)) {
-    return { decision: 'SELL', sellReason: 'TARGET', profitRate };
+  if (cycleTargetReached) {
+    return { decision: 'SELL', sellReason: 'CYCLE_COMPLETE', profitRate };
   }
   if (profitRate <= -Number(stopLossRate)) {
     return { decision: 'SELL', sellReason: 'STOP_LOSS', profitRate };
+  }
+  if (profitRate >= Number(targetProfitRate)) {
+    return { decision: 'SELL', sellReason: 'TARGET', profitRate };
   }
   if (forceCloseTriggered) {
     return { decision: 'SELL', sellReason: 'FORCE_CLOSE', profitRate };

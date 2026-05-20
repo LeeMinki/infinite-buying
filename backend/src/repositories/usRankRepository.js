@@ -4,17 +4,17 @@ export function createStrategy(userId, input) {
   const result = getDb().prepare(`
     INSERT INTO us_rank_strategies (
       user_id, auto_budget_enabled, fixed_buy_usd_amount, target_profit_rate,
-      stop_loss_rate, max_fluctuation_rate, force_close_kst, exchange, currency
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD')
+      stop_loss_rate, force_close_kst, exchange, currency, cycle_target_profit_rate
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', ?)
   `).run(
     userId,
     input.autoBudgetEnabled ? 1 : 0,
     input.fixedBuyUsdAmount,
     input.targetProfitRate,
     input.stopLossRate,
-    input.maxFluctuationRate,
     input.forceCloseKst,
-    input.exchange
+    input.exchange,
+    input.cycleTargetProfitRate ?? null
   );
   return getStrategy(userId, result.lastInsertRowid);
 }
@@ -23,20 +23,40 @@ export function updateStrategy(userId, id, input) {
   getDb().prepare(`
     UPDATE us_rank_strategies
     SET auto_budget_enabled = ?, fixed_buy_usd_amount = ?, target_profit_rate = ?,
-        stop_loss_rate = ?, max_fluctuation_rate = ?, force_close_kst = ?,
-        exchange = ?, updated_at = datetime('now')
+        stop_loss_rate = ?, force_close_kst = ?, exchange = ?,
+        cycle_target_profit_rate = ?, updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(
     input.autoBudgetEnabled ? 1 : 0,
     input.fixedBuyUsdAmount,
     input.targetProfitRate,
     input.stopLossRate,
-    input.maxFluctuationRate,
     input.forceCloseKst,
     input.exchange,
+    input.cycleTargetProfitRate ?? null,
     userId,
     id
   );
+  return getStrategy(userId, id);
+}
+
+export function setCycleBaseline(userId, id, baselineUsd) {
+  getDb().prepare(`
+    UPDATE us_rank_strategies
+    SET cycle_baseline_usd = ?, updated_at = datetime('now')
+    WHERE user_id = ? AND id = ?
+  `).run(baselineUsd, userId, id);
+  return getStrategy(userId, id);
+}
+
+export function markCycleCompleted(userId, id) {
+  getDb().prepare(`
+    UPDATE us_rank_strategies
+    SET cycle_completed = 1, cycle_completed_at = datetime('now'),
+        status = 'STOPPED', stopped_at = datetime('now'),
+        updated_at = datetime('now')
+    WHERE user_id = ? AND id = ?
+  `).run(userId, id);
   return getStrategy(userId, id);
 }
 
@@ -429,8 +449,11 @@ function toStrategy(row) {
     fixedBuyUsdAmount: row.fixed_buy_usd_amount,
     targetProfitRate: row.target_profit_rate,
     stopLossRate: row.stop_loss_rate,
-    maxFluctuationRate: row.max_fluctuation_rate,
     forceCloseKst: row.force_close_kst,
+    cycleTargetProfitRate: row.cycle_target_profit_rate,
+    cycleBaselineUsd: row.cycle_baseline_usd,
+    cycleCompleted: row.cycle_completed === 1,
+    cycleCompletedAt: row.cycle_completed_at,
     exchange: row.exchange,
     currency: row.currency,
     holdingSymbol: row.holding_symbol,

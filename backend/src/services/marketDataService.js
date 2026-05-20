@@ -53,7 +53,7 @@ export async function getDomesticFluctuationRanking(userId, options = {}) {
   return provider.getDomesticFluctuationRanking(options);
 }
 
-// 해외주식 상승률 상위 랭킹. 미국 랭킹 자동매매가 정규장 중 진입 후보를 고를 때 쓴다.
+// 해외주식 상승률 상위 랭킹. 미국장 랭킹 자동매매가 정규장 중 진입 후보를 고를 때 쓴다.
 export async function getOverseasFluctuationRanking(userId, options = {}) {
   const provider = new KisMarketDataProvider(userId);
   return provider.getOverseasFluctuationRanking(options);

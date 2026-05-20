@@ -51,11 +51,14 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', access_token: 'tok-us-rank', expires_in: 3600 });
     }
     if (text.includes('/uapi/overseas-stock/v1/ranking/updown-rate')) {
+      // 1위 종목은 state에서 동적으로 정해 익절 후 동일 종목 재매수 보류 케이스를 피한다.
+      // 정렬은 등락률 내림차순이라 top 종목에 가장 큰 rate를 줘서 selectRankingCandidate가 top을 픽하게 한다.
+      const top = state.rankingTopSymbol || 'HOT1';
       return json({
         rt_cd: '0',
         output2: [
-          { symb: 'HOT1', name: 'Hot One', last: '50', rate: '18.5', rank: '1' },
-          { symb: 'HOT2', name: 'Too Hot', last: '70', rate: '28.1', rank: '2' }
+          { symb: top, name: top, last: '50', rate: '50.0', rank: '1' },
+          { symb: 'OTHER', name: 'Other', last: '70', rate: '10.0', rank: '2' }
         ]
       });
     }
@@ -112,11 +115,10 @@ test('매수 후보 없음(SCHEDULED)은 trade 행을 만들지 않고 로그도
       fixedBuyUsdAmount: 1000,
       targetProfitRate: 0.02,
       stopLossRate: 0.05,
-      maxFluctuationRate: 0.2,
       forceCloseKst: '04:30',
       exchange: 'NAS'
     });
-    service.startStrategy(user.id, strategy.id);
+    await service.startStrategy(user.id, strategy.id);
     const startLogs = repo.listDecisionLogs(user.id, strategy.id).length;
     const startTrades = repo.listTrades(user.id, { strategyId: strategy.id }).length;
     await withMockedDate('2026-05-20T14:00:00Z', async () => {
@@ -130,7 +132,7 @@ test('매수 후보 없음(SCHEDULED)은 trade 행을 만들지 않고 로그도
     await withMockedDate('2026-05-20T14:01:00Z', async () => {
       const result = await service.evaluateStrategy(user.id, strategy.id);
       assert.equal(result.decision.decision, 'SKIP');
-      assert.ok(/매수 대상이 없어/.test(result.decision.reason));
+      assert.ok(/매수 후보가 없어/.test(result.decision.reason));
     });
     assert.equal(repo.listDecisionLogs(user.id, strategy.id).length, startLogs + 1);
     assert.equal(repo.listTrades(user.id, { strategyId: strategy.id }).length, startTrades);
@@ -140,18 +142,17 @@ test('매수 후보 없음(SCHEDULED)은 trade 행을 만들지 않고 로그도
 });
 
 test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금, 강제 청산을 기록한다', async () => {
-  const state = { price: 50, cash: 1000, balanceQuantity: 20, averagePrice: 50 };
+  const state = { price: 50, cash: 1000, balanceQuantity: 20, averagePrice: 50, rankingTopSymbol: 'HOT1', symbol: 'HOT1' };
   await withMockedFetch(state, async () => {
     const strategy = service.createStrategy(user.id, {
       autoBudgetEnabled: false,
       fixedBuyUsdAmount: 1000,
       targetProfitRate: 0.02,
       stopLossRate: 0.05,
-      maxFluctuationRate: 0.2,
       forceCloseKst: '04:30',
       exchange: 'NAS'
     });
-    service.startStrategy(user.id, strategy.id);
+    await service.startStrategy(user.id, strategy.id);
 
     await withMockedDate('2026-05-18T14:00:00Z', async () => {
       const firstBuy = await service.evaluateStrategy(user.id, strategy.id);
@@ -161,6 +162,7 @@ test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금,
     });
 
     state.price = 52;
+    state.rankingTopSymbol = 'HOT3'; // 익절 시점에 1위가 바뀌어 보유 종목과 다른 종목 → 매도 진행
     await withMockedDate('2026-05-18T14:01:00Z', async () => {
       const targetSell = await service.evaluateStrategy(user.id, strategy.id);
       assert.equal(targetSell.decision.decision, 'SELL');
@@ -179,11 +181,10 @@ test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금,
       fixedBuyUsdAmount: 1000,
       targetProfitRate: 0.02,
       stopLossRate: 0.05,
-      maxFluctuationRate: 0.2,
       forceCloseKst: '04:30',
       exchange: 'NAS'
     });
-    service.startStrategy(user.id, stopStrategy.id);
+    await service.startStrategy(user.id, stopStrategy.id);
     repo.setHolding(user.id, stopStrategy.id, { symbol: 'HOT1', symbolName: 'Hot One', exchange: 'NAS', quantity: 10, averagePrice: 50 });
     state.price = 47;
     await withMockedDate('2026-05-18T14:03:00Z', async () => {
@@ -197,11 +198,10 @@ test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금,
       fixedBuyUsdAmount: 1000,
       targetProfitRate: 0.02,
       stopLossRate: 0.05,
-      maxFluctuationRate: 0.2,
       forceCloseKst: '04:30',
       exchange: 'NAS'
     });
-    service.startStrategy(user.id, forceStrategy.id);
+    await service.startStrategy(user.id, forceStrategy.id);
     repo.setHolding(user.id, forceStrategy.id, { symbol: 'HOT1', symbolName: 'Hot One', exchange: 'NAS', quantity: 10, averagePrice: 50 });
     state.price = 50;
     state.averagePrice = 50;
@@ -209,6 +209,64 @@ test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금,
       const force = await service.evaluateStrategy(user.id, forceStrategy.id);
       assert.equal(force.decision.sellReason, 'FORCE_CLOSE');
       assert.equal(repo.getStrategy(user.id, forceStrategy.id).dayLockedOut, true);
+    });
+  });
+});
+
+test('익절 도달이지만 보유 종목이 지금도 상승률 1위면 매도를 보류한다', async () => {
+  const state = { price: 52, cash: 0, balanceQuantity: 20, averagePrice: 50, rankingTopSymbol: 'HOT1', symbol: 'HOT1' };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      autoBudgetEnabled: false,
+      fixedBuyUsdAmount: 1000,
+      targetProfitRate: 0.02,
+      stopLossRate: 0.05,
+      forceCloseKst: '04:30',
+      exchange: 'NAS'
+    });
+    await service.startStrategy(user.id, strategy.id);
+    repo.setHolding(user.id, strategy.id, { symbol: 'HOT1', symbolName: 'Hot One', exchange: 'NAS', quantity: 20, averagePrice: 50 });
+
+    await withMockedDate('2026-05-21T14:00:00Z', async () => {
+      // 익절 +4% 도달 + 랭킹 1위 == 보유 종목 → 매도하지 않고 HOLD
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(result.decision.decision, 'HOLD');
+      assert.ok(/지금도 상승률 1위/.test(result.decision.reason));
+    });
+
+    // 1위가 다른 종목으로 바뀌면 매도 진행
+    state.rankingTopSymbol = 'NEW1';
+    await withMockedDate('2026-05-21T14:01:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(result.decision.decision, 'SELL');
+      assert.equal(result.decision.sellReason, 'TARGET');
+    });
+  });
+});
+
+test('누적 목표 도달 시 강제 매도하고 전략을 영구 종료한다', async () => {
+  // baseline 1000, 보유 20주 × 52 = 1040 (현금 0) → +4%. cycle target 0.03이면 도달.
+  const state = { price: 52, cash: 0, balanceQuantity: 20, averagePrice: 50, rankingTopSymbol: 'OTHER', symbol: 'HOT1' };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      autoBudgetEnabled: false,
+      fixedBuyUsdAmount: 1000,
+      targetProfitRate: 0.10, // 익절 기준 안 닿게
+      stopLossRate: 0.20,
+      forceCloseKst: '04:30',
+      exchange: 'NAS',
+      cycleTargetProfitRate: 0.03
+    });
+    await service.startStrategy(user.id, strategy.id);
+    repo.setCycleBaseline(user.id, strategy.id, 1000);
+    repo.setHolding(user.id, strategy.id, { symbol: 'HOT1', symbolName: 'Hot One', exchange: 'NAS', quantity: 20, averagePrice: 50 });
+
+    await withMockedDate('2026-05-22T14:00:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(result.decision.sellReason, 'CYCLE_COMPLETE');
+      const after = repo.getStrategy(user.id, strategy.id);
+      assert.equal(after.cycleCompleted, true);
+      assert.equal(after.status, 'STOPPED');
     });
   });
 });

@@ -90,17 +90,18 @@
 
 자동매매 도메인은 라오어 무한매수법 외에 한국 국장 상승률 랭킹 전략을 두 번째 독립 전략 종류로 함께 운용한다. 두 전략 종류는 각자의 테이블(`kr_rank_*`)·엔진(`krRankStrategyEngine`/`krRankService`)·평가 경로를 가지며, 실주문 실행 설정(`user_trading_settings.live_order_enabled`)·스케줄러(`autoTradingScheduler`)·KIS 연동(`kisAuthService`/`kisTradingService`)을 공유한다. 라오어 전략의 평가 사이클·상태 머신·기록은 이 전략 추가로 변경되지 않는다. 상세 동작은 `kr-rank-auto-trading` 스펙을 참고한다.
 
-## 미국 국장 상승률 랭킹 전략 (`US_RANK_MOMENTUM`)
+## 미국장 상승률 랭킹 전략 (`US_RANK_MOMENTUM`)
 
-미국 국장 상승률 랭킹 전략은 세 번째 독립 전략 종류다. `us_rank_*` 테이블·`usRankStrategyEngine`·`usRankService`·`usRankRoutes`·프론트 패널을 별도로 사용하고, 실주문 실행 설정·KIS credential·스케줄러 프로세스만 공유한다.
+미국장 상승률 랭킹 전략은 세 번째 독립 전략 종류다. `us_rank_*` 테이블·`usRankStrategyEngine`·`usRankService`·`usRankRoutes`·프론트 패널을 별도로 사용하고, 실주문 실행 설정·KIS credential·스케줄러 프로세스만 공유한다.
 
 - KIS 해외주식 상승율/하락율 API(`/uapi/overseas-stock/v1/ranking/updown-rate`, TR `HHDFS76290000`)로 NASDAQ/NYSE/AMEX 상승률 랭킹을 조회한다.
 - 서버는 미국 정규장(ET 09:30~16:00) 동안 1분 간격으로 RUNNING 전략을 평가한다. 시간 판정은 `Intl.DateTimeFormat('America/New_York')` 기반이라 DST를 OS tz 데이터에 위임한다.
-- 보유 종목이 없으면 등락률 상한(기본 20%)보다 낮은 첫 종목을 선택해 한 매매 사이클을 시작한다.
+- 보유 종목이 없으면 상승률 랭킹의 첫 유효 종목을 선택해 한 매매 사이클을 시작한다. 미국장은 한국장처럼 가격제한폭이 없어 별도 등락률 상한을 두지 않는다.
 - 자동 예산 모드는 평가 시점 미국 종목 매수가능금액 전액을, 고정 예산 모드는 사용자 입력 USD 금액과 매수가능금액 중 작은 값을 사용한다. 주문 수량은 정수 1주 단위다.
 - 보유 중에는 새 종목을 사지 않고 익절(기본 +2%), 손절(기본 -5%), 강제 청산(KST 기본 04:30)을 평가한다.
-- 익절 매도 후에는 다음 tick에서 새 랭킹 후보로 다음 매매 사이클을 시작할 수 있다.
+- 익절 조건에 닿아도 보유 종목이 지금도 랭킹 1위이면 매도를 보류한다. 1위에서 밀린 뒤 익절 조건을 만족하면 전량 매도하고, 다음 tick에서 새 랭킹 후보로 다음 매매 사이클을 시작할 수 있다.
 - 손절 또는 강제 청산 후에는 `day_locked_out`을 걸어 같은 미국 거래일 신규 매수를 중단한다.
+- `cycle_target_profit_rate`가 설정되어 있고 현재 평가 자산이 시작 기준 자본(`cycle_baseline_usd`) 대비 목표 수익률에 닿으면 `CYCLE_COMPLETE` 매도로 보유분을 정리하고 전략을 `STOPPED`로 종료한다.
 - 실주문 실행 설정이 꺼져 있으면 실제 KIS 주문 호출 없이 주문 예정 기록만 `DRY_RUN`으로 저장한다. 켜져 있으면 현재가 지정가 주문으로 KIS 해외 주문 경로를 호출한다.
 
 ## 분할회차 cap

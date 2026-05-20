@@ -1,8 +1,11 @@
--- 미국장 상승률 랭킹 자동매매 전략(US_RANK_MOMENTUM).
--- 기존 라오어(auto_trading_*)·한국 랭킹(kr_rank_*) 테이블은 변경하지 않고,
--- 미국장 랭킹 전용 테이블 세트를 별도로 둔다.
+-- 미국장 랭킹 전략 튜닝:
+--   1) max_fluctuation_rate 제거 (미국장은 가격제한폭 없어 의미 약함).
+--   2) cycle_target_profit_rate / cycle_baseline_usd / cycle_completed / cycle_completed_at 추가
+--      — 누적 이익률 도달 시 사이클 영구 종료(전략 STOPPED).
+--   3) sell_reason / exit_reason CHECK에 'CYCLE_COMPLETE' 추가 — 누적 목표 도달 청산용.
 
-CREATE TABLE IF NOT EXISTS us_rank_strategies (
+-- ── us_rank_strategies 재생성 ──
+CREATE TABLE us_rank_strategies_new (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'CREATED' CHECK (status IN ('CREATED', 'RUNNING', 'STOPPED', 'ERROR')),
@@ -10,10 +13,13 @@ CREATE TABLE IF NOT EXISTS us_rank_strategies (
   fixed_buy_usd_amount REAL NOT NULL DEFAULT 0 CHECK (fixed_buy_usd_amount >= 0),
   target_profit_rate REAL NOT NULL DEFAULT 0.02 CHECK (target_profit_rate > 0),
   stop_loss_rate REAL NOT NULL DEFAULT 0.05 CHECK (stop_loss_rate > 0),
-  max_fluctuation_rate REAL NOT NULL DEFAULT 0.20 CHECK (max_fluctuation_rate > 0),
   force_close_kst TEXT NOT NULL DEFAULT '04:30',
   exchange TEXT NOT NULL DEFAULT 'NAS' CHECK (exchange IN ('ALL', 'NAS', 'NYS', 'AMS')),
   currency TEXT NOT NULL DEFAULT 'USD',
+  cycle_target_profit_rate REAL CHECK (cycle_target_profit_rate IS NULL OR cycle_target_profit_rate > 0),
+  cycle_baseline_usd REAL CHECK (cycle_baseline_usd IS NULL OR cycle_baseline_usd >= 0),
+  cycle_completed INTEGER NOT NULL DEFAULT 0 CHECK (cycle_completed IN (0, 1)),
+  cycle_completed_at TEXT,
   holding_symbol TEXT,
   holding_symbol_name TEXT,
   holding_exchange TEXT,
@@ -32,7 +38,29 @@ CREATE TABLE IF NOT EXISTS us_rank_strategies (
   CHECK (auto_budget_enabled = 1 OR fixed_buy_usd_amount > 0)
 );
 
-CREATE TABLE IF NOT EXISTS us_rank_trades (
+INSERT INTO us_rank_strategies_new (
+  id, user_id, status, auto_budget_enabled, fixed_buy_usd_amount, target_profit_rate,
+  stop_loss_rate, force_close_kst, exchange, currency,
+  holding_symbol, holding_symbol_name, holding_exchange, holding_quantity, holding_average_price,
+  day_locked_out, day_locked_out_at, day_lock_reason,
+  started_at, stopped_at, last_evaluated_at, last_decision, last_error_message,
+  created_at, updated_at
+)
+SELECT
+  id, user_id, status, auto_budget_enabled, fixed_buy_usd_amount, target_profit_rate,
+  stop_loss_rate, force_close_kst, exchange, currency,
+  holding_symbol, holding_symbol_name, holding_exchange, holding_quantity, holding_average_price,
+  day_locked_out, day_locked_out_at, day_lock_reason,
+  started_at, stopped_at, last_evaluated_at, last_decision, last_error_message,
+  created_at, updated_at
+FROM us_rank_strategies;
+DROP TABLE us_rank_strategies;
+ALTER TABLE us_rank_strategies_new RENAME TO us_rank_strategies;
+CREATE INDEX IF NOT EXISTS idx_us_rank_strategies_user_status
+  ON us_rank_strategies(user_id, status, id DESC);
+
+-- ── us_rank_trades 재생성 (exit_reason CHECK 확장) ──
+CREATE TABLE us_rank_trades_new (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   strategy_id INTEGER NOT NULL REFERENCES us_rank_strategies(id) ON DELETE CASCADE,
@@ -47,7 +75,7 @@ CREATE TABLE IF NOT EXISTS us_rank_trades (
   entry_price REAL,
   entry_quantity REAL,
   exit_price REAL,
-  exit_reason TEXT CHECK (exit_reason IN ('TARGET', 'STOP_LOSS', 'FORCE_CLOSE')),
+  exit_reason TEXT CHECK (exit_reason IN ('TARGET', 'STOP_LOSS', 'FORCE_CLOSE', 'CYCLE_COMPLETE')),
   profit_rate REAL,
   status TEXT NOT NULL DEFAULT 'SELECTED' CHECK (status IN ('SELECTED', 'BOUGHT', 'CLOSED', 'FAILED', 'NO_CANDIDATE')),
   error_message TEXT,
@@ -56,8 +84,14 @@ CREATE TABLE IF NOT EXISTS us_rank_trades (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(strategy_id, trade_date, trade_seq)
 );
+INSERT INTO us_rank_trades_new SELECT * FROM us_rank_trades;
+DROP TABLE us_rank_trades;
+ALTER TABLE us_rank_trades_new RENAME TO us_rank_trades;
+CREATE INDEX IF NOT EXISTS idx_us_rank_trades_user_strategy
+  ON us_rank_trades(user_id, strategy_id, trade_date DESC, trade_seq DESC);
 
-CREATE TABLE IF NOT EXISTS us_rank_orders (
+-- ── us_rank_orders 재생성 (sell_reason CHECK 확장) ──
+CREATE TABLE us_rank_orders_new (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   strategy_id INTEGER NOT NULL REFERENCES us_rank_strategies(id) ON DELETE CASCADE,
@@ -68,7 +102,7 @@ CREATE TABLE IF NOT EXISTS us_rank_orders (
   currency TEXT NOT NULL DEFAULT 'USD',
   exchange TEXT,
   side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
-  sell_reason TEXT CHECK (sell_reason IN ('TARGET', 'STOP_LOSS', 'FORCE_CLOSE')),
+  sell_reason TEXT CHECK (sell_reason IN ('TARGET', 'STOP_LOSS', 'FORCE_CLOSE', 'CYCLE_COMPLETE')),
   quantity REAL NOT NULL CHECK (quantity > 0),
   order_price REAL NOT NULL CHECK (order_price > 0),
   estimated_amount REAL NOT NULL CHECK (estimated_amount >= 0),
@@ -87,8 +121,16 @@ CREATE TABLE IF NOT EXISTS us_rank_orders (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+INSERT INTO us_rank_orders_new SELECT * FROM us_rank_orders;
+DROP TABLE us_rank_orders;
+ALTER TABLE us_rank_orders_new RENAME TO us_rank_orders;
+CREATE INDEX IF NOT EXISTS idx_us_rank_orders_user_strategy
+  ON us_rank_orders(user_id, strategy_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_us_rank_orders_idem
+  ON us_rank_orders(idempotency_key);
 
-CREATE TABLE IF NOT EXISTS us_rank_decision_logs (
+-- ── us_rank_decision_logs 재생성 (sell_reason CHECK 확장) ──
+CREATE TABLE us_rank_decision_logs_new (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   strategy_id INTEGER NOT NULL REFERENCES us_rank_strategies(id) ON DELETE CASCADE,
@@ -96,7 +138,7 @@ CREATE TABLE IF NOT EXISTS us_rank_decision_logs (
   trade_date TEXT,
   trade_seq INTEGER,
   decision TEXT NOT NULL CHECK (decision IN ('BUY', 'SELL', 'HOLD', 'SKIP', 'ERROR')),
-  sell_reason TEXT CHECK (sell_reason IN ('TARGET', 'STOP_LOSS', 'FORCE_CLOSE')),
+  sell_reason TEXT CHECK (sell_reason IN ('TARGET', 'STOP_LOSS', 'FORCE_CLOSE', 'CYCLE_COMPLETE')),
   selected_symbol TEXT,
   selected_symbol_name TEXT,
   selected_exchange TEXT,
@@ -115,26 +157,8 @@ CREATE TABLE IF NOT EXISTS us_rank_decision_logs (
   reason TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE TABLE IF NOT EXISTS us_rank_locks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  strategy_id INTEGER NOT NULL REFERENCES us_rank_strategies(id) ON DELETE CASCADE,
-  lock_key TEXT NOT NULL,
-  locked_until TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(strategy_id, lock_key)
-);
-
-CREATE INDEX IF NOT EXISTS idx_us_rank_strategies_user_status
-  ON us_rank_strategies(user_id, status, id DESC);
-CREATE INDEX IF NOT EXISTS idx_us_rank_trades_user_strategy
-  ON us_rank_trades(user_id, strategy_id, trade_date DESC, trade_seq DESC);
-CREATE INDEX IF NOT EXISTS idx_us_rank_orders_user_strategy
-  ON us_rank_orders(user_id, strategy_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_us_rank_orders_idem
-  ON us_rank_orders(idempotency_key);
+INSERT INTO us_rank_decision_logs_new SELECT * FROM us_rank_decision_logs;
+DROP TABLE us_rank_decision_logs;
+ALTER TABLE us_rank_decision_logs_new RENAME TO us_rank_decision_logs;
 CREATE INDEX IF NOT EXISTS idx_us_rank_decision_logs_user_strategy
   ON us_rank_decision_logs(user_id, strategy_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_us_rank_locks_until
-  ON us_rank_locks(locked_until);
