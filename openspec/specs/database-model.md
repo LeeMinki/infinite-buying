@@ -53,13 +53,13 @@ SQLite (`better-sqlite3`). 마이그레이션은 `backend/src/db/migrations/0001
 - `kr_rank_decision_logs` — 매 평가의 결정·진입 구간·선택 종목·매도 사유·랭킹 스냅샷·평가 출처·order_id·reason.
 - `kr_rank_locks` — `(strategy_id, lock_key) UNIQUE`. 동시 평가 방지.
 
-## 미국 국장 상승률 랭킹 자동매매 (`0029`)
+## 미국장 상승률 랭킹 자동매매 (`0029~0030`)
 
 라오어 자동매매(`auto_trading_*`)와 한국 랭킹(`kr_rank_*`)을 변경하지 않는 별도 테이블 세트. 실주문 실행 설정(`user_trading_settings`)과 KIS credential만 공유한다.
 
-- `us_rank_strategies` — 미국 국장 상승률 랭킹 전략(`US_RANK_MOMENTUM`). status, 자동 예산 여부, 고정 매수 금액(USD), 익절률, 손절률, 등락률 상한, 강제 청산 시각(KST), 거래소(`ALL`/`NAS`/`NYS`/`AMS`), 통화(`USD`), 현재 보유 종목, 당일 신규 매수 잠금(`day_locked_out`)과 잠금 사유.
+- `us_rank_strategies` — 미국장 상승률 랭킹 전략(`US_RANK_MOMENTUM`). status, 자동 예산 여부, 고정 매수 금액(USD), 익절률, 손절률, 강제 청산 시각(KST), 거래소(`ALL`/`NAS`/`NYS`/`AMS`), 통화(`USD`), 누적 목표 수익률·기준 자본·완료 시각(`0030`), 현재 보유 종목, 당일 신규 매수 잠금(`day_locked_out`)과 잠금 사유. 미국장은 가격제한폭이 없어 `0030`에서 등락률 상한 컬럼을 제거했다.
 - `us_rank_trades` — 한 번의 매수~매도 사이클 기록. `(strategy_id, trade_date, trade_seq) UNIQUE`로 미국 거래일 안의 N번째 사이클을 구분한다. 선택 종목, 랭킹 스냅샷, 진입가/수량, 청산가/사유, 수익률, 상태를 저장한다.
-- `us_rank_orders` — 주문 라이프사이클. `idempotency_key`, side, sell_reason(`TARGET`/`STOP_LOSS`/`FORCE_CLOSE`), 수량, 단가, 예상 금액, KIS 주문번호, 마스킹된 요청/응답, 에러 메시지.
+- `us_rank_orders` — 주문 라이프사이클. `idempotency_key`, side, sell_reason(`TARGET`/`STOP_LOSS`/`FORCE_CLOSE`/`CYCLE_COMPLETE`), 수량, 단가, 예상 금액, KIS 주문번호, 마스킹된 요청/응답, 에러 메시지.
 - `us_rank_decision_logs` — 매 평가의 결정, 선택 종목, 현재가, 보유 수량, 매수가능금액, 예상 주문, 랭킹 스냅샷, 평가 출처, order_id, 사유.
 - `us_rank_locks` — `(strategy_id, lock_key) UNIQUE`. 동시 평가 방지.
 

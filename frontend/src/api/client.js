@@ -144,7 +144,7 @@ export const listKrRankOrders = (id) => request(`/api/kr-rank/strategies/${id}/o
 export const listKrRankDecisions = (id) => request(`/api/kr-rank/strategies/${id}/decisions`);
 export const listKrRankEntries = (id) => request(`/api/kr-rank/strategies/${id}/entries`);
 
-// 미국 국장 상승률 랭킹 자동매매 전략
+// 미국장 상승률 랭킹 자동매매 전략
 export const getUsRankOverview = () => request('/api/us-rank/overview');
 export const listUsRankStrategies = () => request('/api/us-rank/strategies');
 export const createUsRankStrategy = (payload) => request('/api/us-rank/strategies', {

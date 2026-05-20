@@ -54,9 +54,9 @@ router.delete('/strategies/:id', (req, res, next) => {
   }
 });
 
-router.post('/strategies/:id/start', (req, res, next) => {
+router.post('/strategies/:id/start', async (req, res, next) => {
   try {
-    res.json(service.startStrategy(req.userId, Number(req.params.id)));
+    res.json(await service.startStrategy(req.userId, Number(req.params.id)));
   } catch (error) {
     next(error);
   }

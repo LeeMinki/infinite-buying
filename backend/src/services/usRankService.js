@@ -7,8 +7,8 @@ import {
   DEFAULT_FORCE_CLOSE_KST,
   DEFAULT_STOP_LOSS_RATE,
   DEFAULT_TARGET_PROFIT_RATE,
-  MAX_FLUCTUATION_RATE,
   computeBuyQuantity,
+  computeCycleProfitRate,
   etTradeDate,
   evaluateSell,
   isUsForceCloseTime,
@@ -45,16 +45,35 @@ export function deleteStrategy(userId, id) {
   repo.deleteStrategy(userId, id);
 }
 
-export function startStrategy(userId, id) {
+export async function startStrategy(userId, id) {
   const strategy = requireStrategy(userId, id);
+  if (strategy.cycleCompleted) {
+    throw badRequest('이미 누적 목표 수익률을 달성해 종료된 전략입니다. 다시 운용하려면 새 전략을 만드세요.');
+  }
   const started = repo.startStrategy(userId, id);
   const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
+  // 누적 목표 수익률이 설정돼 있고 아직 baseline이 없으면 시작 시점의 USD 매수가능금액을 스냅샷한다.
+  let baselineUsd = strategy.cycleBaselineUsd;
+  if (strategy.cycleTargetProfitRate && (baselineUsd == null || baselineUsd <= 0)) {
+    try {
+      await getValidAccessToken(userId);
+      const trading = new KisTradingService(userId);
+      const buyingPower = await trading.getBuyingPower('TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 });
+      baselineUsd = Number(buyingPower.cashAvailable || 0);
+      if (baselineUsd > 0) repo.setCycleBaseline(userId, id, baselineUsd);
+    } catch (error) {
+      // baseline 조회 실패는 치명적이지 않다. 첫 평가 tick에서 다시 시도된다.
+    }
+  }
+  const cycleNote = strategy.cycleTargetProfitRate
+    ? ` 누적 목표 +${pct(strategy.cycleTargetProfitRate)}${baselineUsd ? ` (기준 ${fmt(baselineUsd)} USD)` : ''} 달성 시 자동 종료.`
+    : '';
   repo.createDecisionLog(userId, {
     strategyId: strategy.id,
     decision: 'SKIP',
     liveOrderEnabled,
     evaluationSource: 'MANUAL',
-    reason: `미국 국장 상승률 랭킹 전략을 시작했습니다. 서버가 미국 정규장에 1분 간격으로 상승률 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 실주문 설정: ${liveOrderEnabled ? '켜짐' : '꺼짐'}.`
+    reason: `전략을 시작했습니다. 미국 정규장 동안 1분마다 평가합니다. 실주문 ${liveOrderEnabled ? '켜짐' : '꺼짐'}.${cycleNote}`
   });
   return started;
 }
@@ -114,7 +133,7 @@ export async function evaluateRunningStrategies() {
     } catch (error) {
       repo.markEvaluation(strategy.userId, strategy.id, {
         decision: 'ERROR',
-        errorMessage: error.message || '미국 랭킹 전략 자동 평가에 실패했습니다.'
+        errorMessage: error.message || '미국장 랭킹 전략 자동 평가에 실패했습니다.'
       });
     }
   }
@@ -126,12 +145,22 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   const unlocked = repo.clearDayLockedOutIfStale(userId, strategy.id, tradeDate);
   strategy = unlocked || strategy;
 
+  if (strategy.cycleCompleted) {
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP',
+      liveOrderEnabled,
+      evaluationSource,
+      reason: '누적 목표 수익률을 달성해 종료된 전략입니다.',
+      noLog: evaluationSource !== 'MANUAL'
+    });
+  }
+
   if (!isUsRegularSession()) {
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
       liveOrderEnabled,
       evaluationSource,
-      reason: '미국 정규장 시간이 아니라 평가하지 않습니다.',
+      reason: '미국 정규장이 아니라 평가를 건너뜁니다.',
       noLog: evaluationSource !== 'MANUAL'
     });
   }
@@ -147,7 +176,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
       tradeDate,
       liveOrderEnabled,
       evaluationSource,
-      reason: `오늘 ${lockReasonLabel(strategy.dayLockReason)}로 신규 매수를 중지했습니다.`,
+      reason: `오늘 ${lockReasonLabel(strategy.dayLockReason)}로 신규 매수를 멈춥니다.`,
       noLog: evaluationSource !== 'MANUAL'
     });
   }
@@ -196,12 +225,25 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   }
 
   const forceCloseTriggered = isUsForceCloseTime(new Date(), strategy.forceCloseKst);
+  // 누적 평가 자산이 baseline 대비 cycle_target_profit_rate 이상이면 사이클 완료 트리거.
+  const cycleProfitRate = strategy.cycleTargetProfitRate
+    ? computeCycleProfitRate({
+        baselineUsd: strategy.cycleBaselineUsd,
+        cashAvailable,
+        holdingQuantity,
+        currentPrice
+      })
+    : null;
+  const cycleTargetReached = cycleProfitRate != null
+    && Number.isFinite(cycleProfitRate)
+    && cycleProfitRate >= Number(strategy.cycleTargetProfitRate);
   const sell = evaluateSell({
     currentPrice,
     averagePrice,
     targetProfitRate: strategy.targetProfitRate,
     stopLossRate: strategy.stopLossRate,
-    forceCloseTriggered
+    forceCloseTriggered,
+    cycleTargetReached
   });
   // 보유 중인 매매 사이클의 trade 행을 정확히 같은 행으로 다룬다.
   //  - openTrade(SELECTED|BOUGHT) 있으면 그것을 사용. SELECTED라면 진입 후 BOUGHT 갱신이 실패한
@@ -253,8 +295,39 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
       profitRate: sell.profitRate,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중입니다. 수익률 ${profitPct}%로 익절 +${pct(strategy.targetProfitRate)}, 손절 -${pct(strategy.stopLossRate)}, 강제 청산 ${strategy.forceCloseKst} KST 모두 미도달입니다.`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). 익절 +${pct(strategy.targetProfitRate)} / 손절 -${pct(strategy.stopLossRate)} / 청산 ${strategy.forceCloseKst} KST 모두 미도달.`
     });
+  }
+
+  // 익절 도달이지만 같은 종목이 지금도 상승률 랭킹 1위면 매도 후 곧장 다시 살 가능성이 크다.
+  // 매도-매수 왕복을 피해 그대로 들고 가도록 보류한다. 손절·강제 청산·사이클 완료는 그대로 실행.
+  if (sell.sellReason === 'TARGET') {
+    try {
+      const ranking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
+      const nextPick = selectRankingCandidate(ranking);
+      if (nextPick && nextPick.symbol === symbol) {
+        const profitPct = (sell.profitRate * 100).toFixed(2);
+        return saveDecision(userId, strategy, {
+          decision: 'HOLD',
+          tradeId: trade.id,
+          tradeDate,
+          tradeSeq: trade.tradeSeq,
+          selectedSymbol: symbol,
+          selectedSymbolName: strategy.holdingSymbolName,
+          selectedExchange: exchange,
+          currentPrice,
+          averagePrice,
+          holdingQuantity,
+          cashAvailable,
+          profitRate: sell.profitRate,
+          liveOrderEnabled,
+          evaluationSource,
+          reason: `${symbol} 익절 도달 (${profitPct}%)이지만 지금도 상승률 1위라 그대로 보유합니다.`
+        });
+      }
+    } catch (error) {
+      // 랭킹 조회 실패는 익절 매도를 막을 사유가 아니다. 그대로 매도 진행.
+    }
   }
 
   const idempotencyKey = makeUsRankIdempotencyKey({
@@ -355,6 +428,9 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
     if (sell.sellReason === 'STOP_LOSS' || sell.sellReason === 'FORCE_CLOSE') {
       repo.setDayLockedOut(userId, strategy.id, { tradeDate, reason: sell.sellReason });
     }
+    if (sell.sellReason === 'CYCLE_COMPLETE') {
+      repo.markCycleCompleted(userId, strategy.id);
+    }
   }
 
   const log = saveDecision(userId, strategy, {
@@ -384,11 +460,36 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
 }
 
 async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrderEnabled, evaluationSource }) {
+  // 무보유 상태에서도 누적 자산이 baseline 대비 목표 수익률 이상이면 사이클을 즉시 완료한다.
+  // 예: 매도 직후 현금이 baseline×(1+target)을 넘었을 때 다음 tick에서 신규 매수 없이 STOPPED.
+  if (strategy.cycleTargetProfitRate && strategy.cycleBaselineUsd > 0) {
+    const buyingPower = await trading.getBuyingPower('TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 });
+    const cashAvailable = Number(buyingPower.cashAvailable || 0);
+    const cycleProfitRate = computeCycleProfitRate({
+      baselineUsd: strategy.cycleBaselineUsd,
+      cashAvailable,
+      holdingQuantity: 0,
+      currentPrice: 0
+    });
+    if (cycleProfitRate != null && cycleProfitRate >= Number(strategy.cycleTargetProfitRate)) {
+      repo.markCycleCompleted(userId, strategy.id);
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP',
+        tradeDate,
+        cashAvailable,
+        profitRate: cycleProfitRate,
+        liveOrderEnabled,
+        evaluationSource,
+        reason: `누적 목표 수익률 +${pct(strategy.cycleTargetProfitRate)} 달성(현재 +${pct(cycleProfitRate)}). 전략을 종료합니다.`
+      });
+    }
+  }
+
   let trade = repo.getOpenTrade(strategy.id);
   let rankingSnapshot = trade?.rankingSnapshot || null;
   if (!trade) {
     const ranking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
-    const picked = selectRankingCandidate(ranking, { maxFluctuationRate: strategy.maxFluctuationRate });
+    const picked = selectRankingCandidate(ranking);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
     if (!picked) {
       // 후보 없음은 trade 행을 만들지 않고 decision log만 남긴다. 매분 폴링이라
@@ -399,7 +500,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
         rankingSnapshot,
         liveOrderEnabled,
         evaluationSource,
-        reason: `미국 상승률 랭킹에서 등락률 ${pct(strategy.maxFluctuationRate)} 미만 매수 대상이 없어 매수하지 않습니다.`,
+        reason: '미국 상승률 랭킹에서 유효한 매수 후보가 없어 이번 tick은 건너뜁니다.',
         noLog: evaluationSource !== 'MANUAL'
       });
     }
@@ -664,21 +765,29 @@ function normalizeStrategyInput(input = {}) {
   const fixedBuyUsdAmount = autoBudgetEnabled ? 0 : positiveNumber(input.fixedBuyUsdAmount, '고정 USD 매수 금액');
   const targetProfitRate = positiveNumber(input.targetProfitRate ?? DEFAULT_TARGET_PROFIT_RATE, '익절 기준');
   const stopLossRate = positiveNumber(input.stopLossRate ?? DEFAULT_STOP_LOSS_RATE, '손절 기준');
-  const maxFluctuationRate = positiveNumber(input.maxFluctuationRate ?? MAX_FLUCTUATION_RATE, '등락률 상한');
   const forceCloseKst = requireHhmm(input.forceCloseKst || DEFAULT_FORCE_CLOSE_KST, '강제 청산 시각');
   const forceMinutes = parseHhmmMinutes(forceCloseKst);
   if (forceMinutes === null || forceMinutes >= 12 * 60) {
-    throw badRequest('강제 청산 시각은 미국장이 끝나는 KST 새벽 시간대로 입력하세요. 예: 04:30');
+    throw badRequest('강제 청산 시각은 KST 새벽 시간대(00:00~11:59)로 입력하세요. 예: 04:30');
   }
   const exchange = normalizeExchange(input.exchange);
+  // 누적 목표 수익률은 선택값. 빈/0 이하 입력은 미사용으로 처리(null 저장).
+  let cycleTargetProfitRate = null;
+  if (input.cycleTargetProfitRate != null && input.cycleTargetProfitRate !== '') {
+    const value = Number(input.cycleTargetProfitRate);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw badRequest('누적 목표 수익률은 0보다 커야 합니다.');
+    }
+    cycleTargetProfitRate = value;
+  }
   return {
     autoBudgetEnabled,
     fixedBuyUsdAmount,
     targetProfitRate,
     stopLossRate,
-    maxFluctuationRate,
     forceCloseKst,
-    exchange
+    exchange,
+    cycleTargetProfitRate
   };
 }
 
@@ -705,7 +814,7 @@ function isForceCloseWindow(forceCloseKst) {
 
 function requireStrategy(userId, id) {
   const strategy = repo.getStrategy(userId, Number(id));
-  if (!strategy) throw notFound('미국 랭킹 전략을 찾을 수 없습니다.');
+  if (!strategy) throw notFound('미국장 랭킹 전략을 찾을 수 없습니다.');
   return strategy;
 }
 
@@ -729,6 +838,7 @@ function sellReasonLabel(reason) {
   if (reason === 'TARGET') return '익절';
   if (reason === 'STOP_LOSS') return '손절';
   if (reason === 'FORCE_CLOSE') return '강제 청산';
+  if (reason === 'CYCLE_COMPLETE') return '누적 목표 달성';
   return reason || '-';
 }
 

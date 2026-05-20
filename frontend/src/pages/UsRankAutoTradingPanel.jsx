@@ -91,11 +91,13 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
         fixedBuyUsdAmount: form.autoBudgetEnabled ? 0 : Number(form.fixedBuyUsdAmount),
         targetProfitRate: Number(form.targetProfitPercent) / 100,
         stopLossRate: Number(form.stopLossPercent) / 100,
-        maxFluctuationRate: Number(form.maxFluctuationPercent) / 100,
         forceCloseKst: form.forceCloseKst,
-        exchange: form.exchange
+        exchange: form.exchange,
+        cycleTargetProfitRate: form.cycleTargetEnabled && form.cycleTargetPercent !== ''
+          ? Number(form.cycleTargetPercent) / 100
+          : null
       });
-      setMessage('미국 국장 상승률 랭킹 전략을 만들었습니다.');
+      setMessage('전략을 만들었습니다.');
       await refresh(created.id);
     } catch (err) {
       setError(err.message);
@@ -111,9 +113,9 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
     setMessage('');
     try {
       const result = await action(selected.id);
-      if (label === 'start') setMessage('전략을 시작했습니다. 서버가 미국 정규장에 1분 간격으로 상승률 랭킹을 평가합니다.');
-      if (label === 'stop') setMessage('전략을 종료했습니다. 종료된 전략은 신규 평가에서 제외됩니다.');
-      if (label === 'evaluate') setMessage(result?.decision?.reason || '평가를 완료했습니다.');
+      if (label === 'start') setMessage('전략을 시작했습니다.');
+      if (label === 'stop') setMessage('전략을 종료했습니다.');
+      if (label === 'evaluate') setMessage(result?.decision?.reason || '평가 완료.');
       await refresh(selected.id);
     } catch (err) {
       setError(err.message);
@@ -144,7 +146,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
     <>
       {!liveOrderEnabled && (
         <p className="helper kr-rank-dry-note">
-          실주문 실행 설정이 꺼져 있어 실제 주문은 보내지 않습니다. 랭킹 조회, 종목 선택, 판단, 주문 예정 기록만 저장합니다.
+          실주문이 꺼져 있습니다. 랭킹 조회와 판단 기록만 남기고 실제 주문은 보내지 않습니다.
         </p>
       )}
 
@@ -152,22 +154,22 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
         <div className="panel-heading">
           <div>
             <h3>연결 계좌</h3>
-            <p>미국 종목 매수가능금액을 확인합니다. 계좌번호 원문은 표시하지 않습니다.</p>
+            <p>미국 종목을 살 때 사용할 수 있는 USD 금액을 조회합니다.</p>
           </div>
           <button type="button" className="ghost sm" disabled={budgetPreviewLoading} onClick={loadBudgetPreview}>
-            {budgetPreviewLoading ? '조회 중...' : '잔액 조회'}
+            {budgetPreviewLoading ? '조회 중…' : '잔액 조회'}
           </button>
         </div>
         <div className="metric-grid compact-grid">
           <Metric
             label="USD 매수가능금액"
             value={budgetPreview?.error ? '조회 실패' : formatUsd(budgetPreview?.cashAvailable || 0)}
-            hint={budgetPreview?.error || '미국 종목 주문 기준'}
+            hint={budgetPreview?.error || '바로 주문 가능'}
           />
           <Metric
             label="환전 후 가능"
             value={budgetPreview?.cashAvailableAfterFx ? formatUsd(budgetPreview.cashAvailableAfterFx) : '-'}
-            hint="통합증거금/환전 반영 가능 금액"
+            hint="통합증거금/환전 반영"
           />
         </div>
       </section>
@@ -175,17 +177,19 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
       <section className="panel section">
         <div className="panel-heading">
           <div>
-            <h3>미국 국장 상승률 랭킹 전략이란?</h3>
-            <p>미국 정규장 중 상승률 상위 종목을 조회해, 과열 상한을 넘지 않은 1위 종목을 매수하고 짧은 익절·손절·강제 청산 기준으로 회전하는 전략입니다.</p>
+            <h3>전략 요약</h3>
+            <p>미국장이 열려 있는 동안 상승률 1위 종목을 따라가되, 손절이나 장 마감 기준에 닿으면 매수를 멈추는 전략입니다.</p>
           </div>
         </div>
         <ul className="kr-rank-rule-list">
-          <li>서버가 미국 정규장에 1분마다 KIS 해외주식 상승률 랭킹을 조회합니다.</li>
-          <li>등락률 상한보다 낮은 종목 중 가장 높은 종목을 고릅니다. 기본 상한은 20%입니다.</li>
-          <li>보유 중이면 새 종목을 사지 않고 현재 보유 종목의 익절, 손절, 강제 청산 조건만 확인합니다.</li>
-          <li>익절 매도 뒤에는 다시 랭킹을 조회해 다음 매매 사이클을 시작할 수 있습니다.</li>
-          <li>손절 또는 강제 청산이 발생하면 그 미국 거래일에는 신규 매수를 멈춥니다.</li>
-          <li>미국 주문은 1주 단위입니다. 수수료, 세금, 환율 차이는 이 화면의 계산에 포함하지 않습니다.</li>
+          <li>미국 정규장 동안 1분마다 상승률 랭킹을 확인합니다.</li>
+          <li>보유 종목이 없으면 그 시점의 1위 종목을 삽니다.</li>
+          <li>익절 기준에 닿아도 보유 종목이 계속 1위라면 팔지 않습니다. 같은 종목을 팔고 바로 다시 사는 일을 줄이기 위해서입니다.</li>
+          <li>보유 종목이 1위에서 밀렸고 익절 기준에 닿으면 전량 매도한 뒤 다음 1위 종목을 기다립니다.</li>
+          <li>손절이 한 번 발생하면 그 미국 거래일에는 더 사지 않습니다.</li>
+          <li>KST 04:30 이후에는 보유 종목을 정리하고 신규 매수를 멈춥니다.</li>
+          <li>누적 목표 수익률을 켜면 시작 자본 대비 목표에 닿는 순간 전략을 종료합니다.</li>
+          <li>주문은 1주 단위입니다. 수수료, 세금, 환율 차이는 계산에 넣지 않습니다.</li>
         </ul>
       </section>
 
@@ -193,7 +197,6 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
         <div className="panel-heading">
           <div>
             <h3>전략 만들기</h3>
-            <p>사용할 예산 방식, 익절·손절, 등락률 상한, 강제 청산 시각을 정합니다.</p>
           </div>
         </div>
         <form className="mode-form kr-rank-form" onSubmit={submitStrategy}>
@@ -203,11 +206,11 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
               checked={form.autoBudgetEnabled}
               onChange={(event) => setForm({ ...form, autoBudgetEnabled: event.target.checked })}
             />
-            <span>전 재산 자동 매수 (미국 매수가능금액 전액 사용)</span>
+            <span>매수가능금액 전액으로 매수</span>
           </label>
           {!form.autoBudgetEnabled && (
             <label>
-              <span>고정 매수 금액 (USD)</span>
+              <span>매수 금액 (USD)</span>
               <input
                 type="number"
                 min="1"
@@ -222,27 +225,21 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
             </label>
           )}
           <label>
-            <span>목표 수익률 (%)</span>
+            <span>익절 (%)</span>
             <input type="number" min="0.1" step="0.1" value={form.targetProfitPercent}
               onChange={(event) => setForm({ ...form, targetProfitPercent: nonNegative(event.target.value) })} required />
           </label>
           <label>
-            <span>손절 기준 (%)</span>
+            <span>손절 (%)</span>
             <input type="number" min="0.1" step="0.1" value={form.stopLossPercent}
               onChange={(event) => setForm({ ...form, stopLossPercent: nonNegative(event.target.value) })} required />
-            <p className="helper">매수가 대비 이만큼 하락하면 보유 수량 전량 매도를 시도합니다.</p>
-          </label>
-          <label>
-            <span>등락률 상한 (%)</span>
-            <input type="number" min="0.1" max="99" step="0.1" value={form.maxFluctuationPercent}
-              onChange={(event) => setForm({ ...form, maxFluctuationPercent: nonNegative(event.target.value) })} required />
-            <p className="helper">이 값 이상 오른 종목은 매수 대상에서 제외합니다. 너무 급등한 종목 진입을 줄이기 위한 기준입니다.</p>
+            <p className="helper">한 번 닿으면 해당 미국 거래일에는 더 사지 않습니다.</p>
           </label>
           <label>
             <span>강제 청산 시각 (KST)</span>
             <input type="time" value={form.forceCloseKst} max="11:59"
               onChange={(event) => setForm({ ...form, forceCloseKst: event.target.value })} required />
-            <p className="helper">미국장이 열린 상태에서 이 시각이 지나면 익절·손절 미도달이어도 전량 매도를 시도하고, 당일 신규 매수를 멈춥니다.</p>
+            <p className="helper">이 시각이 지나면 보유 종목을 정리하고 신규 매수를 멈춥니다.</p>
           </label>
           <label>
             <span>거래소</span>
@@ -253,8 +250,24 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
               <option value="AMS">AMEX</option>
             </select>
           </label>
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.cycleTargetEnabled}
+              onChange={(event) => setForm({ ...form, cycleTargetEnabled: event.target.checked })}
+            />
+            <span>누적 목표 수익률 도달 시 전략 종료</span>
+          </label>
+          {form.cycleTargetEnabled && (
+            <label>
+              <span>누적 목표 (%)</span>
+              <input type="number" min="0.1" step="0.1" value={form.cycleTargetPercent}
+                onChange={(event) => setForm({ ...form, cycleTargetPercent: nonNegative(event.target.value) })} required />
+              <p className="helper">시작 시점 USD 매수가능금액보다 이만큼 늘면 보유분을 정리하고 전략을 종료합니다.</p>
+            </label>
+          )}
           <button type="submit" className="primary" disabled={busy === 'create'}>
-            {busy === 'create' ? '저장 중...' : '전략 생성'}
+            {busy === 'create' ? '저장 중…' : '전략 생성'}
           </button>
         </form>
       </section>
@@ -272,9 +285,9 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
             <div key={strategy.id} className={`strategy-chip ${selected?.id === strategy.id ? 'active' : ''}`}>
               <button type="button" className="strategy-chip-body" onClick={() => refresh(strategy.id)}>
                 <span className="strategy-chip-symbol">
-                  <strong>미국 랭킹 #{strategy.id}</strong>
+                  <strong>미국장 랭킹 #{strategy.id}</strong>
                   <span className="strategy-chip-sub">
-                    {strategy.autoBudgetEnabled ? '전 재산 자동 매수' : `${formatUsd(strategy.fixedBuyUsdAmount)} 고정`} · {EXCHANGE_LABELS[strategy.exchange] || strategy.exchange}
+                  {strategy.autoBudgetEnabled ? '매수가능금액 자동 사용' : `${formatUsd(strategy.fixedBuyUsdAmount)} 고정`} · {EXCHANGE_LABELS[strategy.exchange] || strategy.exchange}
                   </span>
                 </span>
                 <span className={`badge ${strategy.status === 'RUNNING' ? 'active' : strategy.status === 'ERROR' ? 'danger' : 'warning'}`}>
@@ -288,7 +301,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
               </button>
             </div>
           ))}
-          {strategies.length === 0 && <div className="empty">아직 미국 랭킹 전략이 없습니다.</div>}
+          {strategies.length === 0 && <div className="empty">아직 미국장 랭킹 전략이 없습니다.</div>}
         </div>
       </section>
 
@@ -296,22 +309,42 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
         <div className="panel-heading">
           <div>
             <h3>전략 상세</h3>
-            <p>{selected ? '미국 랭킹 전략 상태와 최근 기록입니다.' : '위 목록에서 전략을 선택하세요.'}</p>
+            <p>{selected ? '미국장 랭킹 전략 상태와 최근 기록입니다.' : '위 목록에서 전략을 선택하세요.'}</p>
           </div>
         </div>
         {selected ? (
           <>
             <div className="metric-grid compact-grid">
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
-              <Metric label="예산 방식" value={selected.autoBudgetEnabled ? '전 재산 자동' : formatUsd(selected.fixedBuyUsdAmount)} hint={EXCHANGE_LABELS[selected.exchange] || selected.exchange} />
-              <Metric label="익절/손절" value={`+${pct(selected.targetProfitRate)} / -${pct(selected.stopLossRate)}`} hint={`상한 ${pct(selected.maxFluctuationRate)}`} />
+              <Metric label="예산 방식" value={selected.autoBudgetEnabled ? '매수가능금액 자동' : formatUsd(selected.fixedBuyUsdAmount)} hint={EXCHANGE_LABELS[selected.exchange] || selected.exchange} />
+              <Metric
+                label="익절/손절"
+                value={`+${pct(selected.targetProfitRate)} / -${pct(selected.stopLossRate)}`}
+                hint={selected.cycleTargetProfitRate ? `누적 목표 +${pct(selected.cycleTargetProfitRate)}` : '누적 목표 없음'}
+              />
               <Metric label="현재 보유" value={selected.holdingSymbol || '무보유'} hint={selected.holdingSymbol ? `${formatNumber(selected.holdingQuantity)}주 · 평단 ${formatUsd(selected.holdingAveragePrice)}` : '랭킹 진입 대기'} />
             </div>
             <div className="metric-grid compact-grid">
-              <Metric label="오늘 매매" value={`${todayTradeCount}회`} hint={trades[0]?.tradeDate || '아직 없음'} />
-              <Metric label="오늘 잠금" value={selected.dayLockedOut ? '켜짐' : '꺼짐'} hint={selected.dayLockedOut ? lockReasonLabel(selected.dayLockReason) : '신규 매수 가능'} />
+              <Metric label="오늘 매매" value={`${todayTradeCount}회`} hint={trades[0]?.tradeDate || '없음'} />
+              <Metric
+                label="오늘 잠금"
+                value={selected.dayLockedOut ? '켜짐' : '꺼짐'}
+                hint={selected.dayLockedOut ? lockReasonLabel(selected.dayLockReason) : '매수 가능'}
+              />
               <Metric label="강제 청산" value={`${selected.forceCloseKst} KST`} hint="이후 신규 매수 중단" />
-              <Metric label="미국 정규장" value={isUsRegularSessionNow() ? '열림' : '닫힘'} hint="ET 09:30~16:00" />
+              <Metric label="정규장" value={isUsRegularSessionNow() ? '열림' : '닫힘'} hint="ET 09:30~16:00" />
+            </div>
+            <div className="metric-grid compact-grid">
+              <Metric
+                label="사이클 상태"
+                value={selected.cycleCompleted ? '종료됨' : selected.cycleTargetProfitRate ? '진행 중' : '미사용'}
+                hint={selected.cycleCompleted ? (selected.cycleCompletedAt || '') : (selected.cycleTargetProfitRate ? `목표 +${pct(selected.cycleTargetProfitRate)}` : '누적 목표 미설정')}
+              />
+              <Metric
+                label="기준 자본"
+                value={selected.cycleBaselineUsd ? formatUsd(selected.cycleBaselineUsd) : '-'}
+                hint="시작 시점 USD 매수가능금액"
+              />
             </div>
             <div className="auto-action-row">
               <button type="button" className="primary" disabled={busy === 'start' || selected.status === 'RUNNING'}
@@ -503,9 +536,10 @@ function defaultForm() {
     fixedBuyUsdAmount: '1000',
     targetProfitPercent: '2',
     stopLossPercent: '5',
-    maxFluctuationPercent: '20',
     forceCloseKst: '04:30',
-    exchange: 'NAS'
+    exchange: 'NAS',
+    cycleTargetEnabled: false,
+    cycleTargetPercent: '20'
   };
 }
 
@@ -526,13 +560,14 @@ function sellReasonLabel(reason) {
   if (reason === 'TARGET') return '익절';
   if (reason === 'STOP_LOSS') return '손절';
   if (reason === 'FORCE_CLOSE') return '강제 청산';
+  if (reason === 'CYCLE_COMPLETE') return '누적 목표 달성';
   return reason || '-';
 }
 
 function lockReasonLabel(reason) {
-  if (reason === 'STOP_LOSS') return '손절 후 당일 신규 매수 중단';
-  if (reason === 'FORCE_CLOSE') return '강제 청산 후 당일 신규 매수 중단';
-  return '당일 신규 매수 중단';
+  if (reason === 'STOP_LOSS') return '손절로 오늘 매수 중단';
+  if (reason === 'FORCE_CLOSE') return '강제 청산 후 오늘 매수 중단';
+  return '오늘 매수 중단';
 }
 
 function orderStatusLabel(status) {
@@ -553,10 +588,11 @@ function orderStatusLabel(status) {
 
 function tradeStatusLabel(status) {
   const labels = {
-    NO_CANDIDATE: '선택 종목 없음',
-    SELECTED: '종목 선택',
+    NO_CANDIDATE: '후보 없음',
+    SELECTED: '선택',
     BOUGHT: '보유 중',
-    CLOSED: '청산 완료',
+    CLOSED: '청산',
+    FAILED: '실패',
     SKIPPED: '건너뜀'
   };
   return labels[status] || status;

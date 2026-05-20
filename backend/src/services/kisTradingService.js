@@ -504,7 +504,7 @@ async function runRateLimited(userId, work) {
     const now = Date.now();
     const lastEnd = await prev;
     const gap = now - (lastEnd || 0);
-    if (gap < KIS_MIN_INTERVAL_MS) await sleep(KIS_MIN_INTERVAL_MS - gap);
+    if (gap >= 0 && gap < KIS_MIN_INTERVAL_MS) await sleep(KIS_MIN_INTERVAL_MS - gap);
     try {
       return await work();
     } finally {

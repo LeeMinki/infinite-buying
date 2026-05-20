@@ -283,7 +283,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           className={`strategy-type-tab ${tab === 'us-rank' ? 'active' : ''}`}
           onClick={() => setTab('us-rank')}
         >
-          미국 국장 상승률 랭킹 전략
+          미국장 상승률 랭킹 전략
         </button>
       </nav>
 

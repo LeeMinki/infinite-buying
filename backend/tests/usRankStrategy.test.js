@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { useTempDb, bootstrapDb, createUser } from './_helpers/dbHarness.js';
 import {
-  MAX_FLUCTUATION_RATE,
   computeBuyQuantity,
+  computeCycleProfitRate,
   etTradeDate,
   evaluateSell,
   isUsForceCloseTime,
@@ -51,13 +51,22 @@ test('HH:MM 파싱과 잘못된 형식을 구분한다', () => {
   assert.equal(parseHhmmMinutes('04:60'), null);
 });
 
-test('등락률 상한 미만의 첫 매수 후보를 선택한다', () => {
+test('상승률 순위의 첫 유효 후보를 선택한다 (등락률 상한 없음)', () => {
   const ranking = [
-    { symbol: 'AAA', name: '과열', price: 10, fluctuationRate: 0.25 },
-    { symbol: 'BBB', name: '후보', price: 20, fluctuationRate: 0.19 }
+    { symbol: 'AAA', name: '1위', price: 10, fluctuationRate: 0.35 },
+    { symbol: 'BBB', name: '2위', price: 20, fluctuationRate: 0.19 }
   ];
-  const picked = selectRankingCandidate(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE });
-  assert.equal(picked.symbol, 'BBB');
+  const picked = selectRankingCandidate(ranking);
+  assert.equal(picked.symbol, 'AAA');
+});
+
+test('가격 0이거나 등락률 파싱 실패 종목은 건너뛴다', () => {
+  const ranking = [
+    { symbol: 'BAD1', price: 0, fluctuationRate: 0.5 },
+    { symbol: 'BAD2', price: 10, fluctuationRate: NaN },
+    { symbol: 'OK', price: 10, fluctuationRate: 0.1 }
+  ];
+  assert.equal(selectRankingCandidate(ranking).symbol, 'OK');
 });
 
 test('매수 수량은 1주 단위 정수로 계산한다', () => {
@@ -65,10 +74,26 @@ test('매수 수량은 1주 단위 정수로 계산한다', () => {
   assert.equal(computeBuyQuantity(99, 100), 0);
 });
 
-test('매도 판단은 TARGET, STOP_LOSS, FORCE_CLOSE 우선순위를 따른다', () => {
+test('매도 판단 우선순위: CYCLE > STOP > TARGET > FORCE > HOLD', () => {
+  // 익절 도달
   assert.equal(evaluateSell({ currentPrice: 102, averagePrice: 100, targetProfitRate: 0.02, stopLossRate: 0.05 }).sellReason, 'TARGET');
+  // 손절 도달
   assert.equal(evaluateSell({ currentPrice: 94.9, averagePrice: 100, targetProfitRate: 0.02, stopLossRate: 0.05 }).sellReason, 'STOP_LOSS');
+  // 익절·손절 모두 안 닿았는데 강제 청산 시각 도달
   assert.equal(evaluateSell({ currentPrice: 99, averagePrice: 100, targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseTriggered: true }).sellReason, 'FORCE_CLOSE');
+  // 사이클 목표 도달은 다른 모든 조건을 압도(영구 종료 트리거)
+  assert.equal(evaluateSell({ currentPrice: 102, averagePrice: 100, targetProfitRate: 0.02, stopLossRate: 0.05, cycleTargetReached: true }).sellReason, 'CYCLE_COMPLETE');
+  // 손절·익절 동시 도달은 불가능하지만 익절보다 손절이 먼저 평가됨 검증
+  assert.equal(evaluateSell({ currentPrice: 95, averagePrice: 100, targetProfitRate: -0.01, stopLossRate: 0.05 }).sellReason, 'STOP_LOSS');
+});
+
+test('누적 수익률 계산: 현금 + 보유 평가액', () => {
+  // baseline 1000, 현금 600, 보유 5주 * 100 = 500 → 총 1100 → +10%
+  assert.equal(computeCycleProfitRate({ baselineUsd: 1000, cashAvailable: 600, holdingQuantity: 5, currentPrice: 100 }), 0.1);
+  // baseline 1000, 현금만 1200 (보유 없음) → +20%
+  assert.equal(computeCycleProfitRate({ baselineUsd: 1000, cashAvailable: 1200, holdingQuantity: 0, currentPrice: 0 }), 0.2);
+  // baseline 누락이면 null
+  assert.equal(computeCycleProfitRate({ baselineUsd: 0, cashAvailable: 100 }), null);
 });
 
 test('멱등키는 날짜, 전략, 매매 회차, 방향으로 구성된다', () => {
@@ -81,7 +106,6 @@ test('레포지토리는 거래 회차 증가, day lock 해제, 중복 주문 �
     fixedBuyUsdAmount: 1000,
     targetProfitRate: 0.02,
     stopLossRate: 0.05,
-    maxFluctuationRate: 0.2,
     forceCloseKst: '04:30',
     exchange: 'NAS'
   });
