@@ -216,6 +216,41 @@ test('같은 날짜·진입 구간에 진입 기록은 한 번만 만들어진�
 
 // ── 7.3 멱등키 중복 차단 · 7.5 실주문 OFF 기록 ──────────────────────────
 
+// ── 전 재산 자동 매수 (autoBudgetEnabled) ───────────────────────────────
+
+test('autoBudgetEnabled=true 전략은 morning/lunch budget을 0으로 저장하고 반환한다', () => {
+  const created = repo.createStrategy(user.id, {
+    autoBudgetEnabled: true,
+    morningBudget: 0,
+    morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    lunchEntryEnabled: true, lunchBudget: 0,
+    lunchTargetProfitRate: 0.02, lunchStopLossRate: 0.05
+  });
+  assert.equal(created.autoBudgetEnabled, true);
+  assert.equal(created.morningBudget, 0);
+  assert.equal(created.lunchBudget, 0);
+});
+
+test('autoBudgetEnabled=false 전략은 morning budget > 0 제약을 강제한다', () => {
+  assert.throws(() => repo.createStrategy(user.id, {
+    autoBudgetEnabled: false,
+    morningBudget: 0,
+    morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    lunchEntryEnabled: false, lunchBudget: 0,
+    lunchTargetProfitRate: 0.02, lunchStopLossRate: 0.05
+  }), /CHECK constraint/);
+});
+
+test('autoBudgetEnabled=false 전략은 lunch 진입 켜고 lunch budget = 0이면 거절된다', () => {
+  assert.throws(() => repo.createStrategy(user.id, {
+    autoBudgetEnabled: false,
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    lunchEntryEnabled: true, lunchBudget: 0,
+    lunchTargetProfitRate: 0.02, lunchStopLossRate: 0.05
+  }), /CHECK constraint/);
+});
+
 test('같은 멱등키 주문은 중복으로 감지된다 (DRY_RUN 기록도 동일)', () => {
   const strategy = repo.createStrategy(user.id, {
     morningBudget: 1_000_000, lunchBudget: 0,

@@ -108,6 +108,26 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 - **THEN** 보유 수량 전량 매도 주문이 만들어져야 한다
 - **AND** 매도 사유가 "손절"로 기록되어야 한다
 
+### Requirement: 전 재산 자동 매수 옵션
+
+시스템은 전략에 "전 재산 자동 매수"(`autoBudgetEnabled`) 옵션을 받아야 한다(MUST). 이 옵션이 켜져 있으면 매수 평가 시점의 KIS 매수가능금액을 그대로 매수 한도로 사용해야 하며(MUST), `morning_budget`·`lunch_budget` 입력값은 무시하고 0으로 저장한다. 옵션이 꺼져 있으면 입력된 `morning_budget`(점심 진입을 켜면 `lunch_budget`도)를 매수 한도로 사용해야 한다(MUST). 옵션이 꺼져 있고 `morning_budget`이 0 이하이거나 점심 진입이 켜진 상태에서 `lunch_budget`이 0 이하이면 전략 생성을 거절해야 한다(MUST).
+
+#### Scenario: 자동 예산 모드 매수
+- **WHEN** `autoBudgetEnabled = true` 전략의 오전 진입에서 매수가능금액이 1,250,000원, 선택 종목 현재가 5,000원
+- **THEN** 1,250,000원 한도로 250주 매수 수량이 계산되어야 한다 (1주 단위)
+
+#### Scenario: 자동 예산 모드에서 매도 후 잔액 변동 반영
+- **WHEN** `autoBudgetEnabled = true` 전략이 오전에 1,000,000원을 매수해 1,050,000원에 매도하고, 다음 거래일 매수가능금액이 1,050,000원
+- **THEN** 다음 매수 한도가 1,050,000원으로 자동 갱신되어야 한다(사용자가 매수 금액을 다시 입력할 필요 없음)
+
+#### Scenario: 고정 예산 모드
+- **WHEN** `autoBudgetEnabled = false` 전략의 오전 매수 금액이 500,000원이고 매수가능금액이 1,000,000원
+- **THEN** 500,000원이 매수 한도로 사용되어야 한다
+
+#### Scenario: 고정 예산 모드 0 거절
+- **WHEN** `autoBudgetEnabled = false` 전략 생성 시 `morning_budget = 0`
+- **THEN** DB CHECK 제약으로 거절해야 한다
+
 ### Requirement: 진입 구간별 청산 시각 (선택)
 
 시스템은 진입 구간별로 청산 시각(`HH:MM` Asia/Seoul 24시간 표기)을 선택적으로 받아 저장해야 한다(MUST). 청산 시각이 설정된 진입 구간의 보유분은, 평가 시 KST 현재 시각이 청산 시각 이상이면 목표 수익·손절 미도달이어도 전량 매도해야 한다(MUST). 매도 사유는 "청산 시각"(`TIME_LIQUIDATE`)으로 기록한다. 청산 시각이 설정되어 있어도 같은 평가에서 목표 수익 또는 손절 조건이 먼저 만족되면 그쪽 사유를 우선 적용해야 한다(MUST). 청산 시각을 비워 두면 시각 청산을 적용하지 않고 목표 수익·손절만 평가해야 한다(MUST).

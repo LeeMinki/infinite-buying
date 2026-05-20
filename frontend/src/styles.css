@@ -1636,6 +1636,13 @@ button.danger-button:hover:not(:disabled) {
   width: auto;
 }
 
+/* .mode-form label > span의 min-height/align-self는 일반 입력 칸용이라
+   체크박스 + 라벨이 같은 행에 있을 때는 텍스트가 위로 떠 보인다. 가운데로 다시 맞춘다. */
+.mode-form .checkbox-field > span {
+  align-self: center;
+  min-height: 0;
+}
+
 .actions-row {
   display: flex;
   flex-wrap: wrap;
@@ -2314,6 +2321,11 @@ td.neutral {
 
 /* 점심 진입 사용 체크박스가 폼 한 칸 전체를 차지하도록 */
 .kr-rank-form .checkbox-field {
+  grid-column: 1 / -1;
+}
+
+/* 자동 예산 안내문도 폼 한 줄을 모두 쓰게 한다. */
+.kr-rank-auto-budget-note {
   grid-column: 1 / -1;
 }
 
