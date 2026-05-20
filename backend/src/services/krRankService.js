@@ -100,7 +100,8 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
   }
   try {
     if (scheduled && !isKrMarketOpen()) {
-      return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource);
+      // 장 운영 시간 외 SKIP은 매분 폴링이라 로그를 만들지 않고 평가 시각만 갱신한다.
+      return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource, { noLog: true });
     }
     return await evaluateUnlocked(userId, strategy, evaluationSource);
   } finally {
@@ -492,8 +493,8 @@ function checkOrderSafety({
 
 // ── 헬퍼 ──────────────────────────────────────────────────────────────────
 
-// 1분 간격 폴링이라 스케줄러의 HOLD/SKIP까지 매번 기록하면 판단 로그가 폭주한다.
-// 의미 있는 이벤트(매수·매도·오류)와 사용자가 직접 누른 평가만 로그로 남긴다.
+// 1분 간격 폴링의 모든 평가(HOLD·SKIP 포함)를 판단 로그에 기록한다.
+// 단, 호출 측에서 noLog: true를 넘긴 평가(장 운영 시간 외 SKIP 등)는 로그를 만들지 않는다.
 function saveDecision(userId, strategy, input) {
   const evaluationSource = input.evaluationSource || 'SCHEDULED';
   const decision = input.decision;
@@ -506,17 +507,15 @@ function saveDecision(userId, strategy, input) {
       errorMessage: decision === 'ERROR' ? input.reason : null
     });
   }
-  const shouldLog = evaluationSource === 'MANUAL'
-    || decision === 'BUY' || decision === 'SELL' || decision === 'ERROR';
-  const log = shouldLog
-    ? repo.createDecisionLog(userId, { strategyId: strategy.id, ...input })
-    : null;
+  const log = input.noLog
+    ? null
+    : repo.createDecisionLog(userId, { strategyId: strategy.id, ...input });
   return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order: null };
 }
 
-function saveSkip(userId, strategy, reason, evaluationSource) {
+function saveSkip(userId, strategy, reason, evaluationSource, { noLog = false } = {}) {
   const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
-  return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason });
+  return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason, noLog });
 }
 
 async function safeOpenOrders(trading, symbol) {
