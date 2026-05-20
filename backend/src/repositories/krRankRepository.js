@@ -7,8 +7,9 @@ export function createStrategy(userId, input) {
     INSERT INTO kr_rank_strategies (
       user_id, morning_budget, lunch_budget,
       morning_target_profit_rate, morning_stop_loss_rate,
-      lunch_entry_enabled, lunch_target_profit_rate, lunch_stop_loss_rate
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      lunch_entry_enabled, lunch_target_profit_rate, lunch_stop_loss_rate,
+      morning_liquidate_time, lunch_liquidate_time
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     userId,
     input.morningBudget,
@@ -17,7 +18,9 @@ export function createStrategy(userId, input) {
     input.morningStopLossRate,
     input.lunchEntryEnabled ? 1 : 0,
     input.lunchTargetProfitRate,
-    input.lunchStopLossRate
+    input.lunchStopLossRate,
+    input.morningLiquidateTime || null,
+    input.lunchLiquidateTime || null
   );
   return getStrategy(userId, result.lastInsertRowid);
 }
@@ -28,6 +31,7 @@ export function updateStrategy(userId, id, input) {
     SET morning_budget = ?, lunch_budget = ?,
         morning_target_profit_rate = ?, morning_stop_loss_rate = ?,
         lunch_entry_enabled = ?, lunch_target_profit_rate = ?, lunch_stop_loss_rate = ?,
+        morning_liquidate_time = ?, lunch_liquidate_time = ?,
         updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(
@@ -38,6 +42,8 @@ export function updateStrategy(userId, id, input) {
     input.lunchEntryEnabled ? 1 : 0,
     input.lunchTargetProfitRate,
     input.lunchStopLossRate,
+    input.morningLiquidateTime || null,
+    input.lunchLiquidateTime || null,
     userId,
     id
   );
@@ -395,6 +401,8 @@ function toStrategy(row) {
     lunchEntryEnabled: row.lunch_entry_enabled === 1,
     lunchTargetProfitRate: row.lunch_target_profit_rate,
     lunchStopLossRate: row.lunch_stop_loss_rate,
+    morningLiquidateTime: row.morning_liquidate_time || null,
+    lunchLiquidateTime: row.lunch_liquidate_time || null,
     holdingSymbol: row.holding_symbol,
     holdingSymbolName: row.holding_symbol_name,
     holdingEntryWindow: row.holding_entry_window,
