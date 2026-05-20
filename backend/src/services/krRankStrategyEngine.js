@@ -53,8 +53,14 @@ export function computeBuyQuantity(cashAvailable, price) {
   return Math.floor(cash / unit);
 }
 
-// 보유 종목의 매도 판단. 목표 수익률 도달 → TARGET, 손절 기준 도달 → STOP_LOSS, 그 외 HOLD.
-export function evaluateSell({ currentPrice, averagePrice, targetProfitRate, stopLossRate }) {
+// 보유 종목의 매도 판단.
+// 우선순위: 목표 수익률(TARGET) → 손절 기준(STOP_LOSS) → 시각 청산(TIME_LIQUIDATE) → HOLD.
+// liquidateTime은 'HH:MM' KST 24시간 표기. 없거나 형식이 잘못되면 시각 청산을 적용하지 않는다.
+// nowMinutes는 KST 기준 자정 이후 분 수(0~1439). evaluateSell 호출 측이 제공한다.
+export function evaluateSell({
+  currentPrice, averagePrice, targetProfitRate, stopLossRate,
+  liquidateTime = null, nowMinutes = null
+}) {
   const price = Number(currentPrice);
   const avg = Number(averagePrice);
   if (!Number.isFinite(price) || !Number.isFinite(avg) || avg <= 0 || price <= 0) {
@@ -67,7 +73,29 @@ export function evaluateSell({ currentPrice, averagePrice, targetProfitRate, sto
   if (profitRate <= -Number(stopLossRate)) {
     return { decision: 'SELL', sellReason: 'STOP_LOSS', profitRate };
   }
+  const liquidateMinutes = parseHhmmMinutes(liquidateTime);
+  if (liquidateMinutes != null && Number.isFinite(Number(nowMinutes)) && Number(nowMinutes) >= liquidateMinutes) {
+    return { decision: 'SELL', sellReason: 'TIME_LIQUIDATE', profitRate };
+  }
   return { decision: 'HOLD', sellReason: null, profitRate };
+}
+
+// 'HH:MM'(24시간) 문자열을 자정 이후 분 수로 변환. 형식이 잘못되면 null.
+export function parseHhmmMinutes(value) {
+  if (value == null) return null;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value).trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || hours < 0 || hours > 23) return null;
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+// 현재 시각을 Asia/Seoul 자정 이후 분 수로 반환.
+export function kstNowMinutes(now = new Date()) {
+  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  return kst.getHours() * 60 + kst.getMinutes();
 }
 
 // 멱등키: {YYYYMMDD}-{strategyId}-{window}-{side}. 같은 (날짜·전략·구간·방향) 중복 주문을 막는다.

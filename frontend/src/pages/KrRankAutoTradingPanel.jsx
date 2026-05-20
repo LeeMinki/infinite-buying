@@ -95,10 +95,12 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
         morningBudget: Number(form.morningBudget),
         morningTargetProfitRate: Number(form.morningTargetProfitPercent) / 100,
         morningStopLossRate: Number(form.morningStopLossPercent) / 100,
+        morningLiquidateTime: form.morningLiquidateEnabled ? form.morningLiquidateTime : null,
         lunchEntryEnabled: form.lunchEntryEnabled,
         lunchBudget: form.lunchEntryEnabled ? Number(form.lunchBudget) : 0,
         lunchTargetProfitRate: form.lunchEntryEnabled ? Number(form.lunchTargetProfitPercent) / 100 : null,
-        lunchStopLossRate: form.lunchEntryEnabled ? Number(form.lunchStopLossPercent) / 100 : null
+        lunchStopLossRate: form.lunchEntryEnabled ? Number(form.lunchStopLossPercent) / 100 : null,
+        lunchLiquidateTime: form.lunchEntryEnabled && form.lunchLiquidateEnabled ? form.lunchLiquidateTime : null
       });
       setMessage('한국 국장 상승률 랭킹 전략을 만들었습니다.');
       await refresh(created.id);
@@ -182,6 +184,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           <li>오전·점심 각 진입 구간에서 하루 한 번씩 매수합니다. 점심 진입을 켜면 하루 두 번까지 매수할 수 있습니다. 매도했더라도 같은 구간에서 다시 매수하지 않습니다.</li>
           <li>등락률 25% 이상 종목은 매수 대상에서 제외합니다 (상한가까지 여유 확보).</li>
           <li>진입 구간별(오전/점심)로 매수 금액·목표 수익률·손절 기준을 따로 정합니다.</li>
+          <li>진입 구간별로 청산 시각(KST)을 선택할 수 있습니다. 켜면 그 시각 이후 목표·손절 미도달이어도 전량 매도하고, 끄면 목표·손절만 기다립니다.</li>
         </ul>
       </section>
 
@@ -217,6 +220,19 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
             <p className="helper">매수가 대비 이만큼 하락하면 전량 매도합니다.</p>
           </label>
           <label className="checkbox-field">
+            <input type="checkbox" checked={form.morningLiquidateEnabled}
+              onChange={(e) => setForm({ ...form, morningLiquidateEnabled: e.target.checked })} />
+            <span>오전 매수분 청산 시각 사용 (KST)</span>
+          </label>
+          {form.morningLiquidateEnabled && (
+            <label>
+              <span>오전 매수분 청산 시각</span>
+              <input type="time" value={form.morningLiquidateTime}
+                onChange={(e) => setForm({ ...form, morningLiquidateTime: e.target.value })} required />
+              <p className="helper">이 시각(Asia/Seoul) 이후 평가에서 목표·손절 미도달이어도 전량 매도합니다. 목표 수익·손절이 먼저 발생하면 그쪽이 우선입니다.</p>
+            </label>
+          )}
+          <label className="checkbox-field">
             <input type="checkbox" checked={form.lunchEntryEnabled}
               onChange={(e) => setForm({ ...form, lunchEntryEnabled: e.target.checked })} />
             <span>11시 30분 점심 진입 사용 (하루 두 번 매수)</span>
@@ -244,6 +260,19 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
                 <input type="number" min="0.1" step="0.1" value={form.lunchStopLossPercent}
                   onChange={(e) => setForm({ ...form, lunchStopLossPercent: e.target.value })} required />
               </label>
+              <label className="checkbox-field">
+                <input type="checkbox" checked={form.lunchLiquidateEnabled}
+                  onChange={(e) => setForm({ ...form, lunchLiquidateEnabled: e.target.checked })} />
+                <span>점심 매수분 청산 시각 사용 (KST)</span>
+              </label>
+              {form.lunchLiquidateEnabled && (
+                <label>
+                  <span>점심 매수분 청산 시각</span>
+                  <input type="time" value={form.lunchLiquidateTime}
+                    onChange={(e) => setForm({ ...form, lunchLiquidateTime: e.target.value })} required />
+                  <p className="helper">이 시각(Asia/Seoul) 이후 평가에서 목표·손절 미도달이어도 전량 매도합니다.</p>
+                </label>
+              )}
             </>
           )}
           <button type="submit" className="primary" disabled={busy === 'create'}>
@@ -294,8 +323,8 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           <>
             <div className="metric-grid compact-grid">
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
-              <Metric label="오전 진입" value={formatKrw(selected.morningBudget)} hint={`목표 +${pct(selected.morningTargetProfitRate)} / 손절 -${pct(selected.morningStopLossRate)}`} />
-              <Metric label="점심 진입" value={selected.lunchEntryEnabled ? formatKrw(selected.lunchBudget) : '미사용'} hint={selected.lunchEntryEnabled ? `목표 +${pct(selected.lunchTargetProfitRate)} / 손절 -${pct(selected.lunchStopLossRate)}` : '오전 진입만'} />
+              <Metric label="오전 진입" value={formatKrw(selected.morningBudget)} hint={`목표 +${pct(selected.morningTargetProfitRate)} / 손절 -${pct(selected.morningStopLossRate)}${selected.morningLiquidateTime ? ` / 청산 ${selected.morningLiquidateTime} KST` : ''}`} />
+              <Metric label="점심 진입" value={selected.lunchEntryEnabled ? formatKrw(selected.lunchBudget) : '미사용'} hint={selected.lunchEntryEnabled ? `목표 +${pct(selected.lunchTargetProfitRate)} / 손절 -${pct(selected.lunchStopLossRate)}${selected.lunchLiquidateTime ? ` / 청산 ${selected.lunchLiquidateTime} KST` : ''}` : '오전 진입만'} />
               <Metric label="현재 보유" value={selected.holdingSymbol ? `${selected.holdingSymbolName || selected.holdingSymbol}` : '무보유'} hint={selected.holdingSymbol ? `${ENTRY_WINDOW_LABEL[selected.holdingEntryWindow] || ''}로 매수` : '진입 대기'} />
             </div>
             <div className="metric-grid compact-grid">
@@ -563,10 +592,14 @@ function defaultForm() {
     morningBudget: '1000000',
     morningTargetProfitPercent: '2',
     morningStopLossPercent: '5',
+    morningLiquidateEnabled: false,
+    morningLiquidateTime: '15:00',
     lunchEntryEnabled: false,
     lunchBudget: '1000000',
     lunchTargetProfitPercent: '2',
-    lunchStopLossPercent: '5'
+    lunchStopLossPercent: '5',
+    lunchLiquidateEnabled: false,
+    lunchLiquidateTime: '15:15'
   };
 }
 
@@ -579,7 +612,10 @@ function decisionLabel(log) {
 }
 
 function sellReasonLabel(reason) {
-  return reason === 'TARGET' ? '목표 수익' : reason === 'STOP_LOSS' ? '손절' : reason;
+  if (reason === 'TARGET') return '목표 수익';
+  if (reason === 'STOP_LOSS') return '손절';
+  if (reason === 'TIME_LIQUIDATE') return '청산 시각';
+  return reason;
 }
 
 function entryStatusText(status) {

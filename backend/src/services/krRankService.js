@@ -9,6 +9,8 @@ import {
   selectRankingCandidate,
   computeBuyQuantity,
   evaluateSell,
+  kstNowMinutes,
+  parseHhmmMinutes,
   makeKrRankIdempotencyKey,
   MAX_FLUCTUATION_RATE
 } from './krRankStrategyEngine.js';
@@ -204,10 +206,15 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   const isLunch = entryWindow === 'LUNCH';
   const targetProfitRate = isLunch ? strategy.lunchTargetProfitRate : strategy.morningTargetProfitRate;
   const stopLossRate = isLunch ? strategy.lunchStopLossRate : strategy.morningStopLossRate;
-  const sell = evaluateSell({ currentPrice, averagePrice, targetProfitRate, stopLossRate });
+  const liquidateTime = isLunch ? strategy.lunchLiquidateTime : strategy.morningLiquidateTime;
+  const sell = evaluateSell({
+    currentPrice, averagePrice, targetProfitRate, stopLossRate,
+    liquidateTime, nowMinutes: kstNowMinutes()
+  });
   const profitPct = (sell.profitRate * 100).toFixed(2);
 
   if (sell.decision === 'HOLD') {
+    const liquidateNote = liquidateTime ? `, 청산 시각 ${liquidateTime} KST 미도달` : '';
     return saveDecision(userId, strategy, {
       decision: 'HOLD',
       entryWindow,
@@ -218,12 +225,16 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       holdingQuantity,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달이라 보유를 유지합니다.`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.`
     });
   }
 
   // SELL — 전량 매도.
-  const reasonLabel = sell.sellReason === 'TARGET' ? '목표 수익 도달' : '손절 기준 도달';
+  const reasonLabel = sell.sellReason === 'TARGET'
+    ? '목표 수익 도달'
+    : sell.sellReason === 'STOP_LOSS'
+      ? '손절 기준 도달'
+      : `청산 시각 도달 (${liquidateTime} KST)`;
   const idempotencyKey = makeKrRankIdempotencyKey({
     tradeDate: kstToday(), strategyId: strategy.id, entryWindow, side: 'SELL'
   });
@@ -541,20 +552,23 @@ function normalizeStrategyInput(input = {}) {
   const morningBudget = positiveNumber(input.morningBudget, '오전 매수 금액');
   const morningTargetProfitRate = positiveNumber(input.morningTargetProfitRate, '오전 목표 수익률');
   const morningStopLossRate = positiveNumber(input.morningStopLossRate, '오전 손절 기준');
+  const morningLiquidateTime = optionalHhmm(input.morningLiquidateTime, '오전 청산 시각');
 
   // 점심 진입을 켜면 하루 두 번 매수하므로 점심 매수 금액·목표 수익률·손절 기준을 따로 입력받는다.
   // 점심 진입이 꺼져 있으면 lunch_* 값은 사용하지 않으므로 오전 값으로 채워 둔다.
   let lunchBudget = 0;
   let lunchTargetProfitRate = morningTargetProfitRate;
   let lunchStopLossRate = morningStopLossRate;
+  let lunchLiquidateTime = null;
   if (lunchEntryEnabled) {
     lunchBudget = positiveNumber(input.lunchBudget, '점심 매수 금액');
     lunchTargetProfitRate = positiveNumber(input.lunchTargetProfitRate, '점심 목표 수익률');
     lunchStopLossRate = positiveNumber(input.lunchStopLossRate, '점심 손절 기준');
+    lunchLiquidateTime = optionalHhmm(input.lunchLiquidateTime, '점심 청산 시각');
   }
   return {
-    morningBudget, morningTargetProfitRate, morningStopLossRate,
-    lunchEntryEnabled, lunchBudget, lunchTargetProfitRate, lunchStopLossRate
+    morningBudget, morningTargetProfitRate, morningStopLossRate, morningLiquidateTime,
+    lunchEntryEnabled, lunchBudget, lunchTargetProfitRate, lunchStopLossRate, lunchLiquidateTime
   };
 }
 
@@ -562,6 +576,14 @@ function positiveNumber(value, label) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) throw badRequest(`${label}은(는) 0보다 커야 합니다.`);
   return n;
+}
+
+// 'HH:MM' KST 24시간 표기 검증. 빈 값/null이면 청산 시각을 쓰지 않는다는 뜻으로 null 반환.
+function optionalHhmm(value, label) {
+  if (value == null || value === '') return null;
+  const minutes = parseHhmmMinutes(value);
+  if (minutes == null) throw badRequest(`${label}은(는) 'HH:MM' 24시간 표기여야 합니다 (예: 14:30).`);
+  return value;
 }
 
 function requireStrategy(userId, id) {

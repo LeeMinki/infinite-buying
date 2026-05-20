@@ -6,6 +6,8 @@ import {
   computeBuyQuantity,
   evaluateSell,
   resolveEntryWindow,
+  parseHhmmMinutes,
+  kstNowMinutes,
   makeKrRankIdempotencyKey,
   MAX_FLUCTUATION_RATE
 } from '../src/services/krRankStrategyEngine.js';
@@ -82,6 +84,78 @@ test('목표·손절 모두 미도달 시 보유 유지', () => {
   const sell = evaluateSell({ currentPrice: 10200, averagePrice: 10000, targetProfitRate: 0.05, stopLossRate: 0.03 });
   assert.equal(sell.decision, 'HOLD');
   assert.equal(sell.sellReason, null);
+});
+
+// ── 시각 청산 (TIME_LIQUIDATE) ───────────────────────────────────────────
+
+test('청산 시각 도달 시 목표·손절 미도달이어도 시각 청산 매도', () => {
+  // 14:30 청산 + 현재 14:30 KST + 수익률 +2% (목표 +5%·손절 -3% 모두 미도달)
+  const sell = evaluateSell({
+    currentPrice: 10200, averagePrice: 10000,
+    targetProfitRate: 0.05, stopLossRate: 0.03,
+    liquidateTime: '14:30', nowMinutes: 14 * 60 + 30
+  });
+  assert.equal(sell.decision, 'SELL');
+  assert.equal(sell.sellReason, 'TIME_LIQUIDATE');
+});
+
+test('청산 시각 미도달이면 기존 동작대로 HOLD', () => {
+  // 14:30 청산 + 현재 14:29 KST + 수익률 +2% → HOLD
+  const sell = evaluateSell({
+    currentPrice: 10200, averagePrice: 10000,
+    targetProfitRate: 0.05, stopLossRate: 0.03,
+    liquidateTime: '14:30', nowMinutes: 14 * 60 + 29
+  });
+  assert.equal(sell.decision, 'HOLD');
+});
+
+test('청산 시각 도달했어도 목표 수익이 먼저 발생하면 TARGET 우선', () => {
+  // 14:30 청산 + 현재 15:00 KST + 수익률 +6% (목표 +5% 도달)
+  const sell = evaluateSell({
+    currentPrice: 10600, averagePrice: 10000,
+    targetProfitRate: 0.05, stopLossRate: 0.03,
+    liquidateTime: '14:30', nowMinutes: 15 * 60
+  });
+  assert.equal(sell.decision, 'SELL');
+  assert.equal(sell.sellReason, 'TARGET');
+});
+
+test('청산 시각 도달했어도 손절이 먼저 발생하면 STOP_LOSS 우선', () => {
+  // 14:30 청산 + 현재 15:00 KST + 수익률 -4% (손절 -3% 도달)
+  const sell = evaluateSell({
+    currentPrice: 9600, averagePrice: 10000,
+    targetProfitRate: 0.05, stopLossRate: 0.03,
+    liquidateTime: '14:30', nowMinutes: 15 * 60
+  });
+  assert.equal(sell.decision, 'SELL');
+  assert.equal(sell.sellReason, 'STOP_LOSS');
+});
+
+test('청산 시각이 null이면 시각 청산을 적용하지 않는다', () => {
+  const sell = evaluateSell({
+    currentPrice: 10200, averagePrice: 10000,
+    targetProfitRate: 0.05, stopLossRate: 0.03,
+    liquidateTime: null, nowMinutes: 23 * 60
+  });
+  assert.equal(sell.decision, 'HOLD');
+});
+
+test("parseHhmmMinutes: 'HH:MM' 파싱과 잘못된 형식 거부", () => {
+  assert.equal(parseHhmmMinutes('00:00'), 0);
+  assert.equal(parseHhmmMinutes('14:30'), 14 * 60 + 30);
+  assert.equal(parseHhmmMinutes('23:59'), 23 * 60 + 59);
+  assert.equal(parseHhmmMinutes('9:05'), 9 * 60 + 5);
+  assert.equal(parseHhmmMinutes('24:00'), null);
+  assert.equal(parseHhmmMinutes('12:60'), null);
+  assert.equal(parseHhmmMinutes('abc'), null);
+  assert.equal(parseHhmmMinutes(''), null);
+  assert.equal(parseHhmmMinutes(null), null);
+});
+
+test('kstNowMinutes는 0~1439 범위 정수를 반환한다', () => {
+  const m = kstNowMinutes();
+  assert.ok(Number.isInteger(m));
+  assert.ok(m >= 0 && m < 1440);
 });
 
 // ── 진입 구간 판정 ──────────────────────────────────────────────────────
