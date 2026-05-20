@@ -243,9 +243,9 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           {form.morningLiquidateEnabled && (
             <label>
               <span>오전 매수분 청산 시각</span>
-              <input type="time" value={form.morningLiquidateTime}
+              <input type="time" value={form.morningLiquidateTime} min="09:11"
                 onChange={(e) => setForm({ ...form, morningLiquidateTime: e.target.value })} required />
-              <p className="helper">이 시각(Asia/Seoul) 이후 평가에서 목표·손절 미도달이어도 전량 매도합니다. 목표 수익·손절이 먼저 발생하면 그쪽이 우선입니다.</p>
+              <p className="helper">이 시각(Asia/Seoul) 이후 평가에서 목표·손절 미도달이어도 전량 매도합니다. 목표 수익·손절이 먼저 발생하면 그쪽이 우선입니다. 오전 진입 시각(09:10) 이전 값은 거절되며, 진입 직후 시각으로 설정하면 매수 직후 청산될 수 있으니 여유롭게 잡으세요.</p>
             </label>
           )}
           <label className="checkbox-field">
@@ -286,9 +286,9 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
               {form.lunchLiquidateEnabled && (
                 <label>
                   <span>점심 매수분 청산 시각</span>
-                  <input type="time" value={form.lunchLiquidateTime}
+                  <input type="time" value={form.lunchLiquidateTime} min="11:31"
                     onChange={(e) => setForm({ ...form, lunchLiquidateTime: e.target.value })} required />
-                  <p className="helper">이 시각(Asia/Seoul) 이후 평가에서 목표·손절 미도달이어도 전량 매도합니다.</p>
+                  <p className="helper">이 시각(Asia/Seoul) 이후 평가에서 목표·손절 미도달이어도 전량 매도합니다. 점심 진입 시각(11:30) 이전 값은 거절됩니다.</p>
                 </label>
               )}
             </>

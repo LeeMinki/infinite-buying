@@ -220,6 +220,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
 
   if (sell.decision === 'HOLD') {
     const liquidateNote = liquidateTime ? `, 청산 시각 ${liquidateTime} KST 미도달` : '';
+    const blockedEntryNote = describeBlockedEntryWindow(strategy, entryWindow, symbol);
     return saveDecision(userId, strategy, {
       decision: 'HOLD',
       entryWindow,
@@ -230,7 +231,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       holdingQuantity,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.${blockedEntryNote}`
     });
   }
 
@@ -548,6 +549,20 @@ async function safeOpenOrders(trading, symbol) {
   }
 }
 
+// 보유 종목 때문에 신규 진입이 차단되는 상황을 사유에 명시한다.
+// 지금이 어떤 진입 구간이고, 그 구간에 대한 오늘의 진입 기록이 아직 없으면
+// "다른 매수분 보유 중이라 이번 구간 진입을 건너뜁니다" 메모를 돌려준다.
+// 같은 구간이라도 오늘 새 진입을 못 하는 경우(예: 어제 매수분 오버나잇 보유)도 포함된다.
+function describeBlockedEntryWindow(strategy, holdingEntryWindow, symbol) {
+  const currentWindow = resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
+  if (!currentWindow) return '';
+  const todayEntry = repo.getEntry(strategy.id, kstToday(), currentWindow);
+  if (todayEntry) return '';
+  const currentLabel = ENTRY_WINDOWS[currentWindow].label;
+  const holdingLabel = ENTRY_WINDOWS[holdingEntryWindow].label;
+  return ` 지금은 ${currentLabel} 진입 구간이지만 ${holdingLabel} 매수분(${symbol}) 보유 중이라 ${currentLabel} 진입을 건너뜁니다.`;
+}
+
 function orderStatusNote(order, liveOrderEnabled) {
   if (order.status === 'FAILED' || order.status === 'REJECTED') {
     return `주문 실패: ${order.errorMessage || '거절됨'} (자동 재시도하지 않습니다.)`;
@@ -565,7 +580,11 @@ function normalizeStrategyInput(input = {}) {
   const morningBudget = autoBudgetEnabled ? 0 : positiveNumber(input.morningBudget, '오전 매수 금액');
   const morningTargetProfitRate = positiveNumber(input.morningTargetProfitRate, '오전 목표 수익률');
   const morningStopLossRate = positiveNumber(input.morningStopLossRate, '오전 손절 기준');
-  const morningLiquidateTime = optionalHhmm(input.morningLiquidateTime, '오전 청산 시각');
+  // 오전 진입 구간(09:10) 이전 시각으로 청산을 잡으면 매수 직후 즉시 청산되어 의미 없는 거래가 된다.
+  const morningLiquidateTime = optionalHhmm(
+    input.morningLiquidateTime, '오전 청산 시각',
+    { afterMinutes: ENTRY_WINDOWS.MORNING.startMinutes, afterLabel: '오전 진입 시각(09:10)' }
+  );
 
   // 점심 진입을 켜면 하루 두 번 매수하므로 점심 매수 금액·목표 수익률·손절 기준을 따로 입력받는다.
   // 점심 진입이 꺼져 있으면 lunch_* 값은 사용하지 않으므로 오전 값으로 채워 둔다.
@@ -577,7 +596,11 @@ function normalizeStrategyInput(input = {}) {
     lunchBudget = autoBudgetEnabled ? 0 : positiveNumber(input.lunchBudget, '점심 매수 금액');
     lunchTargetProfitRate = positiveNumber(input.lunchTargetProfitRate, '점심 목표 수익률');
     lunchStopLossRate = positiveNumber(input.lunchStopLossRate, '점심 손절 기준');
-    lunchLiquidateTime = optionalHhmm(input.lunchLiquidateTime, '점심 청산 시각');
+    // 점심 진입 시각(11:30) 이전 시각으로 청산을 잡으면 점심 매수 직후 즉시 청산된다.
+    lunchLiquidateTime = optionalHhmm(
+      input.lunchLiquidateTime, '점심 청산 시각',
+      { afterMinutes: ENTRY_WINDOWS.LUNCH.startMinutes, afterLabel: '점심 진입 시각(11:30)' }
+    );
   }
   return {
     morningBudget, morningTargetProfitRate, morningStopLossRate, morningLiquidateTime,
@@ -593,10 +616,14 @@ function positiveNumber(value, label) {
 }
 
 // 'HH:MM' KST 24시간 표기 검증. 빈 값/null이면 청산 시각을 쓰지 않는다는 뜻으로 null 반환.
-function optionalHhmm(value, label) {
+// afterMinutes를 주면 그 시각보다 뒤여야 한다(매수 직후 즉시 청산 footgun 차단).
+function optionalHhmm(value, label, { afterMinutes = null, afterLabel = null } = {}) {
   if (value == null || value === '') return null;
   const minutes = parseHhmmMinutes(value);
   if (minutes == null) throw badRequest(`${label}은(는) 'HH:MM' 24시간 표기여야 합니다 (예: 14:30).`);
+  if (afterMinutes != null && minutes <= afterMinutes) {
+    throw badRequest(`${label}은(는) ${afterLabel} 이후여야 합니다. 그 이전이면 매수 직후 즉시 청산됩니다.`);
+  }
   return value;
 }
 
