@@ -687,33 +687,40 @@ function OrdersTable({ orders, onRefresh, busy }) {
               <th>상태</th>
               <th>수량</th>
               <th>가격</th>
+              <th>총 금액</th>
               <th>사유</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {orders.map((order) => (
-              <tr key={order.id}>
-                <td className="muted">{formatDate(order.createdAt)}</td>
-                <td>{order.side}</td>
-                <td><span className="half-chip">{orderHalfLabel(order.half)}</span></td>
-                <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
-                <td>{formatQuantity(order.quantity)}</td>
-                <td>{formatMoney(order.orderPrice, order.currency)}</td>
-                <td className="muted">
-                  {order.decisionReason}
-                  {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
-                    <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
-                  )}
-                </td>
-                <td>
-                  <button type="button" className="ghost sm" disabled={busy === `order-${order.id}` || order.status === 'DRY_RUN'} onClick={() => onRefresh(order.id)}>
-                    갱신
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="8">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.map((order) => {
+              const totalAmount = Number(order.estimatedAmount) > 0
+                ? Number(order.estimatedAmount)
+                : Number(order.quantity || 0) * Number(order.orderPrice || 0);
+              return (
+                <tr key={order.id}>
+                  <td className="muted">{formatDate(order.createdAt)}</td>
+                  <td>{order.side}</td>
+                  <td><span className="half-chip">{orderHalfLabel(order.half)}</span></td>
+                  <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
+                  <td>{formatQuantity(order.quantity)}</td>
+                  <td>{formatMoney(order.orderPrice, order.currency)}</td>
+                  <td>{totalAmount > 0 ? formatMoney(totalAmount, order.currency) : '-'}</td>
+                  <td className="muted">
+                    {order.decisionReason}
+                    {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
+                      <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
+                    )}
+                  </td>
+                  <td>
+                    <button type="button" className="ghost sm" disabled={busy === `order-${order.id}` || order.status === 'DRY_RUN'} onClick={() => onRefresh(order.id)}>
+                      갱신
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="9">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -740,6 +747,8 @@ function DecisionLogTable({ decisions, currency }) {
               <th>평단가</th>
               <th>목표가</th>
               <th>목표가까지</th>
+              <th>보유 수량</th>
+              <th>평가금액</th>
               <th>예상 수량</th>
               <th>예상 금액</th>
               <th>미체결</th>
@@ -756,6 +765,7 @@ function DecisionLogTable({ decisions, currency }) {
                   ? `도달 (${(Math.abs(dist) * 100).toFixed(2)}% 위)`
                   : `+${(dist * 100).toFixed(2)}%`;
               const distClass = dist == null ? '' : dist <= 0 ? 'positive' : 'neutral';
+              const holdingValue = Number(log.holdingQuantity || 0) * Number(log.currentPrice || 0);
               return (
                 <tr key={log.id}>
                   <td className="muted">{formatDate(log.createdAt)}</td>
@@ -765,6 +775,8 @@ function DecisionLogTable({ decisions, currency }) {
                   <td>{log.averagePrice > 0 ? formatMoney(log.averagePrice, currency) : '-'}</td>
                   <td>{log.targetSellPrice > 0 ? formatMoney(log.targetSellPrice, currency) : '-'}</td>
                   <td className={distClass}>{distLabel}</td>
+                  <td>{log.holdingQuantity > 0 ? formatQuantity(log.holdingQuantity) : '-'}</td>
+                  <td>{holdingValue > 0 ? formatMoney(holdingValue, currency) : '-'}</td>
                   <td>{log.expectedQuantity ? formatQuantity(log.expectedQuantity) : '-'}</td>
                   <td>{log.expectedAmount ? formatMoney(log.expectedAmount, currency) : '-'}</td>
                   <td className="muted">{log.openOrderCount || 0}</td>
@@ -773,7 +785,7 @@ function DecisionLogTable({ decisions, currency }) {
                 </tr>
               );
             })}
-            {decisions.length === 0 && <tr><td className="empty-row" colSpan="12">아직 판단 로그가 없습니다.</td></tr>}
+            {decisions.length === 0 && <tr><td className="empty-row" colSpan="14">아직 판단 로그가 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>

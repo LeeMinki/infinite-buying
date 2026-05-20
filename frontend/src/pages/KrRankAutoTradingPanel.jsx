@@ -426,7 +426,7 @@ function DecisionLogTable({ decisions }) {
   return (
     <section className="subsection">
       <h4>판단 로그</h4>
-      <p className="helper">랭킹 조회·종목 선택·매수/매도 판단 기록입니다. 진입 구간과 매도 사유를 구분해 보여줍니다.</p>
+      <p className="helper">랭킹 조회·종목 선택·매수/매도·보유 평가 기록입니다. 스케줄러는 장 운영 시간(09:00~15:30) 안에서 1분마다 기록합니다.</p>
       <div className="table-wrap">
         <table>
           <thead>
@@ -437,24 +437,31 @@ function DecisionLogTable({ decisions }) {
               <th>출처</th>
               <th>선택 종목</th>
               <th>현재가</th>
-              <th>수량</th>
+              <th>보유 수량</th>
+              <th>평가금액</th>
+              <th>예상 수량</th>
               <th>사유</th>
             </tr>
           </thead>
           <tbody>
-            {decisions.map((log) => (
-              <tr key={log.id}>
-                <td className="muted">{formatDate(log.createdAt)}</td>
-                <td><span className={`decision compact ${String(log.decision).toLowerCase()}`}>{decisionLabel(log)}</span></td>
-                <td>{log.entryWindow ? ENTRY_WINDOW_LABEL[log.entryWindow] : '-'}</td>
-                <td className="muted">{log.evaluationSource === 'MANUAL' ? '수동' : '스케줄러'}</td>
-                <td>{log.selectedSymbol ? `${log.selectedSymbolName || ''} ${log.selectedSymbol}`.trim() : '-'}</td>
-                <td>{log.currentPrice > 0 ? formatKrw(log.currentPrice) : '-'}</td>
-                <td>{log.expectedQuantity ? `${formatNumber(log.expectedQuantity)}주` : '-'}</td>
-                <td className="muted">{log.reason}</td>
-              </tr>
-            ))}
-            {decisions.length === 0 && <tr><td className="empty-row" colSpan="8">아직 판단 로그가 없습니다.</td></tr>}
+            {decisions.map((log) => {
+              const holdingValue = Number(log.holdingQuantity || 0) * Number(log.currentPrice || 0);
+              return (
+                <tr key={log.id}>
+                  <td className="muted">{formatDate(log.createdAt)}</td>
+                  <td><span className={`decision compact ${String(log.decision).toLowerCase()}`}>{decisionLabel(log)}</span></td>
+                  <td>{log.entryWindow ? ENTRY_WINDOW_LABEL[log.entryWindow] : '-'}</td>
+                  <td className="muted">{log.evaluationSource === 'MANUAL' ? '수동' : '스케줄러'}</td>
+                  <td>{log.selectedSymbol ? `${log.selectedSymbolName || ''} ${log.selectedSymbol}`.trim() : '-'}</td>
+                  <td>{log.currentPrice > 0 ? formatKrw(log.currentPrice) : '-'}</td>
+                  <td>{log.holdingQuantity > 0 ? `${formatNumber(log.holdingQuantity)}주` : '-'}</td>
+                  <td>{holdingValue > 0 ? formatKrw(holdingValue) : '-'}</td>
+                  <td>{log.expectedQuantity ? `${formatNumber(log.expectedQuantity)}주` : '-'}</td>
+                  <td className="muted">{log.reason}</td>
+                </tr>
+              );
+            })}
+            {decisions.length === 0 && <tr><td className="empty-row" colSpan="10">아직 판단 로그가 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -478,29 +485,36 @@ function OrdersTable({ orders }) {
               <th>실주문</th>
               <th>수량</th>
               <th>가격</th>
+              <th>총 금액</th>
               <th>사유</th>
             </tr>
           </thead>
           <tbody>
-            {orders.map((order) => (
-              <tr key={order.id}>
-                <td className="muted">{formatDate(order.createdAt)}</td>
-                <td>{order.side === 'BUY' ? '매수' : '매도'}</td>
-                <td>{ENTRY_WINDOW_LABEL[order.entryWindow] || '-'}</td>
-                <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '-'}</td>
-                <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' || order.status === 'REJECTED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
-                <td className="muted">{order.liveOrderEnabled ? '실주문' : '기록만'}</td>
-                <td>{formatNumber(order.quantity)}주</td>
-                <td>{formatKrw(order.orderPrice)}</td>
-                <td className="muted">
-                  {order.decisionReason}
-                  {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
-                    <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="9">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.map((order) => {
+              const totalAmount = Number(order.estimatedAmount) > 0
+                ? Number(order.estimatedAmount)
+                : Number(order.quantity || 0) * Number(order.orderPrice || 0);
+              return (
+                <tr key={order.id}>
+                  <td className="muted">{formatDate(order.createdAt)}</td>
+                  <td>{order.side === 'BUY' ? '매수' : '매도'}</td>
+                  <td>{ENTRY_WINDOW_LABEL[order.entryWindow] || '-'}</td>
+                  <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '-'}</td>
+                  <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' || order.status === 'REJECTED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
+                  <td className="muted">{order.liveOrderEnabled ? '실주문' : '기록만'}</td>
+                  <td>{formatNumber(order.quantity)}주</td>
+                  <td>{formatKrw(order.orderPrice)}</td>
+                  <td>{totalAmount > 0 ? formatKrw(totalAmount) : '-'}</td>
+                  <td className="muted">
+                    {order.decisionReason}
+                    {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
+                      <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="10">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
