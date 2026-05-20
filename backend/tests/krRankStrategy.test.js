@@ -251,6 +251,77 @@ test('autoBudgetEnabled=false 전략은 lunch 진입 켜고 lunch budget = 0이�
   }), /CHECK constraint/);
 });
 
+// ── 청산 시각 검증 (진입 시각 이전 footgun 차단) ─────────────────────────
+
+const service = await import('../src/services/krRankService.js');
+
+test('오전 청산 시각이 09:10 이전이면 거절', async () => {
+  await assert.rejects(
+    async () => service.createStrategy(user.id, {
+      morningBudget: 1_000_000,
+      morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+      morningLiquidateTime: '09:00',
+      lunchEntryEnabled: false
+    }),
+    /오전 청산 시각.*이후여야/
+  );
+});
+
+test('오전 청산 시각이 09:10 정확이면 거절(즉시 청산 방지)', async () => {
+  await assert.rejects(
+    async () => service.createStrategy(user.id, {
+      morningBudget: 1_000_000,
+      morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+      morningLiquidateTime: '09:10',
+      lunchEntryEnabled: false
+    }),
+    /오전 청산 시각.*이후여야/
+  );
+});
+
+test('오전 청산 시각이 09:11 이후면 허용', () => {
+  const created = service.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    morningLiquidateTime: '09:11',
+    lunchEntryEnabled: false
+  });
+  assert.equal(created.morningLiquidateTime, '09:11');
+});
+
+test('점심 청산 시각이 11:30 이전이면 거절', async () => {
+  await assert.rejects(
+    async () => service.createStrategy(user.id, {
+      morningBudget: 1_000_000,
+      morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+      lunchEntryEnabled: true, lunchBudget: 1_000_000,
+      lunchTargetProfitRate: 0.02, lunchStopLossRate: 0.05,
+      lunchLiquidateTime: '11:00'
+    }),
+    /점심 청산 시각.*이후여야/
+  );
+});
+
+test('점심 청산 시각이 11:31 이상이면 허용', () => {
+  const created = service.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    lunchEntryEnabled: true, lunchBudget: 1_000_000,
+    lunchTargetProfitRate: 0.02, lunchStopLossRate: 0.05,
+    lunchLiquidateTime: '12:30'
+  });
+  assert.equal(created.lunchLiquidateTime, '12:30');
+});
+
+test('청산 시각이 비어 있으면 검증 통과(시각 청산 미적용)', () => {
+  const created = service.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    lunchEntryEnabled: false
+  });
+  assert.equal(created.morningLiquidateTime, null);
+});
+
 test('같은 멱등키 주문은 중복으로 감지된다 (DRY_RUN 기록도 동일)', () => {
   const strategy = repo.createStrategy(user.id, {
     morningBudget: 1_000_000, lunchBudget: 0,
