@@ -55,7 +55,7 @@ export function startStrategy(userId, id) {
     decision: 'SKIP',
     liveOrderEnabled,
     evaluationSource: 'MANUAL',
-    reason: `한국 국장 상승률 랭킹 전략을 시작했습니다. 서버가 1분 간격으로 평가하며, 오전 09:10 진입(매수 금액 ${fmt(strategy.morningBudget)}원)${strategy.lunchEntryEnabled ? `, 점심 11:30 진입(매수 금액 ${fmt(strategy.lunchBudget)}원)` : ''}에 상승률 상위 종목을 매수합니다. 실주문 설정: ${liveOrderEnabled ? '켜짐' : '꺼짐'}.`
+    reason: `한국 국장 상승률 랭킹 전략을 시작했습니다. 서버가 1분 간격으로 평가하며, 오전 09:10 진입(${strategy.autoBudgetEnabled ? '매수 금액 자동(매수가능금액 전액)' : `매수 금액 ${fmt(strategy.morningBudget)}원`})${strategy.lunchEntryEnabled ? `, 점심 11:30 진입(${strategy.autoBudgetEnabled ? '매수 금액 자동(매수가능금액 전액)' : `매수 금액 ${fmt(strategy.lunchBudget)}원`})` : ''}에 상승률 상위 종목을 매수합니다. 실주문 설정: ${liveOrderEnabled ? '켜짐' : '꺼짐'}.`
   });
   return started;
 }
@@ -130,12 +130,16 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
   // 1분 폴링이라 할 일이 없는 tick은 KIS 호출 없이 일찍 끝낸다.
   // 무보유이고 진입 구간이 아니거나, 이미 그 구간 진입을 마쳤으면 바로 종료한다.
+  // 사용자가 직접 누른 평가(MANUAL)는 응답으로 사유를 보여주기 위해 기록하지만,
+  // 스케줄러(SCHEDULED) 평가에서 매분 반복되는 idle SKIP은 노이즈라 로그를 생략한다.
+  const noLogIfScheduled = evaluationSource !== 'MANUAL';
   if (!strategy.holdingSymbol) {
     const window = resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
     if (!window) {
       return saveDecision(userId, strategy, {
         decision: 'SKIP', liveOrderEnabled, evaluationSource,
-        reason: '지금은 오전·점심 진입 구간이 아니라 매수 평가를 하지 않습니다.'
+        reason: '지금은 오전·점심 진입 구간이 아니라 매수 평가를 하지 않습니다.',
+        noLog: noLogIfScheduled
       });
     }
     // 진입 기록이 종결 상태(매수 완료 / 후보 없음)면 KIS 호출 없이 끝낸다.
@@ -146,7 +150,8 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
         decision: 'SKIP', entryWindow: window, liveOrderEnabled, evaluationSource,
         reason: existing.bought
           ? `오늘 ${ENTRY_WINDOWS[window].label} 진입 매수를 마쳤습니다.`
-          : `오늘 ${ENTRY_WINDOWS[window].label} 진입: 매수 대상이 없어 매수하지 않았습니다.`
+          : `오늘 ${ENTRY_WINDOWS[window].label} 진입: 매수 대상이 없어 매수하지 않았습니다.`,
+        noLog: noLogIfScheduled
       });
     }
   }
@@ -381,7 +386,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   }
 
   // 시장가 매수 수량 — KIS는 시장가 매수 증거금을 상한가 기준으로 잡으므로 상한가로 산정한다.
-  const entryBudget = entryWindow === 'LUNCH' ? strategy.lunchBudget : strategy.morningBudget;
+  // autoBudgetEnabled면 평가 시점의 KIS 매수가능금액을 그대로 매수 한도로 쓴다(사용자 개입 없이 매일 잔액 변동을 따라간다).
   const [priceQuote, buyingPower] = await Promise.all([
     trading.getCurrentPrice(symbol, { market: 'KR' }),
     trading.getBuyingPower(symbol, { market: 'KR', currency: 'KRW', price: entry.selectedPrice })
@@ -391,14 +396,20 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     ? Number(priceQuote.upperLimitPrice)
     : currentPrice * PRICE_LIMIT_MULTIPLIER;
   const cashAvailable = Number(buyingPower.cashAvailable || 0);
+  const entryBudget = strategy.autoBudgetEnabled
+    ? cashAvailable
+    : (entryWindow === 'LUNCH' ? strategy.lunchBudget : strategy.morningBudget);
   const quantity = computeBuyQuantity(Math.min(entryBudget, cashAvailable), marginPrice);
 
   if (quantity <= 0) {
     // 1주도 못 산다 → 진입 기록은 SELECTED 그대로 두고 다음 tick에 다시 본다.
+    const budgetNote = strategy.autoBudgetEnabled
+      ? `매수가능금액 ${fmt(cashAvailable)}원(자동 예산 모드)`
+      : `매수 금액 한도 ${fmt(entryBudget)}원·매수가능금액 ${fmt(cashAvailable)}원`;
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
       currentPrice, cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${symbol} 매수 금액 한도 ${fmt(entryBudget)}원·매수가능금액 ${fmt(cashAvailable)}원으로 1주도 매수할 수 없습니다.`
+      reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없습니다.`
     });
   }
 
@@ -549,7 +560,9 @@ function orderStatusNote(order, liveOrderEnabled) {
 
 function normalizeStrategyInput(input = {}) {
   const lunchEntryEnabled = input.lunchEntryEnabled === true;
-  const morningBudget = positiveNumber(input.morningBudget, '오전 매수 금액');
+  const autoBudgetEnabled = input.autoBudgetEnabled === true;
+  // 자동 예산 모드면 매수 금액은 평가 시점 KIS 매수가능금액을 그대로 쓰므로 입력값을 검증하지 않고 0으로 저장한다.
+  const morningBudget = autoBudgetEnabled ? 0 : positiveNumber(input.morningBudget, '오전 매수 금액');
   const morningTargetProfitRate = positiveNumber(input.morningTargetProfitRate, '오전 목표 수익률');
   const morningStopLossRate = positiveNumber(input.morningStopLossRate, '오전 손절 기준');
   const morningLiquidateTime = optionalHhmm(input.morningLiquidateTime, '오전 청산 시각');
@@ -561,14 +574,15 @@ function normalizeStrategyInput(input = {}) {
   let lunchStopLossRate = morningStopLossRate;
   let lunchLiquidateTime = null;
   if (lunchEntryEnabled) {
-    lunchBudget = positiveNumber(input.lunchBudget, '점심 매수 금액');
+    lunchBudget = autoBudgetEnabled ? 0 : positiveNumber(input.lunchBudget, '점심 매수 금액');
     lunchTargetProfitRate = positiveNumber(input.lunchTargetProfitRate, '점심 목표 수익률');
     lunchStopLossRate = positiveNumber(input.lunchStopLossRate, '점심 손절 기준');
     lunchLiquidateTime = optionalHhmm(input.lunchLiquidateTime, '점심 청산 시각');
   }
   return {
     morningBudget, morningTargetProfitRate, morningStopLossRate, morningLiquidateTime,
-    lunchEntryEnabled, lunchBudget, lunchTargetProfitRate, lunchStopLossRate, lunchLiquidateTime
+    lunchEntryEnabled, lunchBudget, lunchTargetProfitRate, lunchStopLossRate, lunchLiquidateTime,
+    autoBudgetEnabled
   };
 }
 

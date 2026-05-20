@@ -8,8 +8,8 @@ export function createStrategy(userId, input) {
       user_id, morning_budget, lunch_budget,
       morning_target_profit_rate, morning_stop_loss_rate,
       lunch_entry_enabled, lunch_target_profit_rate, lunch_stop_loss_rate,
-      morning_liquidate_time, lunch_liquidate_time
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      morning_liquidate_time, lunch_liquidate_time, auto_budget_enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     userId,
     input.morningBudget,
@@ -20,7 +20,8 @@ export function createStrategy(userId, input) {
     input.lunchTargetProfitRate,
     input.lunchStopLossRate,
     input.morningLiquidateTime || null,
-    input.lunchLiquidateTime || null
+    input.lunchLiquidateTime || null,
+    input.autoBudgetEnabled ? 1 : 0
   );
   return getStrategy(userId, result.lastInsertRowid);
 }
@@ -32,6 +33,7 @@ export function updateStrategy(userId, id, input) {
         morning_target_profit_rate = ?, morning_stop_loss_rate = ?,
         lunch_entry_enabled = ?, lunch_target_profit_rate = ?, lunch_stop_loss_rate = ?,
         morning_liquidate_time = ?, lunch_liquidate_time = ?,
+        auto_budget_enabled = ?,
         updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(
@@ -44,6 +46,7 @@ export function updateStrategy(userId, id, input) {
     input.lunchStopLossRate,
     input.morningLiquidateTime || null,
     input.lunchLiquidateTime || null,
+    input.autoBudgetEnabled ? 1 : 0,
     userId,
     id
   );
@@ -403,6 +406,7 @@ function toStrategy(row) {
     lunchStopLossRate: row.lunch_stop_loss_rate,
     morningLiquidateTime: row.morning_liquidate_time || null,
     lunchLiquidateTime: row.lunch_liquidate_time || null,
+    autoBudgetEnabled: row.auto_budget_enabled === 1,
     holdingSymbol: row.holding_symbol,
     holdingSymbolName: row.holding_symbol_name,
     holdingEntryWindow: row.holding_entry_window,

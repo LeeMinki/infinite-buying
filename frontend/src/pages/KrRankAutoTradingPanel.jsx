@@ -92,12 +92,13 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
     setMessage('');
     try {
       const created = await createKrRankStrategy({
-        morningBudget: Number(form.morningBudget),
+        autoBudgetEnabled: form.autoBudgetEnabled,
+        morningBudget: form.autoBudgetEnabled ? 0 : Number(form.morningBudget),
         morningTargetProfitRate: Number(form.morningTargetProfitPercent) / 100,
         morningStopLossRate: Number(form.morningStopLossPercent) / 100,
         morningLiquidateTime: form.morningLiquidateEnabled ? form.morningLiquidateTime : null,
         lunchEntryEnabled: form.lunchEntryEnabled,
-        lunchBudget: form.lunchEntryEnabled ? Number(form.lunchBudget) : 0,
+        lunchBudget: form.lunchEntryEnabled && !form.autoBudgetEnabled ? Number(form.lunchBudget) : 0,
         lunchTargetProfitRate: form.lunchEntryEnabled ? Number(form.lunchTargetProfitPercent) / 100 : null,
         lunchStopLossRate: form.lunchEntryEnabled ? Number(form.lunchStopLossPercent) / 100 : null,
         lunchLiquidateTime: form.lunchEntryEnabled && form.lunchLiquidateEnabled ? form.lunchLiquidateTime : null
@@ -185,6 +186,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           <li>등락률 25% 이상 종목은 매수 대상에서 제외합니다 (상한가까지 여유 확보).</li>
           <li>진입 구간별(오전/점심)로 매수 금액·목표 수익률·손절 기준을 따로 정합니다.</li>
           <li>진입 구간별로 청산 시각(KST)을 선택할 수 있습니다. 켜면 그 시각 이후 목표·손절 미도달이어도 전량 매도하고, 끄면 목표·손절만 기다립니다.</li>
+          <li>"전 재산 자동 매수"를 켜면 매수 금액 입력 없이 진입 시점의 매수가능금액 전액을 한 종목에 투입합니다. 매도 후 잔액 변동이 다음 매수에 자동 반영됩니다.</li>
         </ul>
       </section>
 
@@ -196,18 +198,32 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           </div>
         </div>
         <form className="mode-form kr-rank-form" onSubmit={submitStrategy}>
-          <label>
-            <span>오전 매수 금액 (KRW)</span>
-            <input type="number" min="1" step="1" value={form.morningBudget}
-              onFocus={loadBudgetPreview}
-              onChange={(e) => setForm({ ...form, morningBudget: e.target.value })} required />
-            <p className="helper">오전 진입에서 이 금액 한도 안에서 가용 현금을 최대한 써 매수합니다.</p>
-            <KrwBalanceHint
-              preview={budgetPreview}
-              loading={budgetPreviewLoading}
-              onApply={(amount) => setForm((f) => ({ ...f, morningBudget: String(Math.floor(amount)) }))}
-            />
+          <label className="checkbox-field">
+            <input type="checkbox" checked={form.autoBudgetEnabled}
+              onChange={(e) => setForm({ ...form, autoBudgetEnabled: e.target.checked })} />
+            <span>전 재산 자동 매수 (매수가능금액 전액을 매번 그대로 사용)</span>
           </label>
+          {form.autoBudgetEnabled
+            ? (
+                <p className="helper kr-rank-auto-budget-note">
+                  매수 금액 입력 없이, 진입 시점의 KIS 매수가능금액을 그대로 한 종목에 투입합니다.
+                  매도 후 잔액이 늘거나 줄어든 만큼 다음 매수도 그 잔액 그대로 따라갑니다.
+                </p>
+              )
+            : (
+                <label>
+                  <span>오전 매수 금액 (KRW)</span>
+                  <input type="number" min="1" step="1" value={form.morningBudget}
+                    onFocus={loadBudgetPreview}
+                    onChange={(e) => setForm({ ...form, morningBudget: e.target.value })} required />
+                  <p className="helper">오전 진입에서 이 금액 한도 안에서 가용 현금을 최대한 써 매수합니다.</p>
+                  <KrwBalanceHint
+                    preview={budgetPreview}
+                    loading={budgetPreviewLoading}
+                    onApply={(amount) => setForm((f) => ({ ...f, morningBudget: String(Math.floor(amount)) }))}
+                  />
+                </label>
+              )}
           <label>
             <span>오전 목표 수익률 (%)</span>
             <input type="number" min="0.1" step="0.1" value={form.morningTargetProfitPercent}
@@ -239,17 +255,19 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           </label>
           {form.lunchEntryEnabled && (
             <>
-              <label>
-                <span>점심 매수 금액 (KRW)</span>
-                <input type="number" min="1" step="1" value={form.lunchBudget}
-                  onFocus={loadBudgetPreview}
-                  onChange={(e) => setForm({ ...form, lunchBudget: e.target.value })} required />
-                <KrwBalanceHint
-                  preview={budgetPreview}
-                  loading={budgetPreviewLoading}
-                  onApply={(amount) => setForm((f) => ({ ...f, lunchBudget: String(Math.floor(amount)) }))}
-                />
-              </label>
+              {!form.autoBudgetEnabled && (
+                <label>
+                  <span>점심 매수 금액 (KRW)</span>
+                  <input type="number" min="1" step="1" value={form.lunchBudget}
+                    onFocus={loadBudgetPreview}
+                    onChange={(e) => setForm({ ...form, lunchBudget: e.target.value })} required />
+                  <KrwBalanceHint
+                    preview={budgetPreview}
+                    loading={budgetPreviewLoading}
+                    onApply={(amount) => setForm((f) => ({ ...f, lunchBudget: String(Math.floor(amount)) }))}
+                  />
+                </label>
+              )}
               <label>
                 <span>점심 목표 수익률 (%)</span>
                 <input type="number" min="0.1" step="0.1" value={form.lunchTargetProfitPercent}
@@ -295,7 +313,11 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
               <button type="button" className="strategy-chip-body" onClick={() => refresh(strategy.id)}>
                 <span className="strategy-chip-symbol">
                   <strong>한국 랭킹 #{strategy.id}</strong>
-                  <span className="strategy-chip-sub">오전 {formatKrw(strategy.morningBudget)}{strategy.lunchEntryEnabled ? ` · 점심 ${formatKrw(strategy.lunchBudget)}` : ''}</span>
+                  <span className="strategy-chip-sub">
+                    {strategy.autoBudgetEnabled
+                      ? '전 재산 자동 매수'
+                      : `오전 ${formatKrw(strategy.morningBudget)}${strategy.lunchEntryEnabled ? ` · 점심 ${formatKrw(strategy.lunchBudget)}` : ''}`}
+                  </span>
                 </span>
                 <span className={`badge ${strategy.status === 'RUNNING' ? 'active' : strategy.status === 'ERROR' ? 'danger' : 'warning'}`}>
                   {strategy.status}
@@ -323,8 +345,16 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
           <>
             <div className="metric-grid compact-grid">
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
-              <Metric label="오전 진입" value={formatKrw(selected.morningBudget)} hint={`목표 +${pct(selected.morningTargetProfitRate)} / 손절 -${pct(selected.morningStopLossRate)}${selected.morningLiquidateTime ? ` / 청산 ${selected.morningLiquidateTime} KST` : ''}`} />
-              <Metric label="점심 진입" value={selected.lunchEntryEnabled ? formatKrw(selected.lunchBudget) : '미사용'} hint={selected.lunchEntryEnabled ? `목표 +${pct(selected.lunchTargetProfitRate)} / 손절 -${pct(selected.lunchStopLossRate)}${selected.lunchLiquidateTime ? ` / 청산 ${selected.lunchLiquidateTime} KST` : ''}` : '오전 진입만'} />
+              <Metric
+                label="오전 진입"
+                value={selected.autoBudgetEnabled ? '전 재산 자동' : formatKrw(selected.morningBudget)}
+                hint={`목표 +${pct(selected.morningTargetProfitRate)} / 손절 -${pct(selected.morningStopLossRate)}${selected.morningLiquidateTime ? ` / 청산 ${selected.morningLiquidateTime} KST` : ''}`}
+              />
+              <Metric
+                label="점심 진입"
+                value={selected.lunchEntryEnabled ? (selected.autoBudgetEnabled ? '전 재산 자동' : formatKrw(selected.lunchBudget)) : '미사용'}
+                hint={selected.lunchEntryEnabled ? `목표 +${pct(selected.lunchTargetProfitRate)} / 손절 -${pct(selected.lunchStopLossRate)}${selected.lunchLiquidateTime ? ` / 청산 ${selected.lunchLiquidateTime} KST` : ''}` : '오전 진입만'}
+              />
               <Metric label="현재 보유" value={selected.holdingSymbol ? `${selected.holdingSymbolName || selected.holdingSymbol}` : '무보유'} hint={selected.holdingSymbol ? `${ENTRY_WINDOW_LABEL[selected.holdingEntryWindow] || ''}로 매수` : '진입 대기'} />
             </div>
             <div className="metric-grid compact-grid">
@@ -589,6 +619,7 @@ function EntryTable({ entries }) {
 
 function defaultForm() {
   return {
+    autoBudgetEnabled: false,
     morningBudget: '1000000',
     morningTargetProfitPercent: '2',
     morningStopLossPercent: '5',
