@@ -119,7 +119,22 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
     if (scheduled && !isUsRegularSession()) {
       return saveSkip(userId, strategy, '미국 정규장 시간이 아니라 평가하지 않습니다.', evaluationSource, { noLog: true });
     }
-    return await evaluateUnlocked(userId, strategy, evaluationSource);
+    try {
+      return await evaluateUnlocked(userId, strategy, evaluationSource);
+    } catch (error) {
+      // 평가 도중 발생한 에러(주로 KIS API 실패)도 판단 로그에 ERROR로 남겨 사용자가 원인을 추적할 수 있게 한다.
+      const message = error.message || '평가 중 오류가 발생했습니다.';
+      const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
+      repo.markEvaluation(userId, strategy.id, { decision: 'ERROR', errorMessage: message });
+      const log = repo.createDecisionLog(userId, {
+        strategyId: strategy.id,
+        decision: 'ERROR',
+        liveOrderEnabled,
+        evaluationSource,
+        reason: message
+      });
+      return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order: null };
+    }
   } finally {
     repo.releaseLock(id, LOCK_KEY);
   }
@@ -131,10 +146,22 @@ export async function evaluateRunningStrategies() {
     try {
       await evaluateStrategy(strategy.userId, strategy.id, { scheduled: true });
     } catch (error) {
-      repo.markEvaluation(strategy.userId, strategy.id, {
-        decision: 'ERROR',
-        errorMessage: error.message || '미국장 랭킹 전략 자동 평가에 실패했습니다.'
-      });
+      const message = error.message || '미국장 랭킹 전략 자동 평가에 실패했습니다.';
+      repo.markEvaluation(strategy.userId, strategy.id, { decision: 'ERROR', errorMessage: message });
+      // 사용자가 판단 로그에서 바로 원인을 볼 수 있어야 한다. lastErrorMessage만으로는
+      // 시간순 추적이 어렵고 디버깅 효율이 떨어진다.
+      try {
+        const liveOrderEnabled = autoTradingRepo.getSettings(strategy.userId).liveOrderEnabled;
+        repo.createDecisionLog(strategy.userId, {
+          strategyId: strategy.id,
+          decision: 'ERROR',
+          liveOrderEnabled,
+          evaluationSource: 'SCHEDULED',
+          reason: `자동 평가 실패: ${message}`
+        });
+      } catch (_logError) {
+        // 로그 기록 실패는 평가 흐름을 중단하지 않는다.
+      }
     }
   }
 }
