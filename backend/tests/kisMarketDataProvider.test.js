@@ -172,6 +172,9 @@ test('KIS provider normalizes overseas fluctuation ranking and filters invalid r
     const parsed = new URL(text);
     assert.equal(parsed.searchParams.get('EXCD'), 'NAS');
     assert.equal(parsed.searchParams.get('GUBN'), '1');
+    // KIS 해외주식 상승율/하락율은 NDAY·VOL_RANG도 Required. 누락하면 거절된다.
+    assert.equal(parsed.searchParams.get('NDAY'), '0');
+    assert.equal(parsed.searchParams.get('VOL_RANG'), '0');
     return {
       ok: true,
       status: 200,

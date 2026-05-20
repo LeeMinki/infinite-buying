@@ -351,7 +351,9 @@ export class KisMarketDataProvider {
           KEYB: '',
           AUTH: '',
           EXCD: exchange,
-          GUBN: '1'
+          GUBN: '1',     // 1 = 상승율
+          NDAY: '0',     // 0 = 당일 기준
+          VOL_RANG: '0'  // 0 = 거래량 전체
         }
       });
       for (const row of pickRankingArray(data)) {
@@ -394,14 +396,26 @@ export class KisMarketDataProvider {
             authorization: `Bearer ${context.accessToken}`,
             appkey: context.appKey,
             appsecret: context.appSecret,
-            tr_id: trId
+            tr_id: trId,
+            // 해외주식 상승율/하락율 등 일부 TR은 custtype을 필수로 요구한다 (개인=P).
+            custtype: 'P'
           },
           signal: controller.signal
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || isFailureResponse(data)) {
           const status = response.status >= 400 ? response.status : 502;
-          const err = marketError(status);
+          // KIS 응답 진단 필드(rt_cd, msg_cd, msg1)를 에러 메시지에 포함해야
+          // 판단 로그에서 KIS API 거절 원인을 바로 확인할 수 있다.
+          const kisMessage = String(data?.msg1 || data?.msg || '').trim();
+          const detail = [
+            `HTTP ${response.status}`,
+            data?.rt_cd != null ? `rt_cd=${data.rt_cd}` : null,
+            data?.msg_cd ? `msg_cd=${data.msg_cd}` : null,
+            kisMessage || null
+          ].filter(Boolean).join(', ');
+          const err = new Error(detail ? `${MARKET_ERROR_MESSAGE} (${detail})` : MARKET_ERROR_MESSAGE);
+          err.status = status;
           err.transient = status >= 500 || status === 429;
           throw err;
         }
@@ -413,8 +427,9 @@ export class KisMarketDataProvider {
           err.transient = true;
           throw err;
         }
-        if (error.message === MARKET_ERROR_MESSAGE) throw error;
-        const wrapped = new Error(MARKET_ERROR_MESSAGE);
+        // KIS rt_cd/msg1 등 진단 정보를 담은 에러는 그대로 위로 던진다.
+        if (error.message?.startsWith(MARKET_ERROR_MESSAGE)) throw error;
+        const wrapped = new Error(`${MARKET_ERROR_MESSAGE} (${error.message || 'fetch error'})`);
         wrapped.status = 502;
         wrapped.transient = true;
         throw wrapped;
