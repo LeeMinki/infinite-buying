@@ -95,6 +95,29 @@ export class KisMarketDataProvider {
     return this.getOverseasDailyPrices(normalized, options);
   }
 
+  // 국내주식 당일 분봉 (FHKST03010200). 최대 30봉, 최근 봉 위주로 반환.
+  // 반환은 시간순(과거 → 현재) 배열. 매수 필터(VWAP·거래량 추세·장대 음봉 등)에 사용한다.
+  async getDomesticTodayMinuteCandles(symbol, options = {}) {
+    const hour = String(options.hour || nowHourHms()).padStart(6, '0');
+    const data = await this.requestJson('/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice', {
+      trId: 'FHKST03010200',
+      query: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: symbol,
+        FID_INPUT_HOUR_1: hour,
+        FID_PW_DATA_INCU_YN: 'N',
+        FID_ETC_CLS_CODE: ''
+      }
+    });
+    const rows = Array.isArray(data?.output2) ? data.output2 : [];
+    const normalized = rows
+      .map((row) => normalizeMinuteCandle(row))
+      .filter(Boolean)
+      // KIS 응답은 최신 봉이 앞에 오므로 시간 오름차순으로 재정렬.
+      .sort((a, b) => a.time.localeCompare(b.time));
+    return normalized;
+  }
+
   async getDomesticDailyPrices(symbol, options = {}) {
     const from = compactDate(options.from || currentDate());
     const to = compactDate(options.to || currentDate());
@@ -575,6 +598,29 @@ function compactDate(value) {
 
 function currentDate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+// KST 기준 'HHMMSS' 문자열. KIS 분봉 조회의 FID_INPUT_HOUR_1 기본값으로 사용.
+function nowHourHms() {
+  const kst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const hh = String(kst.getHours()).padStart(2, '0');
+  const mm = String(kst.getMinutes()).padStart(2, '0');
+  const ss = String(kst.getSeconds()).padStart(2, '0');
+  return `${hh}${mm}${ss}`;
+}
+
+// KIS 분봉 응답(output2 한 행)을 매수 필터에서 쓰는 표준 형태로 정규화.
+function normalizeMinuteCandle(row) {
+  if (!row || typeof row !== 'object') return null;
+  const time = String(row.stck_cntg_hour ?? row.cntg_hour ?? '').padStart(6, '0');
+  if (!/^\d{6}$/.test(time)) return null;
+  const open = normalizeNumber(row.stck_oprc);
+  const high = normalizeNumber(row.stck_hgpr);
+  const low = normalizeNumber(row.stck_lwpr);
+  const close = normalizeNumber(row.stck_prpr);
+  const volume = normalizeNumber(row.cntg_vol);
+  if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) return null;
+  return { time, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
 }
 
 function previousDate(value) {

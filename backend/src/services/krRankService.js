@@ -2,21 +2,25 @@ import * as repo from '../repositories/krRankRepository.js';
 import * as autoTradingRepo from '../repositories/autoTradingRepository.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
-import { getDomesticFluctuationRanking } from './marketDataService.js';
+import { getDomesticFluctuationRanking, getDomesticTodayMinuteCandles } from './marketDataService.js';
 import {
   ENTRY_WINDOWS,
   resolveEntryWindow,
-  selectRankingCandidate,
+  selectRankingCandidates,
   computeBuyQuantity,
   evaluateSell,
   kstNowMinutes,
   parseHhmmMinutes,
   makeKrRankIdempotencyKey,
+  checkBuyCandidate,
   MAX_FLUCTUATION_RATE
 } from './krRankStrategyEngine.js';
 
 const LOCK_KEY = 'evaluate';
 const RANKING_SNAPSHOT_SIZE = 10;
+// 매수 필터(분봉 단기 흐름 검사)에서 검사할 상위 후보 개수.
+// 1위부터 차례로 분봉을 조회해 통과한 첫 종목을 산다. 너무 크면 KIS 호출이 늘어 rate limit 위험.
+const BUY_FILTER_CANDIDATE_LIMIT = 5;
 // 같은 (날짜·전략·구간·방향) 주문이 실패로 누적되면 더 시도하지 않는 한도.
 const ORDER_RETRY_LIMIT = 5;
 // 상한가를 조회하지 못했을 때 쓰는 보수적 배수 (가격제한폭 상단 = 전일종가 × 1.3 이하).
@@ -341,8 +345,13 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   } else {
     // 랭킹 조회 실패 시 예외가 상위로 전파되어 ERROR로 기록된다(진입 기록 미생성 → 다음 tick 재시도).
     const ranking = await getDomesticFluctuationRanking(userId);
-    const picked = selectRankingCandidate(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE });
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+    // 등락률 상한(기본 20%) 미만 후보를 위에서부터 모은 뒤, 매수 필터(분봉 단기 흐름)로 한 번 더 거른다.
+    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE })
+      .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
+    const filterResult = await pickFirstFilteredCandidate(userId, candidates);
+    const picked = filterResult.picked;
+
     entry = repo.createEntry(userId, {
       strategyId: strategy.id, tradeDate, entryWindow,
       status: picked ? 'SELECTED' : 'NO_CANDIDATE',
@@ -357,9 +366,12 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       });
     }
     if (!picked) {
+      // 후보가 아예 없거나(상한 초과로 전원 탈락), 매수 필터로 전원 거절된 경우.
+      const reason = candidates.length === 0
+        ? `${label} 진입: 상승률 랭킹에서 등락률 ${MAX_FLUCTUATION_RATE * 100}% 미만 매수 대상이 없어 매수하지 않습니다.`
+        : `${label} 진입: 상위 ${candidates.length}개 후보가 모두 단기 흐름 검사에서 거절되어 매수하지 않습니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
       return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
-        reason: `${label} 진입: 상승률 랭킹에서 등락률 ${MAX_FLUCTUATION_RATE * 100}% 미만 매수 대상이 없어 매수하지 않습니다.`
+        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason
       });
     }
   }
@@ -547,6 +559,28 @@ async function safeOpenOrders(trading, symbol) {
   } catch {
     return [];
   }
+}
+
+// 상위 후보를 순서대로 보면서 매수 필터(시가·VWAP·거래량·장대 음봉·고점 돌파)를 적용.
+// 첫 통과 후보를 picked로 반환. 모두 거절되면 picked=null과 거절 사유 목록을 함께 돌려준다.
+// 분봉 조회가 실패한 후보는 단기 흐름 확인 불가로 보수적으로 건너뛴다.
+async function pickFirstFilteredCandidate(userId, candidates) {
+  const rejections = [];
+  for (const candidate of candidates) {
+    let candles = [];
+    try {
+      candles = await getDomesticTodayMinuteCandles(userId, candidate.symbol);
+    } catch (error) {
+      rejections.push({ symbol: candidate.symbol, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
+      continue;
+    }
+    const check = checkBuyCandidate(candles);
+    if (check.ok) {
+      return { picked: candidate, rejections };
+    }
+    rejections.push({ symbol: candidate.symbol, reason: check.reason });
+  }
+  return { picked: null, rejections };
 }
 
 // 보유 종목 때문에 신규 진입이 차단되는 상황을 사유에 명시한다.
