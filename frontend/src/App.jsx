@@ -23,6 +23,23 @@ function getInitialSidebarState() {
   return saved === null ? true : saved === '1';
 }
 
+const KNOWN_VIEWS = new Set(['strategies', 'kis', 'backtest', 'auto-trading']);
+
+// F5 후에도 현재 보고 있던 화면이 유지되도록 URL hash(#auto-trading 등)에서 view를 복원한다.
+// hash가 없거나 모르는 값이면 기본 화면.
+function getInitialView() {
+  if (typeof window === 'undefined') return 'strategies';
+  const hash = (window.location.hash || '').replace(/^#/, '');
+  if (KNOWN_VIEWS.has(hash) && hash !== 'strategies') {
+    // hash와 history state를 정렬해 popstate 동작도 정상화한다.
+    try {
+      window.history.replaceState({ ibView: hash }, '', `#${hash}`);
+    } catch {}
+    return hash;
+  }
+  return 'strategies';
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -37,7 +54,7 @@ function AuthenticatedApp() {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(getInitialSidebarState);
-  const [view, setViewState] = useState('strategies');
+  const [view, setViewState] = useState(getInitialView);
   const [strategySeed, setStrategySeed] = useState(null);
 
   function setView(nextView) {
