@@ -3,12 +3,18 @@ import test from 'node:test';
 import { useTempDb, bootstrapDb, createUser } from './_helpers/dbHarness.js';
 import {
   selectRankingCandidate,
+  selectRankingCandidates,
   computeBuyQuantity,
   evaluateSell,
   resolveEntryWindow,
   parseHhmmMinutes,
   kstNowMinutes,
   makeKrRankIdempotencyKey,
+  computeVwap,
+  isVolumeDecreasing,
+  findLargeBearishCandle,
+  isFailingHighBreakout,
+  checkBuyCandidate,
   MAX_FLUCTUATION_RATE
 } from '../src/services/krRankStrategyEngine.js';
 
@@ -20,30 +26,30 @@ const user = createUser(db, 'kr-rank@example.com');
 
 test.after(() => tmp.cleanup());
 
-// ── 등락률 25% 이상 제외 · 첫 종목 선택 ──────────────────────────────────
+// ── 등락률 20% 이상 제외 · 첫 종목 선택 ──────────────────────────────────
 
-test('등락률 25% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
+test('등락률 20% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
   const ranking = [
-    { symbol: '000001', name: '과열', price: 1000, fluctuationRate: 0.28 },
-    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.22 },
+    { symbol: '000001', name: '과열', price: 1000, fluctuationRate: 0.25 },
+    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.18 },
     { symbol: '000003', name: '셋째', price: 3000, fluctuationRate: 0.15 }
   ];
   const picked = selectRankingCandidate(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE });
   assert.equal(picked.symbol, '000002');
 });
 
-test('등락률 정확히 25%는 제외한다', () => {
+test('등락률 정확히 20%는 제외한다', () => {
   const ranking = [
-    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.25 },
-    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.249 }
+    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.20 },
+    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.199 }
   ];
   assert.equal(selectRankingCandidate(ranking).symbol, '000002');
 });
 
-test('모든 종목이 25% 이상이면 후보가 없다', () => {
+test('모든 종목이 20% 이상이면 후보가 없다', () => {
   const ranking = [
     { symbol: '000001', name: 'a', price: 1000, fluctuationRate: 0.45 },
-    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.27 }
+    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.22 }
   ];
   assert.equal(selectRankingCandidate(ranking), null);
 });
@@ -340,4 +346,93 @@ test('같은 멱등키 주문은 중복으로 감지된다 (DRY_RUN 기록도 �
   assert.equal(order.liveOrderEnabled, false);
   // 같은 키 재사용 → 중복 감지
   assert.equal(repo.hasDuplicateOrder(key), true);
+});
+
+// ── 매수 필터: 단기 흐름 검사 헬퍼 ────────────────────────────────────────
+
+function candle(time, open, high, low, close, volume) {
+  return { time, open, high, low, close, volume };
+}
+
+test('selectRankingCandidates는 상한 미만 후보를 순서대로 반환한다', () => {
+  const ranking = [
+    { symbol: 'A', price: 100, fluctuationRate: 0.25 }, // 상한 초과 제외
+    { symbol: 'B', price: 200, fluctuationRate: 0.18 },
+    { symbol: 'C', price: 300, fluctuationRate: 0.12 }
+  ];
+  const list = selectRankingCandidates(ranking);
+  assert.deepEqual(list.map((c) => c.symbol), ['B', 'C']);
+});
+
+test('VWAP은 (고+저+종)/3 가중 평균으로 계산된다', () => {
+  const candles = [
+    candle('090100', 100, 105, 99, 102, 1000),
+    candle('090200', 102, 108, 101, 107, 2000)
+  ];
+  const expected = ((105 + 99 + 102) / 3 * 1000 + (108 + 101 + 107) / 3 * 2000) / 3000;
+  const vwap = computeVwap(candles);
+  assert.ok(Math.abs(vwap - expected) < 0.0001, `vwap=${vwap} expected=${expected}`);
+});
+
+test('거래량이 직전 구간 대비 크게 줄면 감소 추세로 본다', () => {
+  const candles = [
+    candle('090100', 100, 101, 99, 100, 1000),
+    candle('090200', 100, 101, 99, 100, 1000),
+    candle('090300', 100, 101, 99, 100, 1000),
+    candle('090400', 100, 101, 99, 100, 100),
+    candle('090500', 100, 101, 99, 100, 100),
+    candle('090600', 100, 101, 99, 100, 100)
+  ];
+  // 직전 3봉 합 300, 그 이전 3봉 합 3000 → 비율 0.1 < 0.5 → DECREASING
+  assert.equal(isVolumeDecreasing(candles), true);
+});
+
+test('거래량 동반 장대 음봉은 거절 사유로 잡힌다', () => {
+  const candles = [
+    candle('090100', 100, 102, 99, 101, 1000),
+    candle('090200', 101, 103, 100, 102, 1000),
+    candle('090300', 102, 102, 96, 96, 3000) // 약 -5.9% 음봉 + 거래량 3배
+  ];
+  const bearish = findLargeBearishCandle(candles);
+  assert.ok(bearish, '장대 음봉이 검출되어야 한다');
+  assert.equal(bearish.time, '090300');
+});
+
+test('직전 고점을 1% 이상 못 뚫는 마지막 봉은 거절', () => {
+  const candles = [
+    candle('090100', 100, 110, 99, 108, 1000),
+    candle('090200', 108, 115, 107, 110, 1000),
+    candle('090300', 110, 112, 100, 100, 1000) // 직전 고점 115 대비 종가 100
+  ];
+  assert.equal(isFailingHighBreakout(candles), true);
+});
+
+test('checkBuyCandidate: 시가 위 + VWAP 위 + 거래량 유지 + 고점 갱신이면 통과', () => {
+  // 우상향 패턴 — 시가 100에서 점점 오르며 거래량도 일정 이상 유지.
+  const candles = [
+    candle('090100', 100, 101, 100, 101, 1000),
+    candle('090200', 101, 102, 100, 102, 1000),
+    candle('090300', 102, 103, 101, 103, 1000),
+    candle('090400', 103, 104, 102, 104, 1100),
+    candle('090500', 104, 105, 103, 105, 1200),
+    candle('090600', 105, 106, 104, 106, 1300)
+  ];
+  const result = checkBuyCandidate(candles);
+  assert.equal(result.ok, true, `필터 통과해야 하는데 거절: ${result.reason}`);
+});
+
+test('checkBuyCandidate: 현재가가 시가 아래면 거절', () => {
+  const candles = [
+    candle('090100', 100, 105, 95, 95, 1000),
+    candle('090200', 95, 96, 92, 93, 1000),
+    candle('090300', 93, 94, 90, 92, 1000)
+  ];
+  const result = checkBuyCandidate(candles);
+  assert.equal(result.ok, false);
+  assert.ok(/시가/.test(result.reason));
+});
+
+test('checkBuyCandidate: 데이터 부족이면 보수적으로 거절', () => {
+  assert.equal(checkBuyCandidate([]).ok, false);
+  assert.equal(checkBuyCandidate([candle('090100', 100, 101, 99, 100, 1000)]).ok, false);
 });

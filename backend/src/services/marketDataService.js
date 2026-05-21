@@ -59,6 +59,12 @@ export async function getOverseasFluctuationRanking(userId, options = {}) {
   return provider.getOverseasFluctuationRanking(options);
 }
 
+// 국내주식 당일 분봉 — 매수 후보의 단기 흐름(VWAP·거래량·장대 음봉) 검사용.
+export async function getDomesticTodayMinuteCandles(userId, symbol, options = {}) {
+  const provider = new KisMarketDataProvider(userId);
+  return provider.getDomesticTodayMinuteCandles(normalizeSymbol(symbol), options);
+}
+
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase();
 }
