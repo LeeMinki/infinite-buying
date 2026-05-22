@@ -85,15 +85,29 @@ export function selectRankingCandidate(rankingList = []) {
   return null;
 }
 
-// 누적 평가 자산 = 현금(USD 매수가능금액) + 보유 평가액. baseline 대비 변화율로 사이클 목표 달성 여부를 본다.
-export function computeCycleProfitRate({ baselineUsd, cashAvailable, holdingQuantity, currentPrice }) {
+// 누적 손익률 = (실현손익 + 평가손익) / baseline.
+//   - realizedProfitUsd: 이미 청산된 매매들의 누적 손익(USD).
+//   - 평가손익(미실현): 현재 보유분 = 수량 × (현재가 - 평단).
+// 과거에는 "현금(매수가능금액) + 보유 평가액 - baseline"으로 계산했으나, KIS 매수가능금액은
+// 매수 직후 정산 지연으로 차감 전 값(≈매수 전 현금)이 잡혀 방금 산 보유분과 이중계산됐다.
+// 그 결과 매수 다음 tick에 자산이 ~2배로 보여 누적 목표가 잘못 달성되고 손실 청산되는 사고가 있었다.
+// 현금에 의존하지 않는 (실현+미실현) 손익 합으로 계산해 정산 지연에 영향받지 않게 한다.
+// (정산이 정확할 때 두 식은 대수적으로 동일하다: cash = baseline + 실현손익 - 매수원가.)
+export function computeCycleProfitRate({
+  baselineUsd,
+  realizedProfitUsd = 0,
+  holdingQuantity = 0,
+  currentPrice = 0,
+  averagePrice = 0
+}) {
   const baseline = Number(baselineUsd);
   if (!Number.isFinite(baseline) || baseline <= 0) return null;
-  const cash = Number(cashAvailable || 0);
-  const qty = Number(holdingQuantity || 0);
-  const price = Number(currentPrice || 0);
-  const totalAsset = cash + Math.max(0, qty) * Math.max(0, price);
-  return (totalAsset - baseline) / baseline;
+  const realized = Number(realizedProfitUsd) || 0;
+  const qty = Math.max(0, Number(holdingQuantity) || 0);
+  const price = Number(currentPrice) || 0;
+  const avg = Number(averagePrice) || 0;
+  const unrealized = qty > 0 && price > 0 && avg > 0 ? qty * (price - avg) : 0;
+  return (realized + unrealized) / baseline;
 }
 
 export function computeBuyQuantity(cashAvailable, price) {

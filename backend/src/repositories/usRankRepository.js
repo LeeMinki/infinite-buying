@@ -234,6 +234,18 @@ export function updateTradeOutcome(id, input) {
   return getTradeById(id);
 }
 
+// 청산된 매매들의 누적 실현손익(USD). 누적 목표 손익률 계산에 쓴다.
+// 손익 = 매수수량 × (매도가 - 매수가). 값이 없는 행은 제외한다.
+export function sumRealizedProfitUsd(strategyId) {
+  const row = getDb().prepare(`
+    SELECT COALESCE(SUM(entry_quantity * (exit_price - entry_price)), 0) AS realized
+    FROM us_rank_trades
+    WHERE strategy_id = ? AND status = 'CLOSED'
+      AND entry_quantity IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL
+  `).get(strategyId);
+  return Number(row?.realized || 0);
+}
+
 export function getOpenTrade(strategyId) {
   return toTrade(getDb().prepare(`
     SELECT * FROM us_rank_trades
