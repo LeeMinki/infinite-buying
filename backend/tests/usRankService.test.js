@@ -334,3 +334,69 @@ test('누적 목표 도달 시 강제 매도하고 전략을 영구 종료한다
     });
   });
 });
+
+test('이전 거래일에 남은 SELECTED 매매는 오늘 이어받지 않고 폐기 후 새로 시작한다', async () => {
+  const state = { price: 50, cash: 1000, balanceQuantity: 0, rankingTopSymbol: 'FRESH', symbol: 'FRESH' };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    await service.startStrategy(user.id, strategy.id);
+    // 어제(전 거래일) SELECTED 상태로 남은 매매 행을 직접 만든다 (미체결로 장 마감된 상황).
+    repo.createTrade(user.id, {
+      strategyId: strategy.id, tradeDate: '2026-05-20', tradeSeq: 7,
+      status: 'SELECTED', symbol: 'STALE', symbolName: 'Stale', exchange: 'NAS', selectedPrice: 99
+    });
+    await withMockedDate('2026-05-21T15:00:00Z', async () => { // 오늘 ET 11:00
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      // 어제 STALE이 아니라 오늘 랭킹의 FRESH로 새 매매가 시작돼야 한다.
+      assert.equal(result.decision.decision, 'BUY');
+      assert.equal(result.decision.selectedSymbol, 'FRESH');
+    });
+    const trades = repo.listTrades(user.id, { strategyId: strategy.id });
+    const stale = trades.find((t) => t.symbol === 'STALE');
+    assert.equal(stale.status, 'FAILED'); // 전날 매매는 폐기됨
+  });
+});
+
+test('실주문 미체결 지정가가 오래 머물면 취소하고 매매를 접는다', async () => {
+  const liveUser = createUser(db, 'us-rank-stale@example.com');
+  credentialService.saveSettings(liveUser.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(liveUser.id, true);
+  const state = { price: 50, cash: 1000, balanceQuantity: 0, rankingTopSymbol: 'NOFILL', symbol: 'NOFILL' };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(liveUser.id, {
+      targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    await service.startStrategy(liveUser.id, strategy.id);
+
+    // 1) 첫 평가: 매수 주문 접수(ACCEPTED), 체결 0 → 보유 전환 안 됨.
+    await withMockedDate('2026-05-21T15:00:00Z', async () => {
+      const buy = await service.evaluateStrategy(liveUser.id, strategy.id);
+      assert.equal(buy.decision.decision, 'BUY');
+    });
+
+    // withMockedDate는 JS Date만 mock하고 SQLite created_at(주문 시각)은 실제 시계라
+    // 둘이 어긋난다. 주문 생성 시각을 mock 시간축(15:00:00Z)에 맞춰 결정적으로 덮어쓴다.
+    const buyOrder = repo.listOrders(liveUser.id, { strategyId: strategy.id }).find((o) => o.side === 'BUY');
+    db.prepare("UPDATE us_rank_orders SET created_at = ? WHERE id = ?").run('2026-05-21 15:00:00', buyOrder.id);
+
+    // 2) 아직 stale 아님(주문 후 30초): 보류.
+    await withMockedDate('2026-05-21T15:00:30Z', async () => {
+      const wait = await service.evaluateStrategy(liveUser.id, strategy.id);
+      assert.equal(wait.decision.decision, 'SKIP');
+      assert.ok(/보류/.test(wait.decision.reason));
+    });
+
+    // 3) 4분 경과(체결 여전히 0): 취소하고 매매 FAILED 처리.
+    await withMockedDate('2026-05-21T15:04:30Z', async () => {
+      const cancelled = await service.evaluateStrategy(liveUser.id, strategy.id);
+      assert.equal(cancelled.decision.decision, 'SKIP');
+      assert.ok(/취소|접습니다/.test(cancelled.decision.reason));
+    });
+    const open = repo.getOpenTrade(strategy.id);
+    assert.equal(open, null); // 열린 매매 없음 → 다음 tick 새 후보
+  });
+});

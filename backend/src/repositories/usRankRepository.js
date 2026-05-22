@@ -366,6 +366,15 @@ export function hasNonFailedOrder(idempotencyKey) {
   ).get(idempotencyKey));
 }
 
+// 같은 멱등키로 아직 살아 있는(취소·실패·거절이 아닌) 가장 최근 주문. 미체결 취소 대상 조회용.
+export function getActiveOrderByIdempotencyKey(idempotencyKey) {
+  return toOrder(getDb().prepare(`
+    SELECT * FROM us_rank_orders
+    WHERE idempotency_key = ? AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+    ORDER BY id DESC LIMIT 1
+  `).get(idempotencyKey));
+}
+
 export function countFailedOrders(idempotencyKey) {
   return getDb().prepare(
     "SELECT COUNT(*) AS c FROM us_rank_orders WHERE idempotency_key = ? AND status = 'FAILED'"

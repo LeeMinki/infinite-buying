@@ -22,6 +22,10 @@ import {
 const LOCK_KEY = 'evaluate';
 const RANKING_SNAPSHOT_SIZE = 10;
 const ORDER_RETRY_LIMIT = 5;
+// 미국은 시장가가 없어 현재가 지정가로 매수한다. 급등주가 호가를 위로 이탈하면 체결이 안 될 수 있는데,
+// 미체결 주문을 취소·재시도하지 않으면 그날 내내 멈춘다(진입 구간이 없어 종일 막힘).
+// 매수 주문이 이 시간(ms)을 넘겨도 체결되지 않으면 취소하고 이번 매매를 접어 다음 후보로 넘어간다.
+const BUY_STALE_LIMIT_MS = 3 * 60 * 1000;
 
 export function createStrategy(userId, input) {
   return repo.createStrategy(userId, normalizeStrategyInput(input));
@@ -506,6 +510,19 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
   }
 
   let trade = repo.getOpenTrade(strategy.id);
+  // 이전 거래일에 남은 미정리 매매(주로 미체결로 SELECTED인 채 장 마감된 건)는 오늘 이어받지 않는다.
+  // getOpenTrade는 날짜 필터가 없어 전날 SELECTED를 돌려줄 수 있는데, 그대로 쓰면 어제 1위 종목을
+  // 오늘 사버린다. 혹시 남아 있을 미체결 주문은 best-effort 취소하고 매매를 FAILED로 닫은 뒤 새로 시작.
+  if (trade && trade.tradeDate !== tradeDate) {
+    const staleKey = makeUsRankIdempotencyKey({ tradeDate: trade.tradeDate, strategyId: strategy.id, tradeSeq: trade.tradeSeq, side: 'BUY' });
+    await cancelBuyOrderBestEffort(userId, trading, repo.getActiveOrderByIdempotencyKey(staleKey));
+    repo.updateTradeOutcome(trade.id, {
+      status: 'FAILED',
+      errorMessage: '이전 거래일 미체결 매매를 정리하고 새 거래일을 시작합니다.',
+      close: true
+    });
+    trade = null;
+  }
   let rankingSnapshot = trade?.rankingSnapshot || null;
   if (!trade) {
     const ranking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
@@ -573,6 +590,41 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
         evaluationSource,
         reason: `${symbol} 매수 체결 확인(${filledQuantity}주, 평단 ${fmt(filledAvg)} USD). 보유로 전환했습니다.`
       });
+    }
+    // 실주문 미체결이 오래 머물면(급등주 호가 이탈 등) 취소하고 이번 매매를 접어 다음 후보로 넘어간다.
+    // 취소하지 않으면 종일 같은 미체결 주문에 묶여 stall된다.
+    if (liveOrderEnabled) {
+      const activeOrder = repo.getActiveOrderByIdempotencyKey(idempotencyKey);
+      const restingMs = activeOrder ? Date.now() - sqliteUtcToMs(activeOrder.createdAt) : 0;
+      if (activeOrder && restingMs >= BUY_STALE_LIMIT_MS) {
+        await cancelBuyOrderBestEffort(userId, trading, activeOrder);
+        // 취소-체결 경합 방지: 취소 직후 잔고를 다시 확인해 그 사이 체결됐으면 보유로 전환한다.
+        const recheck = await trading.getBalance(symbol, { market: 'US', currency: 'USD', exchange });
+        const refilled = Math.floor(Number(recheck.quantity || 0));
+        if (refilled > 0) {
+          const filledAvg = Number(recheck.averagePrice || trade.entryPrice || trade.selectedPrice || 0);
+          repo.updateTradeOutcome(trade.id, { status: 'BOUGHT', entryPrice: filledAvg, entryQuantity: refilled });
+          repo.setHolding(userId, strategy.id, { symbol, symbolName: trade.symbolName, exchange, quantity: refilled, averagePrice: filledAvg });
+          return saveDecision(userId, strategy, {
+            decision: 'SKIP', tradeId: trade.id, tradeDate, tradeSeq: trade.tradeSeq,
+            selectedSymbol: symbol, selectedSymbolName: trade.symbolName, selectedExchange: exchange,
+            currentPrice: filledAvg, averagePrice: filledAvg, holdingQuantity: refilled,
+            rankingSnapshot, liveOrderEnabled, evaluationSource,
+            reason: `${symbol} 취소 직전 매수 체결 확인(${refilled}주). 보유로 전환했습니다.`
+          });
+        }
+        repo.updateTradeOutcome(trade.id, {
+          status: 'FAILED',
+          errorMessage: '미체결 지정가 매수를 취소하고 다음 후보로 넘어갑니다.',
+          close: true
+        });
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', tradeId: trade.id, tradeDate, tradeSeq: trade.tradeSeq,
+          selectedSymbol: symbol, selectedSymbolName: trade.symbolName, selectedExchange: exchange,
+          rankingSnapshot, liveOrderEnabled, evaluationSource,
+          reason: `${symbol} 매수가 ${Math.round(BUY_STALE_LIMIT_MS / 60000)}분간 체결되지 않아 주문을 취소하고 이번 매매를 접습니다. 다음 평가에서 새 후보를 찾습니다.`
+        });
+      }
     }
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
@@ -899,6 +951,43 @@ function pct(rate) {
 
 function fmt(value) {
   return Number(value || 0).toLocaleString('ko-KR', { maximumFractionDigits: 2 });
+}
+
+// SQLite datetime('now')은 'YYYY-MM-DD HH:MM:SS'(UTC, 시간대 표기 없음)이라 그대로 Date에 넣으면
+// 로컬 시각으로 잘못 파싱된다. UTC임을 명시해 ms로 변환한다. 파싱 불가면 0.
+function sqliteUtcToMs(value) {
+  if (!value) return 0;
+  const raw = String(value).trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+// 미체결 매수 주문을 best-effort로 취소하고 주문 행을 CANCELED로 표시한다. 실패해도 던지지 않는다.
+async function cancelBuyOrderBestEffort(userId, trading, order) {
+  if (!order) return;
+  try {
+    if (order.kisOrderNo) {
+      await trading.cancelOpenOrder({
+        market: 'US',
+        symbol: order.symbol,
+        exchange: order.exchange,
+        kisOrderNo: order.kisOrderNo,
+        kisOriginalOrderNo: order.kisOriginalOrderNo,
+        quantity: order.quantity,
+        remainingQuantity: order.remainingQuantity ?? order.quantity
+      });
+    }
+  } catch (_error) {
+    // KIS가 "이미 체결/취소된 주문" 등으로 거절해도 무시한다. 호출 측에서 잔고를 다시 확인한다.
+  }
+  try {
+    repo.updateOrder(userId, order.id, { status: 'CANCELED' });
+  } catch (_error) {
+    // 주문 행 상태 갱신 실패는 흐름을 막지 않는다.
+  }
 }
 
 function badRequest(message) {
