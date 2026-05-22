@@ -391,12 +391,32 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   const idempotencyKey = makeKrRankIdempotencyKey({ tradeDate, strategyId: strategy.id, entryWindow, side: 'BUY' });
 
   if (repo.hasNonFailedOrder(idempotencyKey)) {
-    // 매수 주문이 이미 접수돼 있다 → 보유 확정 처리(보유 상태 누락 복구).
-    repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
-    repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+    // 매수 주문이 이미 접수돼 있다. 접수(ACCEPTED)는 체결이 아니므로 낙관적으로 보유 처리하면
+    // 미체결분을 다음 tick에 매도 평가할 수 있다. 실주문은 KIS 잔고로 체결을 확인한 뒤에만 보유로 전환한다.
+    // 기록 모드(DRY_RUN)는 실제 주문·잔고가 없으므로 시뮬레이션으로 즉시 보유 전환한다.
+    if (!liveOrderEnabled) {
+      repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
+      repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        liveOrderEnabled, evaluationSource, reason: `${label} 진입: ${symbol} 매수 기록이 이미 있어 보유로 둡니다(기록 모드).`
+      });
+    }
+    const balance = await trading.getBalance(symbol, { market: 'KR', currency: 'KRW' });
+    const filledQuantity = Math.floor(Number(balance.quantity || 0));
+    if (filledQuantity > 0) {
+      repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
+      repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 매수 체결 확인(${filledQuantity}주). 보유로 전환했습니다.`
+      });
+    }
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-      liveOrderEnabled, evaluationSource, reason: `${label} 진입: ${symbol} 매수 주문이 이미 접수돼 있습니다.`
+      liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: ${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다.`
     });
   }
   if (repo.countFailedOrders(idempotencyKey) >= ORDER_RETRY_LIMIT) {
@@ -454,7 +474,10 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     liveOrderEnabled,
     decisionReason: `${label} 진입: ${symbol} ${quantity}주 시장가 매수.`
   });
-  if (order.status !== 'FAILED' && order.status !== 'REJECTED') {
+  // 기록 모드(DRY_RUN)는 실제 주문이 없어 즉시 보유로 시뮬레이션한다.
+  // 실주문(ACCEPTED 등)은 접수일 뿐 체결이 아니므로 보유 전환을 미루고, 다음 tick의
+  // hasNonFailedOrder 분기에서 KIS 잔고로 체결을 확인한 뒤 전환한다(미체결분 오평가 방지).
+  if (order.status === 'DRY_RUN') {
     repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
     repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
   }
