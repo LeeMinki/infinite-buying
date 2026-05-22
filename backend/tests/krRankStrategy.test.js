@@ -436,3 +436,25 @@ test('checkBuyCandidate: 데이터 부족이면 보수적으로 거절', () => {
   assert.equal(checkBuyCandidate([]).ok, false);
   assert.equal(checkBuyCandidate([candle('090100', 100, 101, 99, 100, 1000)]).ok, false);
 });
+
+// ── 진입 기록 승격: 레거시 NO_CANDIDATE → SELECTED ──────────────────────
+test('updateEntrySelection은 NO_CANDIDATE 진입 기록을 SELECTED로 승격한다', () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000, lunchBudget: 0,
+    morningTargetProfitRate: 0.05, morningStopLossRate: 0.03,
+    lunchEntryEnabled: false, lunchTargetProfitRate: 0.05, lunchStopLossRate: 0.03
+  });
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-05-25', entryWindow: 'MORNING',
+    status: 'NO_CANDIDATE', bought: false
+  });
+  assert.equal(entry.status, 'NO_CANDIDATE');
+  assert.equal(entry.selectedSymbol, null);
+  const promoted = repo.updateEntrySelection(entry.id, {
+    selectedSymbol: '000660', selectedSymbolName: 'SK하이닉스',
+    selectedPrice: 180000, selectedFluctuationRate: 0.12
+  });
+  assert.equal(promoted.status, 'SELECTED');
+  assert.equal(promoted.selectedSymbol, '000660');
+  assert.equal(promoted.bought, false);
+});

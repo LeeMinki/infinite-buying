@@ -189,6 +189,27 @@ export function updateEntryOutcome(id, { status, bought }) {
   return getEntryById(id);
 }
 
+// 레거시 NO_CANDIDATE 진입 기록을 SELECTED로 승격(종목 확정)할 때 쓴다.
+export function updateEntrySelection(id, input) {
+  getDb().prepare(`
+    UPDATE kr_rank_entries
+    SET status = 'SELECTED',
+        selected_symbol = ?, selected_symbol_name = ?,
+        selected_price = ?, selected_fluctuation_rate = ?,
+        ranking_snapshot = COALESCE(?, ranking_snapshot),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    input.selectedSymbol || null,
+    input.selectedSymbolName || null,
+    input.selectedPrice ?? null,
+    input.selectedFluctuationRate ?? null,
+    input.rankingSnapshot ? JSON.stringify(input.rankingSnapshot) : null,
+    id
+  );
+  return getEntryById(id);
+}
+
 export function getEntry(strategyId, tradeDate, entryWindow) {
   return toEntry(getDb().prepare(`
     SELECT * FROM kr_rank_entries

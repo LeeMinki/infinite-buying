@@ -326,23 +326,20 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   const tradeDate = kstToday();
   const label = ENTRY_WINDOWS[entryWindow].label;
 
-  // 진입 기록: 이미 있으면 그 종목으로 매수 재시도, 없으면 랭킹 조회 후 새로 만든다.
+  // 진입 기록: 매수 완료면 종료, 종목이 정해진(SELECTED) 상태면 그 종목으로 매수 재시도.
+  // 종목이 아직 없으면(진입 기록 없음 또는 레거시 NO_CANDIDATE) 랭킹+단기 흐름 필터로 재평가한다.
   let entry = repo.getEntry(strategy.id, tradeDate, entryWindow);
   let rankingSnapshot = entry ? entry.rankingSnapshot : null;
-  if (entry) {
-    if (entry.bought) {
-      return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
-        reason: `오늘 ${label} 진입 매수를 마쳤습니다.`
-      });
-    }
-    if (entry.status === 'NO_CANDIDATE' || !entry.selectedSymbol) {
-      return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
-        reason: `오늘 ${label} 진입: 매수 대상이 없어 매수하지 않았습니다.`
-      });
-    }
-  } else {
+  if (entry?.bought) {
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
+      reason: `오늘 ${label} 진입 매수를 마쳤습니다.`
+    });
+  }
+
+  // 매수 대상이 아직 없으면 매 tick 랭킹을 다시 조회·필터링한다.
+  // (예전에는 첫 tick에서 전원 거절되면 NO_CANDIDATE를 박아 그 구간 내내 재평가를 안 했다 — 좋은 셋업을 놓침)
+  if (!entry || !entry.selectedSymbol) {
     // 랭킹 조회 실패 시 예외가 상위로 전파되어 ERROR로 기록된다(진입 기록 미생성 → 다음 tick 재시도).
     const ranking = await getDomesticFluctuationRanking(userId);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
@@ -352,27 +349,39 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     const filterResult = await pickFirstFilteredCandidate(userId, candidates);
     const picked = filterResult.picked;
 
-    entry = repo.createEntry(userId, {
-      strategyId: strategy.id, tradeDate, entryWindow,
-      status: picked ? 'SELECTED' : 'NO_CANDIDATE',
-      selectedSymbol: picked?.symbol, selectedSymbolName: picked?.name,
-      selectedPrice: picked?.price, selectedFluctuationRate: picked?.fluctuationRate,
-      rankingSnapshot, bought: false
-    });
-    if (!entry) {
+    if (!picked) {
+      // 후보 없음/전원 거절: 진입 기록을 만들지 않고(또는 레거시 기록을 SELECTED로 굳히지 않고) SKIP만 한다.
+      // 다음 tick에 랭킹을 다시 본다. 스케줄러 SKIP은 매분 폴링 노이즈를 막기 위해 로그를 남기지 않는다.
+      const reason = candidates.length === 0
+        ? `${label} 진입: 등락률 ${MAX_FLUCTUATION_RATE * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
+        : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
       return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
-        reason: `${label} 진입이 이미 기록되어 있어 중복 진입을 막았습니다.`
+        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
+        noLog: evaluationSource !== 'MANUAL'
       });
     }
-    if (!picked) {
-      // 후보가 아예 없거나(상한 초과로 전원 탈락), 매수 필터로 전원 거절된 경우.
-      const reason = candidates.length === 0
-        ? `${label} 진입: 상승률 랭킹에서 등락률 ${MAX_FLUCTUATION_RATE * 100}% 미만 매수 대상이 없어 매수하지 않습니다.`
-        : `${label} 진입: 상위 ${candidates.length}개 후보가 모두 단기 흐름 검사에서 거절되어 매수하지 않습니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
-      return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason
+
+    if (entry) {
+      // 레거시 NO_CANDIDATE 기록을 종목 확정으로 승격.
+      entry = repo.updateEntrySelection(entry.id, {
+        selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
+        selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+        rankingSnapshot
       });
+    } else {
+      entry = repo.createEntry(userId, {
+        strategyId: strategy.id, tradeDate, entryWindow,
+        status: 'SELECTED',
+        selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
+        selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+        rankingSnapshot, bought: false
+      });
+      if (!entry) {
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+          reason: `${label} 진입이 이미 기록되어 있어 중복 진입을 막았습니다.`
+        });
+      }
     }
   }
 
