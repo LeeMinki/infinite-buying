@@ -67,7 +67,10 @@ export function parseHhmmMinutes(value) {
 }
 
 // 미국장은 한국처럼 가격제한폭(상한가)이 없어 등락률 상한 필터를 두지 않는다.
-// 대신 1달러 미만 종목과 당일 거래량 1,000만 주 미만 종목은 제외한다.
+// 대신 1달러 미만 종목을 제외하고, 거래량 1,000만 주 미만 종목도 제외한다.
+// 거래량은 KIS 랭킹 요청에서 VOL_RANG='6'(1,000만 주 이상)으로 이미 1차 필터링되므로,
+// 응답의 거래량 필드가 비어 있거나 파싱되지 않으면(필드명 변동 등) 서버 필터를 신뢰해 통과시킨다.
+// 거래량이 유효한 양수로 들어왔을 때만 1,000만 주 미만을 제외한다(이중 필터가 전원 탈락시키지 않도록).
 export function selectRankingCandidate(rankingList = []) {
   if (!Array.isArray(rankingList)) return null;
   for (const item of rankingList) {
@@ -77,13 +80,13 @@ export function selectRankingCandidate(rankingList = []) {
     const price = Number(item.price);
     if (!Number.isFinite(price) || price < US_RANK_MIN_PRICE) continue;
     const volume = Number(item.volume);
-    if (!Number.isFinite(volume) || volume < US_RANK_MIN_VOLUME) continue;
+    if (Number.isFinite(volume) && volume > 0 && volume < US_RANK_MIN_VOLUME) continue;
     return {
       symbol: String(item.symbol).trim().toUpperCase(),
       name: item.name || item.symbol,
       exchange: item.exchange || 'NAS',
       price,
-      volume,
+      volume: Number.isFinite(volume) ? volume : 0,
       fluctuationRate: rate
     };
   }

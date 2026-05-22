@@ -72,6 +72,14 @@ test('가격 1달러 미만, 거래량 1천만주 미만, 등락률 파싱 실�
   assert.equal(selectRankingCandidate(ranking).symbol, 'OK');
 });
 
+test('거래량 필드가 비어 있거나 0이면 서버(VOL_RANG) 필터를 신뢰해 통과한다', () => {
+  // tvol 필드 누락/0 → 클라이언트 거래량 검사가 전원 탈락시키지 않도록 통과시킨다.
+  assert.equal(selectRankingCandidate([{ symbol: 'NV', price: 10, fluctuationRate: 0.3 }]).symbol, 'NV');
+  assert.equal(selectRankingCandidate([{ symbol: 'ZV', price: 10, volume: 0, fluctuationRate: 0.3 }]).symbol, 'ZV');
+  // 단, 거래량이 유효한 양수로 1천만주 미만이면 여전히 제외.
+  assert.equal(selectRankingCandidate([{ symbol: 'LOW', price: 10, volume: 5_000_000, fluctuationRate: 0.3 }]), null);
+});
+
 test('매수 수량은 1주 단위 정수로 계산한다', () => {
   assert.equal(computeBuyQuantity(1000, 333.3), 3);
   assert.equal(computeBuyQuantity(99, 100), 0);

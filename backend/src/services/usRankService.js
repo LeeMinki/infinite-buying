@@ -192,6 +192,22 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
     });
   }
 
+  // 누적 목표가 설정됐는데 baseline(시작 자본)이 비어 있으면 — 시작 시 KIS 조회 실패 등 —
+  // 평가 시점에 매수가능금액을 다시 조회해 채운다. 못 채우면 이번 tick은 누적 목표 검사를 건너뛰고
+  // 다음 tick에 다시 시도한다. (baseline이 없으면 누적 목표가 영영 작동하지 않던 문제 보완)
+  if (strategy.cycleTargetProfitRate && !(strategy.cycleBaselineUsd > 0)) {
+    try {
+      const tradingForBaseline = await readyTrading(userId);
+      const buyingPower = await tradingForBaseline.getBuyingPower('TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 });
+      const baseline = Number(buyingPower.cashAvailable || 0);
+      if (baseline > 0) {
+        strategy = repo.setCycleBaseline(userId, strategy.id, baseline) || strategy;
+      }
+    } catch (_error) {
+      // baseline 재조회 실패는 치명적이지 않다. 다음 tick에서 다시 시도한다.
+    }
+  }
+
   if (strategy.holdingSymbol) {
     const trading = await readyTrading(userId);
     return evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrderEnabled, evaluationSource });
@@ -252,6 +268,8 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   }
 
   const forceCloseTriggered = isUsForceCloseTime(new Date(), strategy.forceCloseKst);
+  // 보유 중인 매매 사이클의 trade 행. 누적 손익 계산(기대 체결 수량)과 trade 갱신에 같은 행을 쓴다.
+  const openTrade = repo.getOpenTrade(strategy.id);
   // 누적 손익(실현+미실현)이 baseline 대비 cycle_target_profit_rate 이상이면 사이클 완료 트리거.
   // 매수가능금액(현금)은 매수 직후 정산 지연으로 이중계산을 일으켜 쓰지 않는다.
   const cycleProfitRate = strategy.cycleTargetProfitRate
@@ -267,7 +285,7 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   // 매수 직후 부분 체결·정산 지연으로 KIS 보유 수량이 기대 수량보다 적게 잡히는 구간에서는
   // 평가손익이 과소·과대 평가될 수 있어 사이클 완료(영구 정지)를 보류한다(다음 tick 재평가).
   // 손절·익절·강제 청산은 평단 대비 현재가만 보므로 이 보류와 무관하게 그대로 동작한다.
-  const expectedQuantity = Math.floor(Number(repo.getOpenTrade(strategy.id)?.entryQuantity || 0));
+  const expectedQuantity = Math.floor(Number(openTrade?.entryQuantity || 0));
   const fullySettled = expectedQuantity <= 0 || holdingQuantity >= expectedQuantity;
   const cycleTargetReached = fullySettled
     && cycleProfitRate != null
@@ -285,7 +303,6 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   //  - openTrade(SELECTED|BOUGHT) 있으면 그것을 사용. SELECTED라면 진입 후 BOUGHT 갱신이 실패한
   //    상태이므로 KIS 잔고 기준 평단가·수량으로 BOUGHT 보정.
   //  - openTrade가 전혀 없는 경우(외부 HTS 매수 등 우리 기록 외 보유)에만 새 trade 행을 만든다.
-  const openTrade = repo.getOpenTrade(strategy.id);
   let trade;
   if (openTrade) {
     trade = openTrade;
