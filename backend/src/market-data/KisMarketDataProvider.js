@@ -376,12 +376,13 @@ export class KisMarketDataProvider {
           EXCD: exchange,
           GUBN: '1',     // 1 = 상승율
           NDAY: '0',     // 0 = 당일 기준
-          VOL_RANG: '0'  // 0 = 거래량 전체
+          VOL_RANG: '6'  // 6 = 1000만주 이상
         }
       });
       for (const row of pickRankingArray(data)) {
         const symbol = String(row.symb ?? row.symbol ?? row.pdno ?? '').trim().toUpperCase();
         const price = normalizeNumber(row.last ?? row.price ?? row.ovrs_nmix_prpr ?? row.stck_prpr);
+        const volume = normalizeNumber(row.tvol ?? row.volume ?? row.acml_vol ?? row.trd_vol ?? row.trade_vol ?? row.evol);
         const rawRate = row.rate ?? row.prdy_ctrt ?? row.fluctuationRate;
         if (rawRate === undefined || rawRate === null || rawRate === '') continue;
         const rate = normalizeSignedNumber(rawRate);
@@ -392,6 +393,7 @@ export class KisMarketDataProvider {
           market: 'US',
           exchange,
           price,
+          volume,
           fluctuationRate: rate / 100,
           rank: normalizeNumber(row.rank) || null,
           source: 'KIS_API'

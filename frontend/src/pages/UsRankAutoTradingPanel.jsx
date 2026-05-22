@@ -87,8 +87,8 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
     setMessage('');
     try {
       const created = await createUsRankStrategy({
-        autoBudgetEnabled: form.autoBudgetEnabled,
-        fixedBuyUsdAmount: form.autoBudgetEnabled ? 0 : Number(form.fixedBuyUsdAmount),
+        autoBudgetEnabled: true,
+        fixedBuyUsdAmount: 0,
         targetProfitRate: Number(form.targetProfitPercent) / 100,
         stopLossRate: Number(form.stopLossPercent) / 100,
         forceCloseKst: form.forceCloseKst,
@@ -178,17 +178,16 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
         <div className="panel-heading">
           <div>
             <h3>전략 요약</h3>
-            <p>미국장이 열려 있는 동안 상승률 1위 종목을 따라가되, 손절이나 장 마감 기준에 닿으면 매수를 멈추는 전략입니다.</p>
+            <p>미국장이 열린 뒤 30분이 지난 시점부터 상승률 상위 종목을 따라가고, 익절하면 전량 매도 후 다음 평가에서 다시 진입하는 전략입니다.</p>
           </div>
         </div>
         <ul className="kr-rank-rule-list">
-          <li>미국 정규장 동안 1분마다 상승률 랭킹을 확인합니다.</li>
-          <li>보유 종목이 없으면 그 시점의 1위 종목을 삽니다.</li>
-          <li>익절 기준에 닿아도 보유 종목이 계속 1위라면 팔지 않습니다. 같은 종목을 팔고 바로 다시 사는 일을 줄이기 위해서입니다.</li>
-          <li>보유 종목이 1위에서 밀렸고 익절 기준에 닿으면 전량 매도한 뒤 다음 1위 종목을 기다립니다.</li>
-          <li>손절이 한 번 발생하면 그 미국 거래일에는 더 사지 않습니다.</li>
-          <li>KST 04:30 이후에는 보유 종목을 정리하고 신규 매수를 멈춥니다.</li>
-          <li>누적 목표 수익률을 켜면 시작 자본 대비 목표에 닿는 순간 전략을 종료합니다.</li>
+          <li>미국 정규장 ET 10:00~16:00 동안 1분마다 상승률 랭킹을 확인합니다.</li>
+          <li>가격 1 USD 이상, 거래량 1,000만 주 이상인 종목 중 상승률이 가장 높은 종목을 고릅니다.</li>
+          <li>보유 종목이 없으면 평가 시점의 USD 매수가능금액 전액으로 1주 단위 매수 수량을 계산합니다.</li>
+          <li>익절 기준에 닿으면 랭킹 순위와 관계없이 보유 수량을 모두 매도합니다. 다음 평가에서 조건이 맞으면 다시 매수합니다.</li>
+          <li>손절 또는 강제 청산이 발생하면 그 미국 거래일에는 더 사지 않습니다.</li>
+          <li>누적 목표 수익률에 닿으면 보유분을 정리하고 전략을 종료합니다.</li>
           <li>주문은 1주 단위입니다. 수수료, 세금, 환율 차이는 계산에 넣지 않습니다.</li>
         </ul>
       </section>
@@ -200,30 +199,11 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
           </div>
         </div>
         <form className="mode-form kr-rank-form" onSubmit={submitStrategy}>
-          <label className="checkbox-field">
-            <input
-              type="checkbox"
-              checked={form.autoBudgetEnabled}
-              onChange={(event) => setForm({ ...form, autoBudgetEnabled: event.target.checked })}
-            />
-            <span>매수가능금액 전액으로 매수</span>
-          </label>
-          {!form.autoBudgetEnabled && (
-            <label>
-              <span>매수 금액 (USD)</span>
-              <input
-                type="number"
-                min="1"
-                step="0.01"
-                value={form.fixedBuyUsdAmount}
-                onFocus={loadBudgetPreview}
-                onChange={(event) => setForm({ ...form, fixedBuyUsdAmount: event.target.value })}
-                required
-              />
-              <UsdBalanceHint preview={budgetPreview} loading={budgetPreviewLoading}
-                onApply={(amount) => setForm((current) => ({ ...current, fixedBuyUsdAmount: String(Math.floor(amount * 100) / 100) }))} />
-            </label>
-          )}
+          <div className="form-static-field">
+            <span>매수 금액</span>
+            <strong>USD 매수가능금액 전액</strong>
+            <p className="helper">평가할 때마다 KIS에서 조회한 주문 가능 금액을 기준으로 1주 단위 최대 수량을 계산합니다.</p>
+          </div>
           <label>
             <span>익절 (%)</span>
             <input type="number" min="0.1" step="0.1" value={form.targetProfitPercent}
@@ -287,7 +267,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
                 <span className="strategy-chip-symbol">
                   <strong>미국장 랭킹 #{strategy.id}</strong>
                   <span className="strategy-chip-sub">
-                  {strategy.autoBudgetEnabled ? '매수가능금액 자동 사용' : `${formatUsd(strategy.fixedBuyUsdAmount)} 고정`} · {EXCHANGE_LABELS[strategy.exchange] || strategy.exchange}
+                  매수가능금액 전액 · {EXCHANGE_LABELS[strategy.exchange] || strategy.exchange}
                   </span>
                 </span>
                 <span className={`badge ${strategy.status === 'RUNNING' ? 'active' : strategy.status === 'ERROR' ? 'danger' : 'warning'}`}>
@@ -316,7 +296,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
           <>
             <div className="metric-grid compact-grid">
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
-              <Metric label="예산 방식" value={selected.autoBudgetEnabled ? '매수가능금액 자동' : formatUsd(selected.fixedBuyUsdAmount)} hint={EXCHANGE_LABELS[selected.exchange] || selected.exchange} />
+              <Metric label="예산 방식" value="매수가능금액 전액" hint={EXCHANGE_LABELS[selected.exchange] || selected.exchange} />
               <Metric
                 label="익절/손절"
                 value={`+${pct(selected.targetProfitRate)} / -${pct(selected.stopLossRate)}`}
@@ -332,7 +312,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
                 hint={selected.dayLockedOut ? lockReasonLabel(selected.dayLockReason) : '매수 가능'}
               />
               <Metric label="강제 청산" value={`${selected.forceCloseKst} KST`} hint="이후 신규 매수 중단" />
-              <Metric label="정규장" value={isUsRegularSessionNow() ? '열림' : '닫힘'} hint="ET 09:30~16:00" />
+              <Metric label="정규장" value={isUsRegularSessionNow() ? '열림' : '닫힘'} hint="ET 10:00~16:00" />
             </div>
             <div className="metric-grid compact-grid">
               <Metric
@@ -355,7 +335,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
                 onClick={() => runAction(evaluateUsRankStrategy, 'evaluate')}>지금 평가</button>
             </div>
             <p className="auto-log-note">
-              시작 후 서버는 미국 정규장에 1분마다 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 손절 또는 강제 청산이 발생하면 같은 미국 거래일에는 신규 매수를 하지 않습니다.
+              시작 후 서버는 ET 10:00~16:00에 1분마다 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 익절하면 전량 매도 후 다음 평가에서 다시 진입하고, 손절 또는 강제 청산이 발생하면 같은 미국 거래일에는 신규 매수를 하지 않습니다.
             </p>
             <DecisionLogTable decisions={decisions} />
             <OrdersTable orders={orders} />
@@ -378,26 +358,6 @@ function Metric({ label, value, hint }) {
       <span className="metric-label">{label}</span>
       <strong>{value}</strong>
       <span className="metric-hint">{hint}</span>
-    </div>
-  );
-}
-
-function UsdBalanceHint({ preview, loading, onApply }) {
-  if (loading) return <p className="helper">한국투자증권에서 잔액을 확인하는 중입니다...</p>;
-  if (!preview) return <p className="helper">칸을 누르면 미국 종목 매수가능금액을 보여 드립니다.</p>;
-  if (preview.error) return <p className="helper">잔액 확인 실패: {preview.error}</p>;
-  const cash = Number(preview.cashAvailable || 0);
-  const afterFx = Number(preview.cashAvailableAfterFx || 0);
-  const amount = cash > 0 ? cash : afterFx;
-  if (amount <= 0) return <p className="helper">미국 종목 매수가능금액이 0입니다. 환전 또는 통합증거금 설정을 확인하세요.</p>;
-  return (
-    <div className="budget-hint">
-      <p className="helper">한국투자증권 매수가능금액을 기준으로 채우려면 누르세요. 직접 입력해도 됩니다.</p>
-      <div className="budget-hint-actions">
-        <button type="button" className="ghost sm" onClick={() => onApply(amount)}>
-          현재 잔고로 채우기 · {formatUsd(amount)}
-        </button>
-      </div>
     </div>
   );
 }
@@ -532,8 +492,6 @@ function TradeTable({ trades }) {
 
 function defaultForm() {
   return {
-    autoBudgetEnabled: true,
-    fixedBuyUsdAmount: '1000',
     targetProfitPercent: '2',
     stopLossPercent: '5',
     forceCloseKst: '04:30',
@@ -640,5 +598,5 @@ function isUsRegularSessionNow() {
   const hour = Number(parts.hour === '24' ? 0 : parts.hour);
   const minute = Number(parts.minute);
   const minutes = hour * 60 + minute;
-  return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
+  return minutes >= 10 * 60 && minutes < 16 * 60;
 }

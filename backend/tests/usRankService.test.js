@@ -52,14 +52,13 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', access_token: 'tok-us-rank', expires_in: 3600 });
     }
     if (text.includes('/uapi/overseas-stock/v1/ranking/updown-rate')) {
-      // 1위 종목은 state에서 동적으로 정해 익절 후 동일 종목 재매수 보류 케이스를 피한다.
       // 정렬은 등락률 내림차순이라 top 종목에 가장 큰 rate를 줘서 selectRankingCandidate가 top을 픽하게 한다.
       const top = state.rankingTopSymbol || 'HOT1';
       return json({
         rt_cd: '0',
         output2: [
-          { symb: top, name: top, last: '50', rate: '50.0', rank: '1' },
-          { symb: 'OTHER', name: 'Other', last: '70', rate: '10.0', rank: '2' }
+          { symb: top, name: top, last: '50', rate: '50.0', rank: '1', tvol: '20000000' },
+          { symb: 'OTHER', name: 'Other', last: '70', rate: '10.0', rank: '2', tvol: '15000000' }
         ]
       });
     }
@@ -214,7 +213,7 @@ test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금,
   });
 });
 
-test('익절 도달이지만 보유 종목이 지금도 상승률 1위면 매도를 보류한다', async () => {
+test('익절 도달 시 보유 종목이 지금도 상승률 1위여도 전량 매도한다', async () => {
   const state = { price: 52, cash: 0, balanceQuantity: 20, averagePrice: 50, rankingTopSymbol: 'HOT1', symbol: 'HOT1' };
   await withMockedFetch(state, async () => {
     const strategy = service.createStrategy(user.id, {
@@ -229,18 +228,32 @@ test('익절 도달이지만 보유 종목이 지금도 상승률 1위면 매도
     repo.setHolding(user.id, strategy.id, { symbol: 'HOT1', symbolName: 'Hot One', exchange: 'NAS', quantity: 20, averagePrice: 50 });
 
     await withMockedDate('2026-05-21T14:00:00Z', async () => {
-      // 익절 +4% 도달 + 랭킹 1위 == 보유 종목 → 매도하지 않고 HOLD
-      const result = await service.evaluateStrategy(user.id, strategy.id);
-      assert.equal(result.decision.decision, 'HOLD');
-      assert.ok(/지금도 상승률 1위/.test(result.decision.reason));
-    });
-
-    // 1위가 다른 종목으로 바뀌면 매도 진행
-    state.rankingTopSymbol = 'NEW1';
-    await withMockedDate('2026-05-21T14:01:00Z', async () => {
+      // 익절 +4% 도달이면 랭킹 1위 여부와 관계없이 매도한다.
       const result = await service.evaluateStrategy(user.id, strategy.id);
       assert.equal(result.decision.decision, 'SELL');
       assert.equal(result.decision.sellReason, 'TARGET');
+    });
+  });
+});
+
+test('미국장 랭킹 매수는 고정 금액 설정이 있어도 매수가능금액 전액을 기준으로 계산한다', async () => {
+  const state = { price: 50, cash: 1000, balanceQuantity: 0, averagePrice: 50, rankingTopSymbol: 'FULLCASH', symbol: 'FULLCASH' };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      autoBudgetEnabled: false,
+      fixedBuyUsdAmount: 50,
+      targetProfitRate: 0.02,
+      stopLossRate: 0.05,
+      forceCloseKst: '04:30',
+      exchange: 'NAS'
+    });
+    await service.startStrategy(user.id, strategy.id);
+
+    await withMockedDate('2026-05-21T14:00:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(result.decision.decision, 'BUY');
+      assert.equal(result.decision.expectedQuantity, 20);
+      assert.equal(result.decision.expectedAmount, 1000);
     });
   });
 });
