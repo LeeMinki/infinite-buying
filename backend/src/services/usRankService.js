@@ -252,16 +252,25 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   }
 
   const forceCloseTriggered = isUsForceCloseTime(new Date(), strategy.forceCloseKst);
-  // 누적 평가 자산이 baseline 대비 cycle_target_profit_rate 이상이면 사이클 완료 트리거.
+  // 누적 손익(실현+미실현)이 baseline 대비 cycle_target_profit_rate 이상이면 사이클 완료 트리거.
+  // 매수가능금액(현금)은 매수 직후 정산 지연으로 이중계산을 일으켜 쓰지 않는다.
   const cycleProfitRate = strategy.cycleTargetProfitRate
     ? computeCycleProfitRate({
         baselineUsd: strategy.cycleBaselineUsd,
-        cashAvailable,
+        realizedProfitUsd: repo.sumRealizedProfitUsd(strategy.id),
         holdingQuantity,
-        currentPrice
+        currentPrice,
+        averagePrice
       })
     : null;
-  const cycleTargetReached = cycleProfitRate != null
+  // 정산 안전장치: 영구 종료를 부르는 CYCLE_COMPLETE는 매수 체결이 충분히 정산된 뒤에만 인정한다.
+  // 매수 직후 부분 체결·정산 지연으로 KIS 보유 수량이 기대 수량보다 적게 잡히는 구간에서는
+  // 평가손익이 과소·과대 평가될 수 있어 사이클 완료(영구 정지)를 보류한다(다음 tick 재평가).
+  // 손절·익절·강제 청산은 평단 대비 현재가만 보므로 이 보류와 무관하게 그대로 동작한다.
+  const expectedQuantity = Math.floor(Number(repo.getOpenTrade(strategy.id)?.entryQuantity || 0));
+  const fullySettled = expectedQuantity <= 0 || holdingQuantity >= expectedQuantity;
+  const cycleTargetReached = fullySettled
+    && cycleProfitRate != null
     && Number.isFinite(cycleProfitRate)
     && cycleProfitRate >= Number(strategy.cycleTargetProfitRate);
   const sell = evaluateSell({
@@ -487,14 +496,13 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
 }
 
 async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrderEnabled, evaluationSource }) {
-  // 무보유 상태에서도 누적 자산이 baseline 대비 목표 수익률 이상이면 사이클을 즉시 완료한다.
-  // 예: 매도 직후 현금이 baseline×(1+target)을 넘었을 때 다음 tick에서 신규 매수 없이 STOPPED.
+  // 무보유 상태에서 누적 실현손익이 baseline 대비 목표 수익률 이상이면 사이클을 즉시 완료한다.
+  // 예: 매도 직후 누적 실현손익이 baseline×target을 넘었을 때 다음 tick에서 신규 매수 없이 STOPPED.
+  // 매수가능금액(현금) 대신 실현손익으로 계산해 정산 지연에 영향받지 않게 한다.
   if (strategy.cycleTargetProfitRate && strategy.cycleBaselineUsd > 0) {
-    const buyingPower = await trading.getBuyingPower('TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 });
-    const cashAvailable = Number(buyingPower.cashAvailable || 0);
     const cycleProfitRate = computeCycleProfitRate({
       baselineUsd: strategy.cycleBaselineUsd,
-      cashAvailable,
+      realizedProfitUsd: repo.sumRealizedProfitUsd(strategy.id),
       holdingQuantity: 0,
       currentPrice: 0
     });
@@ -503,7 +511,6 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
       return saveDecision(userId, strategy, {
         decision: 'SKIP',
         tradeDate,
-        cashAvailable,
         profitRate: cycleProfitRate,
         liveOrderEnabled,
         evaluationSource,
@@ -549,14 +556,38 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
   const exchange = trade.exchange || strategy.exchange;
   const idempotencyKey = makeUsRankIdempotencyKey({ tradeDate, strategyId: strategy.id, tradeSeq: trade.tradeSeq, side: 'BUY' });
   if (repo.hasNonFailedOrder(idempotencyKey)) {
-    repo.updateTradeOutcome(trade.id, { status: 'BOUGHT', entryPrice: trade.selectedPrice || 0 });
-    repo.setHolding(userId, strategy.id, {
-      symbol,
-      symbolName: trade.symbolName,
-      exchange,
-      quantity: trade.entryQuantity || 0,
-      averagePrice: trade.entryPrice || trade.selectedPrice || 0
-    });
+    // 매수 주문은 접수(ACCEPTED)됐을 뿐 체결이 아니다. 낙관적으로 보유 처리하면
+    // 미체결 종목을 다음 tick에 매도 평가해 잘못된 청산을 부른다(직전 사고 원인).
+    // KIS 잔고로 실제 체결 수량을 확인한 뒤에만 보유로 전환한다.
+    const balance = await trading.getBalance(symbol, { market: 'US', currency: 'USD', exchange });
+    const filledQuantity = Math.floor(Number(balance.quantity || 0));
+    if (filledQuantity > 0) {
+      const filledAvg = Number(balance.averagePrice || trade.entryPrice || trade.selectedPrice || 0);
+      repo.updateTradeOutcome(trade.id, { status: 'BOUGHT', entryPrice: filledAvg, entryQuantity: filledQuantity });
+      repo.setHolding(userId, strategy.id, {
+        symbol,
+        symbolName: trade.symbolName,
+        exchange,
+        quantity: filledQuantity,
+        averagePrice: filledAvg
+      });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP',
+        tradeId: trade.id,
+        tradeDate,
+        tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol,
+        selectedSymbolName: trade.symbolName,
+        selectedExchange: exchange,
+        currentPrice: filledAvg,
+        averagePrice: filledAvg,
+        holdingQuantity: filledQuantity,
+        rankingSnapshot,
+        liveOrderEnabled,
+        evaluationSource,
+        reason: `${symbol} 매수 체결 확인(${filledQuantity}주, 평단 ${fmt(filledAvg)} USD). 보유로 전환했습니다.`
+      });
+    }
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
       tradeId: trade.id,
@@ -568,7 +599,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
       rankingSnapshot,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 매수 주문이 이미 접수돼 있어 체결을 기다립니다.`
+      reason: `${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다. 체결을 기다립니다.`
     });
   }
   if (repo.countFailedOrders(idempotencyKey) >= ORDER_RETRY_LIMIT) {
@@ -657,7 +688,10 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
     liveOrderEnabled,
     decisionReason: `${trade.tradeSeq}번째 매매: ${symbol} ${quantity}주 매수.`
   });
-  if (order.status !== 'FAILED' && order.status !== 'REJECTED') {
+  // 실주문(ACCEPTED 등)은 접수일 뿐 체결이 아니므로 보유로 즉시 전환하지 않는다.
+  // 다음 tick의 체결 확인 분기(hasNonFailedOrder)에서 KIS 잔고로 실제 체결을 확인한 뒤 전환한다.
+  // 반면 DRY_RUN(실주문 OFF)은 실제 주문이 없어 확인할 잔고가 없으므로 즉시 보유로 시뮬레이션한다.
+  if (order.status === 'DRY_RUN') {
     repo.updateTradeOutcome(trade.id, {
       status: 'BOUGHT',
       entryPrice: currentPrice,

@@ -87,13 +87,15 @@ test('매도 판단 우선순위: CYCLE > STOP > TARGET > FORCE > HOLD', () => {
   assert.equal(evaluateSell({ currentPrice: 95, averagePrice: 100, targetProfitRate: -0.01, stopLossRate: 0.05 }).sellReason, 'STOP_LOSS');
 });
 
-test('누적 수익률 계산: 현금 + 보유 평가액', () => {
-  // baseline 1000, 현금 600, 보유 5주 * 100 = 500 → 총 1100 → +10%
-  assert.equal(computeCycleProfitRate({ baselineUsd: 1000, cashAvailable: 600, holdingQuantity: 5, currentPrice: 100 }), 0.1);
-  // baseline 1000, 현금만 1200 (보유 없음) → +20%
-  assert.equal(computeCycleProfitRate({ baselineUsd: 1000, cashAvailable: 1200, holdingQuantity: 0, currentPrice: 0 }), 0.2);
+test('누적 손익률 계산: 실현손익 + 미실현 평가손익 (현금 미사용)', () => {
+  // baseline 1000, 실현 50, 보유 5주 평단 90 현재가 100 → 미실현 50 → 합 100 → +10%
+  assert.equal(computeCycleProfitRate({ baselineUsd: 1000, realizedProfitUsd: 50, holdingQuantity: 5, averagePrice: 90, currentPrice: 100 }), 0.1);
+  // baseline 1000, 실현 200, 보유 없음 → +20%
+  assert.equal(computeCycleProfitRate({ baselineUsd: 1000, realizedProfitUsd: 200, holdingQuantity: 0, currentPrice: 0 }), 0.2);
+  // 매수 직후 평단≈현재가면 미실현≈0 — 현금 정산 지연이 있어도 자산이 부풀지 않는다(사고 재현 방지)
+  assert.equal(computeCycleProfitRate({ baselineUsd: 126.26, realizedProfitUsd: 0, holdingQuantity: 389, averagePrice: 0.32, currentPrice: 0.32 }), 0);
   // baseline 누락이면 null
-  assert.equal(computeCycleProfitRate({ baselineUsd: 0, cashAvailable: 100 }), null);
+  assert.equal(computeCycleProfitRate({ baselineUsd: 0, realizedProfitUsd: 100 }), null);
 });
 
 test('멱등키는 날짜, 전략, 매매 회차, 방향으로 구성된다', () => {

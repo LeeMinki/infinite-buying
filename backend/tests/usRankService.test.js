@@ -7,6 +7,7 @@ const db = await bootstrapDb();
 const credentialService = await import('../src/services/kisCredentialService.js');
 const service = await import('../src/services/usRankService.js');
 const repo = await import('../src/repositories/usRankRepository.js');
+const autoTradingRepo = await import('../src/repositories/autoTradingRepository.js');
 
 const user = createUser(db, 'us-rank-service@example.com');
 credentialService.saveSettings(user.id, {
@@ -242,6 +243,56 @@ test('익절 도달이지만 보유 종목이 지금도 상승률 1위면 매도
       assert.equal(result.decision.sellReason, 'TARGET');
     });
   });
+});
+
+test('실주문 매수는 접수만으로 보유 전환하지 않고 KIS 체결 확인 후 전환한다', async () => {
+  // 사고 재현 방지: 매수 접수(ACCEPTED) != 체결. 체결 전 보유로 전환하면 다음 tick에
+  // 미체결 종목을 매도 평가해 잘못 청산한다. 체결이 확인돼야만 보유로 넘어가야 한다.
+  const state = { price: 50, cash: 1000, balanceQuantity: 0, averagePrice: 50, rankingTopSymbol: 'FILLCHK', symbol: 'FILLCHK' };
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(user.id, {
+        autoBudgetEnabled: false,
+        fixedBuyUsdAmount: 1000,
+        targetProfitRate: 0.02,
+        stopLossRate: 0.05,
+        forceCloseKst: '04:30',
+        exchange: 'NAS'
+      });
+      await service.startStrategy(user.id, strategy.id);
+
+      // tick1: 매수 주문 접수. 아직 체결 안 됨(balanceQuantity 0) → 보유로 전환하지 않는다.
+      await withMockedDate('2026-05-18T14:00:00Z', async () => {
+        const buy = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(buy.decision.decision, 'BUY');
+        assert.equal(buy.order.status, 'ACCEPTED');
+      });
+      assert.equal(repo.getStrategy(user.id, strategy.id).holdingSymbol, null);
+
+      // tick2: 접수됐으나 여전히 미체결 → 보유 전환 보류
+      await withMockedDate('2026-05-18T14:01:00Z', async () => {
+        const wait = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(wait.decision.decision, 'SKIP');
+        assert.ok(/체결되지 않아 보유 전환을 보류/.test(wait.decision.reason));
+      });
+      assert.equal(repo.getStrategy(user.id, strategy.id).holdingSymbol, null);
+
+      // tick3: KIS 잔고에 체결분이 잡힘 → 보유로 전환
+      state.balanceQuantity = 20;
+      state.averagePrice = 50;
+      await withMockedDate('2026-05-18T14:02:00Z', async () => {
+        const confirmed = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(confirmed.decision.decision, 'SKIP');
+        assert.ok(/매수 체결 확인/.test(confirmed.decision.reason));
+      });
+      const held = repo.getStrategy(user.id, strategy.id);
+      assert.equal(held.holdingSymbol, 'FILLCHK');
+      assert.equal(held.holdingQuantity, 20);
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
 });
 
 test('누적 목표 도달 시 강제 매도하고 전략을 영구 종료한다', async () => {
