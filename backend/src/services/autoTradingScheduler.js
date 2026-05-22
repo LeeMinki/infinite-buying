@@ -3,7 +3,7 @@ import { evaluateRunningStrategies } from './autoTradingService.js';
 import { evaluateRunningStrategies as evaluateRunningKrRankStrategies } from './krRankService.js';
 import { evaluateRunningStrategies as evaluateRunningUsRankStrategies } from './usRankService.js';
 
-// 라오어 무한매수법은 기본 10분 간격, 랭킹 전략은 진입·청산 시각을 놓치지 않도록 1분 간격으로 평가한다.
+// 라오어 무한매수법은 기본 10분 간격, 랭킹 전략은 진입·청산 시각을 놓치지 않도록 짧은 간격으로 평가한다.
 // 각 스케줄러는 별도 타이머로 독립 동작한다.
 let laorTimer = null;
 let krRankTimer = null;
