@@ -21,17 +21,19 @@ const user = createUser(db, 'us-rank@example.com');
 
 test.after(() => tmp.cleanup());
 
-test('미국 정규장은 ET 평일 09:30~16:00만 true', () => {
-  assert.equal(isUsRegularSession(new Date('2026-05-18T13:29:00Z')), false); // 월 09:29 ET
-  assert.equal(isUsRegularSession(new Date('2026-05-18T13:30:00Z')), true); // 월 09:30 ET
+test('미국 정규장은 ET 평일 10:00~16:00만 true', () => {
+  assert.equal(isUsRegularSession(new Date('2026-05-18T13:59:00Z')), false); // 월 09:59 ET
+  assert.equal(isUsRegularSession(new Date('2026-05-18T14:00:00Z')), true); // 월 10:00 ET
   assert.equal(isUsRegularSession(new Date('2026-05-18T19:59:00Z')), true); // 월 15:59 ET
   assert.equal(isUsRegularSession(new Date('2026-05-18T20:00:00Z')), false); // 월 16:00 ET
   assert.equal(isUsRegularSession(new Date('2026-05-17T14:00:00Z')), false); // 일요일
 });
 
 test('미국 정규장 판정은 DST 전후에도 ET 기준으로 동작한다', () => {
-  assert.equal(isUsRegularSession(new Date('2026-01-05T14:30:00Z')), true); // 겨울 09:30 ET
-  assert.equal(isUsRegularSession(new Date('2026-07-06T13:30:00Z')), true); // 여름 09:30 ET
+  assert.equal(isUsRegularSession(new Date('2026-01-05T14:59:00Z')), false); // 겨울 09:59 ET
+  assert.equal(isUsRegularSession(new Date('2026-01-05T15:00:00Z')), true); // 겨울 10:00 ET
+  assert.equal(isUsRegularSession(new Date('2026-07-06T13:59:00Z')), false); // 여름 09:59 ET
+  assert.equal(isUsRegularSession(new Date('2026-07-06T14:00:00Z')), true); // 여름 10:00 ET
 });
 
 test('강제 청산은 미국장이 열려 있고 KST 새벽 설정 시각 이후에만 true', () => {
@@ -53,18 +55,19 @@ test('HH:MM 파싱과 잘못된 형식을 구분한다', () => {
 
 test('상승률 순위의 첫 유효 후보를 선택한다 (등락률 상한 없음)', () => {
   const ranking = [
-    { symbol: 'AAA', name: '1위', price: 10, fluctuationRate: 0.35 },
-    { symbol: 'BBB', name: '2위', price: 20, fluctuationRate: 0.19 }
+    { symbol: 'AAA', name: '1위', price: 10, volume: 15_000_000, fluctuationRate: 0.35 },
+    { symbol: 'BBB', name: '2위', price: 20, volume: 20_000_000, fluctuationRate: 0.19 }
   ];
   const picked = selectRankingCandidate(ranking);
   assert.equal(picked.symbol, 'AAA');
 });
 
-test('가격 0이거나 등락률 파싱 실패 종목은 건너뛴다', () => {
+test('가격 1달러 미만, 거래량 1천만주 미만, 등락률 파싱 실패 종목은 건너뛴다', () => {
   const ranking = [
-    { symbol: 'BAD1', price: 0, fluctuationRate: 0.5 },
-    { symbol: 'BAD2', price: 10, fluctuationRate: NaN },
-    { symbol: 'OK', price: 10, fluctuationRate: 0.1 }
+    { symbol: 'BAD1', price: 0.99, volume: 50_000_000, fluctuationRate: 0.5 },
+    { symbol: 'BAD2', price: 10, volume: 9_999_999, fluctuationRate: 0.4 },
+    { symbol: 'BAD3', price: 10, volume: 20_000_000, fluctuationRate: NaN },
+    { symbol: 'OK', price: 10, volume: 10_000_000, fluctuationRate: 0.1 }
   ];
   assert.equal(selectRankingCandidate(ranking).symbol, 'OK');
 });

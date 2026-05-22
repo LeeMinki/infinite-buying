@@ -172,18 +172,18 @@ test('KIS provider normalizes overseas fluctuation ranking and filters invalid r
     const parsed = new URL(text);
     assert.equal(parsed.searchParams.get('EXCD'), 'NAS');
     assert.equal(parsed.searchParams.get('GUBN'), '1');
-    // KIS 해외주식 상승율/하락율은 NDAY·VOL_RANG도 Required. 누락하면 거절된다.
+    // KIS 해외주식 상승율/하락율은 NDAY·VOL_RANG도 Required. VOL_RANG=6은 1000만주 이상.
     assert.equal(parsed.searchParams.get('NDAY'), '0');
-    assert.equal(parsed.searchParams.get('VOL_RANG'), '0');
+    assert.equal(parsed.searchParams.get('VOL_RANG'), '6');
     return {
       ok: true,
       status: 200,
       json: async () => ({
         rt_cd: '0',
         output2: [
-          { symb: 'AAA', name: 'Alpha', last: '10.5', rate: 'bad', rank: '1' },
-          { symb: 'BBB', name: 'Beta', last: '20', rate: '+12.3%', rank: '2' },
-          { symb: 'CCC', name: 'Gamma', last: '30', rate: '4.5', rank: '3' }
+          { symb: 'AAA', name: 'Alpha', last: '10.5', rate: 'bad', rank: '1', tvol: '30000000' },
+          { symb: 'BBB', name: 'Beta', last: '20', rate: '+12.3%', rank: '2', tvol: '20000000' },
+          { symb: 'CCC', name: 'Gamma', last: '30', rate: '4.5', rank: '3', tvol: '15000000' }
         ]
       })
     };
@@ -194,6 +194,7 @@ test('KIS provider normalizes overseas fluctuation ranking and filters invalid r
     assert.equal(rows[0].market, 'US');
     assert.equal(rows[0].exchange, 'NAS');
     assert.equal(rows[0].price, 20);
+    assert.equal(rows[0].volume, 20000000);
     assert.ok(Math.abs(rows[0].fluctuationRate - 0.123) < 0.000001);
   });
 });

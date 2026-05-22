@@ -1602,6 +1602,27 @@ button.danger-button:hover:not(:disabled) {
   grid-column: 1 / -1;
 }
 
+.mode-form .form-static-field {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 88px;
+  padding: 12px;
+}
+
+.mode-form .form-static-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mode-form .form-static-field > strong {
+  font-size: 15px;
+}
+
 /* 라벨 글자가 한 줄/두 줄로 갈려도 입력 칸 시작 위치를 한 행 안에서 맞춘다. */
 .mode-form label > span {
   align-self: start;

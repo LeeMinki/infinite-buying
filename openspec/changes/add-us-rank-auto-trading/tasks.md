@@ -13,7 +13,7 @@
 ## 3. 전략 엔진 (순수 함수)
 
 - [x] 3.1 `backend/src/services/usRankStrategyEngine.js` 생성. 미국장은 가격제한폭이 없으므로 상승률 상한 상수 없이 첫 유효 랭킹 후보를 선택.
-- [x] 3.2 `isUsRegularSession(now)` — `Intl.DateTimeFormat('America/New_York')`로 ET를 얻어 평일 09:30~16:00 판정. 토/일은 false.
+- [x] 3.2 `isUsRegularSession(now)` — `Intl.DateTimeFormat('America/New_York')`로 ET를 얻어 평일 10:00~16:00 판정. 토/일은 false.
 - [x] 3.3 `kstNowMinutes()`, `parseHhmmMinutes()` — KR 랭킹 엔진에서 패턴 차용(가능하면 공용 모듈로 추출).
 - [x] 3.4 `isUsForceCloseTime(now, forceCloseKst)` — 현재 KST가 forceCloseKst 이상이고 `isUsRegularSession(now)`이면 true. 그 외 false.
 - [x] 3.5 `etTradeDate(now)` — 미국 동부 자정 기준 거래일 문자열(`YYYY-MM-DD`) 반환. `day_locked_out` 해제 판정에 사용.
@@ -36,11 +36,11 @@
 ## 5. 서비스
 
 - [x] 5.1 `backend/src/services/usRankService.js` 생성. KR 랭킹 서비스와 같은 패턴.
-- [x] 5.2 `normalizeStrategyInput(input)` — auto_budget_enabled / fixed_buy_usd_amount / target_profit_rate / stop_loss_rate / force_close_kst / exchange / cycle_target_profit_rate 검증. `force_close_kst`는 `HH:MM` 형식만 허용, 잘못된 형식 거절.
+- [x] 5.2 `normalizeStrategyInput(input)` — target_profit_rate / stop_loss_rate / force_close_kst / exchange / cycle_target_profit_rate 검증. 미국장 랭킹 전략은 매수가능금액 전액을 사용한다. `force_close_kst`는 `HH:MM` 형식만 허용, 잘못된 형식 거절.
 - [x] 5.3 CRUD: `createStrategy` / `listStrategies` / `getStrategy` / `updateStrategy` / `deleteStrategy` / `startStrategy` / `stopStrategy`.
 - [x] 5.4 `evaluateStrategy(userId, id, { scheduled })` — 락 획득, 장 외/장 잠금 SKIP, evaluateSellPath 또는 새 매매 사이클 시작 분기.
 - [x] 5.5 `evaluateUnlocked(userId, strategy, evaluationSource)` — `day_locked_out` 갱신·점검, 보유 있으면 evaluateSellPath, 없으면 evaluateEntryPath. 장 외이면 noLog SKIP.
-- [x] 5.6 `evaluateSellPath` — 잔고 0이면 보유 해제. evaluateSell 호출. HOLD면 사유에 익절·손절·강제청산 미도달 명시. TARGET이어도 보유 종목이 현재 랭킹 1위면 HOLD. SELL면 hasNonFailedOrder/재시도 한도 검사, 매도 주문, exit_reason에 따라 trade 행 업데이트(`status=CLOSED`, `exit_*` 채움). STOP_LOSS / FORCE_CLOSE이면 `setDayLockedOut(today_et)`, CYCLE_COMPLETE이면 전략 STOPPED.
+- [x] 5.6 `evaluateSellPath` — 잔고 0이면 보유 해제. evaluateSell 호출. HOLD면 사유에 익절·손절·강제청산 미도달 명시. TARGET이면 랭킹 순위와 관계없이 전량 매도. SELL면 hasNonFailedOrder/재시도 한도 검사, 매도 주문, exit_reason에 따라 trade 행 업데이트(`status=CLOSED`, `exit_*` 채움). STOP_LOSS / FORCE_CLOSE이면 `setDayLockedOut(today_et)`, CYCLE_COMPLETE이면 전략 STOPPED.
 - [x] 5.7 `evaluateEntryPath` — day_locked_out 검사, force_close 1분 전 가드, 진행 중인 trade 없으면 새 trade INSERT(랭킹 조회 → 후보 선택 → trade_seq+1 행 생성), 이미 SELECTED 상태 trade 있으면 그것을 사용. 매수 수량 계산(자동 예산 vs 고정), 안전 검증, placeOrder. 성공 시 `setHolding`·trade `status=BOUGHT, entry_price=...`.
 - [x] 5.8 `placeOrder` — `kisTradingService.placeBuyOrder/placeSellOrder` 위임 (KIS 해외 일반 주문 제약에 맞춰 현재가 지정가, exchange 정규화는 기존 placeOverseasOrder 경로 재사용).
 - [x] 5.9 `checkOrderSafety` — 수량 0/미체결 주문/중복 주문/매수가능금액 부족/보유 수량 부족 차단.
@@ -63,7 +63,7 @@
 ## 8. 프론트엔드 — 패널·폼
 
 - [x] 8.1 `frontend/src/api/client.js`에 US 랭킹 API 함수 추가: `getUsRankOverview`, `listUsRankStrategies`, `createUsRankStrategy`, `getUsRankStrategy`, `deleteUsRankStrategy`, `startUsRankStrategy`, `stopUsRankStrategy`, `evaluateUsRankStrategy`, `listUsRankTrades`, `listUsRankOrders`, `listUsRankDecisions`.
-- [x] 8.2 `frontend/src/pages/UsRankAutoTradingPanel.jsx` 생성 — KR 랭킹 패널 기반. 연결 계좌(USD 매수가능금액), 전략 만들기 폼(자동 예산 체크/고정 USD/익절/손절/강제 청산 시각/거래소/누적 목표), 전략 목록 카드, 전략 상세(매매 횟수·잠금·익절/손절·누적 목표 표시), 매매 사이클 테이블, 판단 로그(평가금액 컬럼), 주문 이력(총 금액 컬럼).
+- [x] 8.2 `frontend/src/pages/UsRankAutoTradingPanel.jsx` 생성 — KR 랭킹 패널 기반. 연결 계좌(USD 매수가능금액), 전략 만들기 폼(매수가능금액 전액 안내/익절/손절/강제 청산 시각/거래소/누적 목표), 전략 목록 카드, 전략 상세(매매 횟수·잠금·익절/손절·누적 목표 표시), 매매 사이클 테이블, 판단 로그(평가금액 컬럼), 주문 이력(총 금액 컬럼).
 - [x] 8.3 `frontend/src/pages/AutoTradingPage.jsx`에 세 번째 탭 "미국장 상승률 랭킹 전략" 추가.
 - [x] 8.4 빌드 확인(`npm run build`).
 

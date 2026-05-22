@@ -73,7 +73,7 @@ export async function startStrategy(userId, id) {
     decision: 'SKIP',
     liveOrderEnabled,
     evaluationSource: 'MANUAL',
-    reason: `전략을 시작했습니다. 미국 정규장 동안 1분마다 평가합니다. 실주문 ${liveOrderEnabled ? '켜짐' : '꺼짐'}.${cycleNote}`
+    reason: `전략을 시작했습니다. 미국 정규장 ET 10:00~16:00 동안 1분마다 평가합니다. 실주문 ${liveOrderEnabled ? '켜짐' : '꺼짐'}.${cycleNote}`
   });
   return started;
 }
@@ -333,37 +333,6 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
       evaluationSource,
       reason: `${symbol} 보유 중 (수익률 ${profitPct}%). 익절 +${pct(strategy.targetProfitRate)} / 손절 -${pct(strategy.stopLossRate)} / 청산 ${strategy.forceCloseKst} KST 모두 미도달.`
     });
-  }
-
-  // 익절 도달이지만 같은 종목이 지금도 상승률 랭킹 1위면 매도 후 곧장 다시 살 가능성이 크다.
-  // 매도-매수 왕복을 피해 그대로 들고 가도록 보류한다. 손절·강제 청산·사이클 완료는 그대로 실행.
-  if (sell.sellReason === 'TARGET') {
-    try {
-      const ranking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
-      const nextPick = selectRankingCandidate(ranking);
-      if (nextPick && nextPick.symbol === symbol) {
-        const profitPct = (sell.profitRate * 100).toFixed(2);
-        return saveDecision(userId, strategy, {
-          decision: 'HOLD',
-          tradeId: trade.id,
-          tradeDate,
-          tradeSeq: trade.tradeSeq,
-          selectedSymbol: symbol,
-          selectedSymbolName: strategy.holdingSymbolName,
-          selectedExchange: exchange,
-          currentPrice,
-          averagePrice,
-          holdingQuantity,
-          cashAvailable,
-          profitRate: sell.profitRate,
-          liveOrderEnabled,
-          evaluationSource,
-          reason: `${symbol} 익절 도달 (${profitPct}%)이지만 지금도 상승률 1위라 그대로 보유합니다.`
-        });
-      }
-    } catch (error) {
-      // 랭킹 조회 실패는 익절 매도를 막을 사유가 아니다. 그대로 매도 진행.
-    }
   }
 
   const idempotencyKey = makeUsRankIdempotencyKey({
@@ -629,9 +598,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
   const currentPrice = Number(priceQuote.price || trade.selectedPrice || 0);
   const buyingPower = await trading.getBuyingPower(symbol, { market: 'US', currency: 'USD', exchange, price: currentPrice });
   const cashAvailable = Number(buyingPower.cashAvailable || 0);
-  const budget = strategy.autoBudgetEnabled
-    ? cashAvailable
-    : Math.min(strategy.fixedBuyUsdAmount, cashAvailable);
+  const budget = cashAvailable;
   const quantity = computeBuyQuantity(budget, currentPrice);
   if (quantity <= 0) {
     return saveDecision(userId, strategy, {
@@ -686,7 +653,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
     liveOrderEnabled
   }, {
     liveOrderEnabled,
-    decisionReason: `${trade.tradeSeq}번째 매매: ${symbol} ${quantity}주 매수.`
+    decisionReason: `${trade.tradeSeq}번째 매매: ${symbol} ${quantity}주 매수. 매수가능금액 전액 기준.`
   });
   // 실주문(ACCEPTED 등)은 접수일 뿐 체결이 아니므로 보유로 즉시 전환하지 않는다.
   // 다음 tick의 체결 확인 분기(hasNonFailedOrder)에서 KIS 잔고로 실제 체결을 확인한 뒤 전환한다.
@@ -723,7 +690,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
     liveOrderEnabled,
     evaluationSource,
     orderId: order.id,
-    reason: `${trade.tradeSeq}번째 매매: ${symbol} ${quantity}주 매수. ${orderStatusNote(order, liveOrderEnabled)}`
+    reason: `${trade.tradeSeq}번째 매매: ${symbol} ${quantity}주 매수. 매수가능금액 전액 기준. ${orderStatusNote(order, liveOrderEnabled)}`
   });
   repo.attachOrderIdToDecisionLog(log.decision?.id, order.id);
   return { ...log, order };
@@ -822,8 +789,8 @@ async function safeOpenOrders(trading, symbol, exchange) {
 }
 
 function normalizeStrategyInput(input = {}) {
-  const autoBudgetEnabled = input.autoBudgetEnabled !== false;
-  const fixedBuyUsdAmount = autoBudgetEnabled ? 0 : positiveNumber(input.fixedBuyUsdAmount, '고정 USD 매수 금액');
+  const autoBudgetEnabled = true;
+  const fixedBuyUsdAmount = 0;
   const targetProfitRate = positiveNumber(input.targetProfitRate ?? DEFAULT_TARGET_PROFIT_RATE, '익절 기준');
   const stopLossRate = positiveNumber(input.stopLossRate ?? DEFAULT_STOP_LOSS_RATE, '손절 기준');
   const forceCloseKst = requireHhmm(input.forceCloseKst || DEFAULT_FORCE_CLOSE_KST, '강제 청산 시각');

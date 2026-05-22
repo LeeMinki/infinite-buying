@@ -4,6 +4,8 @@
 export const DEFAULT_TARGET_PROFIT_RATE = 0.02;
 export const DEFAULT_STOP_LOSS_RATE = 0.05;
 export const DEFAULT_FORCE_CLOSE_KST = '04:30';
+export const US_RANK_MIN_PRICE = 1;
+export const US_RANK_MIN_VOLUME = 10_000_000;
 
 const ET_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
@@ -30,7 +32,7 @@ export function isUsRegularSession(now = new Date()) {
   const day = new Date(Date.UTC(et.year, et.month - 1, et.day)).getUTCDay();
   if (day === 0 || day === 6) return false;
   const minutes = et.hour * 60 + et.minute;
-  return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
+  return minutes >= 10 * 60 && minutes < 16 * 60;
 }
 
 export function isUsForceCloseTime(now = new Date(), forceCloseKst = DEFAULT_FORCE_CLOSE_KST) {
@@ -65,7 +67,7 @@ export function parseHhmmMinutes(value) {
 }
 
 // 미국장은 한국처럼 가격제한폭(상한가)이 없어 등락률 상한 필터를 두지 않는다.
-// 가장 상승률 높은 종목부터 검사해 유효한 첫 종목을 반환한다.
+// 대신 1달러 미만 종목과 당일 거래량 1,000만 주 미만 종목은 제외한다.
 export function selectRankingCandidate(rankingList = []) {
   if (!Array.isArray(rankingList)) return null;
   for (const item of rankingList) {
@@ -73,12 +75,15 @@ export function selectRankingCandidate(rankingList = []) {
     const rate = Number(item.fluctuationRate);
     if (!Number.isFinite(rate)) continue;
     const price = Number(item.price);
-    if (!Number.isFinite(price) || price <= 0) continue;
+    if (!Number.isFinite(price) || price < US_RANK_MIN_PRICE) continue;
+    const volume = Number(item.volume);
+    if (!Number.isFinite(volume) || volume < US_RANK_MIN_VOLUME) continue;
     return {
       symbol: String(item.symbol).trim().toUpperCase(),
       name: item.name || item.symbol,
       exchange: item.exchange || 'NAS',
       price,
+      volume,
       fluctuationRate: rate
     };
   }
