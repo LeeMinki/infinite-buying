@@ -95,7 +95,7 @@
 미국장 상승률 랭킹 전략은 세 번째 독립 전략 종류다. `us_rank_*` 테이블·`usRankStrategyEngine`·`usRankService`·`usRankRoutes`·프론트 패널을 별도로 사용하고, 실주문 실행 설정·KIS credential·스케줄러 프로세스만 공유한다.
 
 - KIS 해외주식 상승율/하락율 API(`/uapi/overseas-stock/v1/ranking/updown-rate`, TR `HHDFS76290000`)로 NASDAQ/NYSE/AMEX 상승률 랭킹을 조회한다.
-- 서버는 미국 정규장 ET 10:00~16:00 동안 1분 간격으로 RUNNING 전략을 평가한다. 시간 판정은 `Intl.DateTimeFormat('America/New_York')` 기반이라 DST를 OS tz 데이터에 위임한다.
+- 서버는 미국 정규장 ET 10:00~16:00 동안 30초 간격으로 RUNNING 전략을 평가한다. 시간 판정은 `Intl.DateTimeFormat('America/New_York')` 기반이라 DST를 OS tz 데이터에 위임한다.
 - 보유 종목이 없으면 상승률 랭킹에서 현재가 1 USD 이상, 당일 거래량 1,000만 주 이상인 첫 유효 종목을 선택해 한 매매 사이클을 시작한다. 미국장은 한국장처럼 가격제한폭이 없어 별도 등락률 상한을 두지 않는다.
 - 매수는 평가 시점 미국 종목 매수가능금액 전액을 사용한다. 주문 수량은 정수 1주 단위다.
 - 보유 중에는 새 종목을 사지 않고 익절(기본 +2%), 손절(기본 -5%), 강제 청산(KST 기본 04:30)을 평가한다.

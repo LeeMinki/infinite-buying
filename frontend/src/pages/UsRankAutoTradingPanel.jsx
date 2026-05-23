@@ -182,7 +182,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
           </div>
         </div>
         <ul className="kr-rank-rule-list">
-          <li>미국 정규장 ET 10:00~16:00 동안 1분마다 상승률 랭킹을 확인합니다.</li>
+          <li>미국 정규장 ET 10:00~16:00 동안 30초마다 상승률 랭킹을 확인합니다.</li>
           <li>가격 1 USD 이상, 거래량 1,000만 주 이상인 종목 중 상승률이 가장 높은 종목을 고릅니다.</li>
           <li>보유 종목이 없으면 평가 시점의 USD 매수가능금액 전액으로 1주 단위 매수 수량을 계산합니다.</li>
           <li>익절 기준에 닿으면 랭킹 순위와 관계없이 보유 수량을 모두 매도합니다. 다음 평가에서 조건이 맞으면 다시 매수합니다.</li>
@@ -335,7 +335,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
                 onClick={() => runAction(evaluateUsRankStrategy, 'evaluate')}>지금 평가</button>
             </div>
             <p className="auto-log-note">
-              시작 후 서버는 ET 10:00~16:00에 1분마다 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 익절하면 전량 매도 후 다음 평가에서 다시 진입하고, 손절 또는 강제 청산이 발생하면 같은 미국 거래일에는 신규 매수를 하지 않습니다.
+              시작 후 서버는 ET 10:00~16:00에 30초마다 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 익절하면 전량 매도 후 다음 평가에서 다시 진입하고, 손절 또는 강제 청산이 발생하면 같은 미국 거래일에는 신규 매수를 하지 않습니다.
             </p>
             <DecisionLogTable decisions={decisions} />
             <OrdersTable orders={orders} />

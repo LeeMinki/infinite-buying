@@ -77,7 +77,7 @@ export async function startStrategy(userId, id) {
     decision: 'SKIP',
     liveOrderEnabled,
     evaluationSource: 'MANUAL',
-    reason: `전략을 시작했습니다. 미국 정규장 ET 10:00~16:00 동안 1분마다 평가합니다. 실주문 ${liveOrderEnabled ? '켜짐' : '꺼짐'}.${cycleNote}`
+    reason: `전략을 시작했습니다. 미국 정규장 ET 10:00~16:00 동안 30초마다 평가합니다. 실주문 ${liveOrderEnabled ? '켜짐' : '꺼짐'}.${cycleNote}`
   });
   return started;
 }
