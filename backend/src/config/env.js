@@ -15,8 +15,8 @@ export const env = {
   autoTradingSchedulerIntervalMs: Number(process.env.AUTO_TRADING_SCHEDULER_INTERVAL_MS || 600_000),
   // 한국 국장 상승률 랭킹 전략은 진입 시각(09:10·11:30)을 놓치지 않도록 30초 간격으로 평가한다.
   krRankSchedulerIntervalMs: Number(process.env.KR_RANK_SCHEDULER_INTERVAL_MS || 30_000),
-  // 미국장 상승률 랭킹 전략도 정규장 중 빠른 회전을 위해 1분 간격으로 평가한다.
-  usRankSchedulerIntervalMs: Number(process.env.US_RANK_SCHEDULER_INTERVAL_MS || 60_000),
+  // 미국장 상승률 랭킹 전략도 정규장 중 빠른 회전을 위해 30초 간격으로 평가한다.
+  usRankSchedulerIntervalMs: Number(process.env.US_RANK_SCHEDULER_INTERVAL_MS || 30_000),
   secretEncryptionKey: process.env.SECRET_ENCRYPTION_KEY || generatedDevEncryptionKey,
   sessionSecret: process.env.SESSION_SECRET || generatedDevSessionSecret,
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'true',
