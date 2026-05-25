@@ -2,7 +2,7 @@
 
 ## 한 줄 요약
 
-라오어 무한매수법 스타일의 단일 종목 분할 매수 전략을 한국투자증권(이하 KIS) Open API 일봉 데이터로 **백테스트**하고, 같은 설정을 KIS Open API 주문으로 **자동매매**까지 실행할 수 있는 사용자별 웹 애플리케이션.
+라오어 무한매수법 스타일의 단일 종목 분할 매수 전략을 한국투자증권(이하 KIS) Open API 일봉 데이터로 **백테스트**하고, KIS Open API 주문으로 **자동매매**까지 실행할 수 있는 사용자별 웹 애플리케이션. 자동매매는 라오어 무한매수법(`LAOR_INFINITE_V2`) 외에 한국 국장 상승률 랭킹(`KR_RANK_MOMENTUM`)·미국장 상승률 랭킹(`US_RANK_MOMENTUM`) 전략을 독립적으로 지원한다. 백테스트는 라오어 알고리즘 기준이다.
 
 ## 사용자 시나리오
 
@@ -26,7 +26,7 @@
 - **Backend**: Node.js, Express, `better-sqlite3` 기반 SQLite, `express-session` + `better-sqlite3-session-store`, `bcrypt`, AES-256-GCM (`backend/src/crypto/`).
 - **Frontend**: React 19, Vite, Recharts. 단일 페이지 앱이며 라우팅은 `frontend/src/App.jsx`의 `view` 상태로 분기 (`kis` / `backtest` / `auto-trading` / 기본 전략 목록).
 - **데이터 소스**: KIS Open API (`backend/src/market-data/KisMarketDataProvider.js`, `backend/src/services/kisTradingService.js`, `backend/src/services/kisAuthService.js`).
-- **DB 마이그레이션**: `backend/src/db/migrations/0001~0020`. 실행은 `npm run migrate`.
+- **DB 마이그레이션**: `backend/src/db/migrations/`에 `0001`부터 파일명 순서로 적용. 실행은 `npm run migrate`.
 
 ## 기본 예시 종목
 

@@ -1,6 +1,71 @@
 # Infinite Buying
 
-라오어 무한매수법 스타일 전략을 한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS) Open API 데이터로 백테스트하고 자동매매까지 실행할 수 있는 웹앱입니다. 기본 예시는 `TQQQ`이며, 국내 종목은 KRW, 해외 종목은 KIS 응답 통화 기준으로 계산합니다.
+한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS) Open API를 사용해 **주식 전략을 백테스트하고 실제 자동매매까지 실행**하는 사용자별 웹 애플리케이션입니다. 기본 예시는 `TQQQ`이며, 국내 종목은 KRW, 해외 종목은 KIS 응답 통화(주로 USD) 기준으로 계산합니다.
+
+> ⚠️ **실제 돈이 오가는 라이브 매매 시스템입니다.** 실주문은 사용자별 `liveOrderEnabled` 설정이 켜졌을 때만 실행되며, 미체결·중복·매수가능금액·보유 수량 안전 검사를 통과해야 전송됩니다. 코드를 수정할 때는 항상 이 안전망과 사용자 자원 격리를 깨지 않는지 확인하세요.
+
+## 지원하는 전략 (3종, 서로 독립)
+
+| 전략 | 식별자 | 요약 | 평가 주기 |
+| --- | --- | --- | --- |
+| 라오어 무한매수법 | `LAOR_INFINITE_V2` | 단일 종목 분할 매수·평단가/큰수 매수·목표 익절 후 재시작 | 10분 |
+| 한국 국장 상승률 랭킹 전략 | `KR_RANK_MOMENTUM` | 오전/점심 진입 시 등락률 상위 종목을 단기 흐름 필터로 매수, 목표·손절·청산시각 매도 | 30초 |
+| 미국장 상승률 랭킹 전략 | `US_RANK_MOMENTUM` | 미국 정규장 중 상승률 1위 종목 매수, 목표·손절·강제청산·누적목표 매도 | 30초 |
+
+세 전략은 테이블·서비스·스케줄러 타이머·라우트·프론트 패널이 모두 분리되어 있고, 실주문 실행 설정과 KIS 연동만 공유합니다.
+
+## 클론 후 시작하기
+
+```bash
+# 1. 의존성 설치 (npm workspaces: 루트에서 backend·frontend 모두 설치)
+npm install
+
+# 2. backend 환경변수 준비 (아래 "환경변수" 절 참고)
+cp backend/.env.example backend/.env   # 예시 파일이 없으면 직접 작성
+#   - SECRET_ENCRYPTION_KEY, SESSION_SECRET 은 반드시 새로 생성
+
+# 3. DB 마이그레이션 (SQLite, 순서대로 적용)
+npm run migrate
+
+# 4. 테스트로 동작 확인
+npm test
+
+# 5. 개발 서버 (backend:4000 + frontend dev 서버 동시 실행)
+npm run dev
+```
+
+KIS App Key/Secret/계좌 정보는 코드/환경변수가 아니라, 로그인 후 웹 화면 `KIS 설정`에서 사용자별로 등록합니다(AES-256-GCM 암호화 저장). 자세한 순서는 아래 [KIS 설정](#kis-설정) 절을 참고하세요.
+
+## 지향점 (이 프로젝트가 추구하는 것)
+
+- **백테스트와 자동매매의 일관성**: 같은 전략 설정을 과거 일봉 백테스트와 실시간 자동매매 양쪽에서 동일한 의사결정 규칙으로 재사용합니다.
+- **사용자별 완전 격리**: 모든 도메인 테이블에 `user_id`가 있고, 모든 보호 API는 세션의 `userId` 기준으로만 동작합니다. 한 사용자의 자격증명·전략·주문은 다른 사용자에게 노출되지 않습니다.
+- **안전 우선의 실주문**: 실주문은 기본 비활성. 켜더라도 안전 검사를 통과해야만 전송하며, 예약주문 API는 의도적으로 구현하지 않습니다(`ENABLE_RESERVED_ORDER=false` 고정).
+- **민감정보 비노출**: App Secret·access token·계좌번호 원문은 frontend로 반환하지 않고 로그에도 남기지 않습니다.
+- **명세 우선 개발**: 새 기능은 `openspec/`의 change 제안 → 구현 흐름을 따릅니다.
+
+## 저장소 구조 (top-level)
+
+```text
+backend/      Node.js + Express + SQLite(better-sqlite3) API 서버
+frontend/     React 19 + Vite + Recharts 단일 페이지 앱
+openspec/     현재 구현 기준 baseline 명세 + 진행 중/아카이브된 change 제안
+specs/        Spec Kit 산출물 (001~005 기능 단위 spec/plan/tasks, 히스토리)
+infra/        k3s + Argo CD 배포 매니페스트, GitHub Actions 연동
+KIS/          KIS Open API 공식 엑셀 문서 (REST API 구현의 1차 기준)
+AGENTS.md     에이전트·기여자용 개발 규칙 (브랜치·커밋·KIS 문서 기준 등)
+```
+
+## 에이전트·신규 기여자를 위한 안내
+
+이 저장소를 처음 분석한다면 다음 순서로 읽으면 빠릅니다.
+
+1. **이 README** — 전체 그림, 전략 3종, 실행법.
+2. **[AGENTS.md](AGENTS.md)** — 작업 규칙(브랜치 전략, 커밋, KIS 엑셀 우선 원칙, 실주문 제약).
+3. **[openspec/specs/README.md](openspec/specs/README.md)** — "지금 코드가 무엇을 하는가"를 영역별로 정리한 baseline. 특히 [product-overview.md](openspec/specs/product-overview.md), [auto-trading.md](openspec/specs/auto-trading.md), [database-model.md](openspec/specs/database-model.md), [backend-api.md](openspec/specs/backend-api.md).
+4. **코드** — 진입점은 `backend/src/server.js`, 스케줄러는 `backend/src/services/*Scheduler.js`, 전략 판단 로직은 `backend/src/services/*StrategyEngine.js`.
+
+KIS REST API를 다룰 때는 추측하지 말고 항상 `KIS/한국투자증권_오픈API_전체문서_*.xlsx`의 TR 코드·필수 파라미터·응답 필드를 1차 기준으로 확인하세요.
 
 ## 현재 지원 범위
 
@@ -12,7 +77,7 @@
 - 국내/해외 종목 일봉 조회 및 `market_price_cache` 저장
 - KIS 일봉 시가·고가·종가 기준 백테스트
 - 백테스트 요약, 거래 이력, 자산 변화 차트, 평균단가 vs 종가 차트
-- 자동매매 전략 생성, 시작, 종료 (라오어 무한매수법 / 한국 국장 상승률 랭킹 전략)
+- 자동매매 전략 생성, 시작, 종료 (라오어 무한매수법 / 한국 국장 상승률 랭킹 전략 / 미국장 상승률 랭킹 전략)
 - 실주문 실행 설정 토글
 - 실주문 실행 꺼짐: 현재가·잔고·매수가능금액 조회, 전략 판단, 모의 주문 기록, 포지션 스냅샷 저장
 - 실주문 실행 켜짐: 미체결·중복·매수가능금액·보유 수량 검사를 통과한 경우 KIS 주문 API로 실제 매수/매도 주문 전송
@@ -24,7 +89,7 @@
 - KIS 예약주문 API 호출
 - 수수료, 세금, 환율, 슬리피지 계산
 - 주문 실패 자동 재시도
-- 미체결 주문 자동 취소
+- 사용자가 HTS/MTS에서 직접 만든 주문의 취소 (앱이 접수한 미체결 주문은 다음 평가 시 자동 취소하지만, 사용자가 직접 만든 주문은 건드리지 않습니다)
 
 `ENABLE_RESERVED_ORDER=false`를 유지해야 합니다. 실주문은 사용자별 `liveOrderEnabled` 설정이 켜져 있고 미체결·중복·매수가능금액·보유 수량 검사를 통과한 경우에만 실행됩니다.
 
@@ -69,7 +134,10 @@ ENABLE_RESERVED_ORDER=false
 AUTO_TRADING_SCHEDULER_ENABLED=true
 AUTO_TRADING_SCHEDULER_INTERVAL_MS=600000
 KR_RANK_SCHEDULER_INTERVAL_MS=30000
+US_RANK_SCHEDULER_INTERVAL_MS=30000
 ```
+
+`*_SCHEDULER_INTERVAL_MS`는 각 전략 스케줄러의 평가 주기입니다. 라오어 무한매수법은 10분(600000), 한국·미국 상승률 랭킹 전략은 진입 시각을 놓치지 않도록 30초(30000)로 평가합니다.
 
 `SECRET_ENCRYPTION_KEY`는 32바이트 난수를 base64로 인코딩한 값이어야 합니다.
 
@@ -254,20 +322,36 @@ POST   /api/kr-rank/strategies/:id/evaluate
 GET    /api/kr-rank/strategies/:id/orders
 GET    /api/kr-rank/strategies/:id/decisions
 GET    /api/kr-rank/strategies/:id/entries
+
+GET    /api/us-rank/overview
+GET    /api/us-rank/strategies
+POST   /api/us-rank/strategies
+GET    /api/us-rank/strategies/:id
+PUT    /api/us-rank/strategies/:id
+DELETE /api/us-rank/strategies/:id
+POST   /api/us-rank/strategies/:id/start
+POST   /api/us-rank/strategies/:id/stop
+POST   /api/us-rank/strategies/:id/evaluate
+GET    /api/us-rank/strategies/:id/trades
+GET    /api/us-rank/strategies/:id/orders
+GET    /api/us-rank/strategies/:id/decisions
 ```
 
 모든 보호 API는 로그인한 사용자의 `userId` 기준으로만 조회/수정/삭제합니다.
 
 ## 개발
 
+루트 `package.json`은 npm workspaces로 `backend`/`frontend`를 묶습니다. 루트에서 다음 명령을 실행합니다.
+
 ```bash
-npm install
-npm test
-npm run build
-npm run dev
+npm install      # backend·frontend 의존성 모두 설치
+npm run migrate  # backend SQLite 마이그레이션 적용
+npm test         # backend 테스트 (node --test)
+npm run build    # frontend 프로덕션 빌드 (vite build)
+npm run dev      # backend(:4000)·frontend dev 서버 동시 실행
 ```
 
-`npm run dev`는 backend와 frontend 개발 서버를 함께 실행합니다.
+개별 워크스페이스만 실행하려면 `npm --workspace backend run <script>` / `npm --workspace frontend run <script>` 형식을 사용합니다.
 
 ## 보안 원칙
 
@@ -280,4 +364,4 @@ npm run dev
 
 ## 배포
 
-GitHub Actions, ECR, k3s, Argo CD 기반 배포 자동화를 사용합니다. `main`에 머지되면 배포 파이프라인이 실행됩니다.
+GitHub Actions, ECR, k3s, Argo CD 기반 배포 자동화를 사용합니다. `main`에 머지되면 Deploy 워크플로가 ECR 이미지를 빌드·푸시하고 GitOps 매니페스트의 이미지 태그를 갱신하면, Argo CD가 이를 동기화합니다. 배포 매니페스트와 상세 구성은 [infra/](infra/)와 [infra/kubernetes/argocd/README.md](infra/kubernetes/argocd/README.md)를 참고하세요.
