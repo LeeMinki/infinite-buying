@@ -1,38 +1,61 @@
-# infinite-buying Development Guidelines
+# infinite-buying 개발 가이드 (에이전트·기여자용)
 
-Auto-generated from all feature plans. Last updated: 2026-05-12
+이 파일은 저장소를 처음 분석하는 에이전트/기여자가 가장 먼저 읽어야 할 작업 규칙입니다. 전체 그림과 실행법은 [README.md](README.md), 영역별 구현 현황은 [openspec/specs/README.md](openspec/specs/README.md)를 참고하세요.
 
-## Active Technologies
-- JavaScript on Node.js 22+ for backend; React 19-compatible JavaScript frontend.
-- Express, better-sqlite3, dotenv, cors, bcrypt, express-session, Vite, React, Recharts.
-- Built-in `fetch` for 한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS) Open API calls and `node:crypto` for AES-256-GCM encryption.
-- SQLite on the backend volume with ordered SQL migrations.
+## 한 줄 요약
 
-## Project Structure
+KIS Open API로 주식 전략을 백테스트하고 실제 자동매매까지 실행하는 사용자별 웹앱. **실제 돈이 오가는 라이브 매매 시스템**이므로 안전망과 사용자 자원 격리를 절대 깨지 않는다.
+
+## 기술 스택
+
+- **Backend**: Node.js 22+, Express, SQLite(`better-sqlite3`), `express-session` + `better-sqlite3-session-store`, `bcrypt`, AES-256-GCM(`node:crypto`), 내장 `fetch`(KIS 호출).
+- **Frontend**: React 19, Vite, Recharts. 단일 페이지 앱(`frontend/src/App.jsx`의 `view` 상태로 화면 분기).
+- **DB**: backend 볼륨 위 SQLite. 마이그레이션은 `backend/src/db/migrations/`에 파일명 순서로 적용(`npm run migrate`).
+
+## 저장소 구조
 
 ```text
-backend/
-frontend/
-specs/
+backend/    Express API 서버 (routes → services → repositories, market-data, crypto, db)
+frontend/   React SPA
+openspec/   현재 구현 기준 baseline 명세 + change 제안 (specs/ = baseline, changes/ = 진행/아카이브)
+specs/      Spec Kit 산출물 (001~005 기능 단위 spec/plan/tasks)
+infra/      k3s + Argo CD 배포 매니페스트
+KIS/        KIS Open API 공식 엑셀 문서 (REST 구현의 1차 기준)
 ```
 
-## Commands
+## 자동매매 전략 3종 (서로 독립)
 
-Backend and frontend commands are run from their own package directories after implementation.
+| 전략 | 식별자 | 테이블 접두사 | 엔진/서비스 |
+| --- | --- | --- | --- |
+| 라오어 무한매수법 | `LAOR_INFINITE_V2` | `auto_trading_*` | `autoTradingStrategyEngine.js` / `autoTradingService.js` |
+| 한국 국장 상승률 랭킹 | `KR_RANK_MOMENTUM` | `kr_rank_*` | `krRankStrategyEngine.js` / `krRankService.js` |
+| 미국장 상승률 랭킹 | `US_RANK_MOMENTUM` | `us_rank_*` | `usRankStrategyEngine.js` / `usRankService.js` |
 
-## Code Style
+각 전략은 라우트·프론트 패널·스케줄러 타이머가 분리되어 있고, 실주문 실행 설정과 KIS 연동만 공유한다. 스케줄러 주기: 라오어 10분, 한국·미국 랭킹 30초.
 
-JavaScript on Node.js 22+; React 19-compatible frontend: Follow standard conventions
+## 명령
 
-## Recent Changes
-- 005-kis-auto-trading: Added JavaScript on Node.js 22+ backend; React 19-compatible JavaScript frontend + Express, better-sqlite3, dotenv, cors, bcrypt, express-session, built-in fetch, node:crypto, Vite, React, Recharts
-- KIS Open API is the single read-only market data integration.
-- Backtests use user-scoped KIS daily prices. Domestic symbols use KRW and overseas symbols use their KIS response currency, normally USD for US ETFs.
+루트 `package.json`은 npm workspaces로 backend/frontend를 묶는다. 루트에서 실행:
 
-<!-- MANUAL ADDITIONS START -->
-- Do not push directly to `main`; use a feature branch, detailed pull request, review, then merge.
-- Use Linux line endings only (`LF`), never Windows `CRLF`.
-- KIS integration must use the local Excel reference in `KIS/` first. Current reference file: `KIS/한국투자증권_오픈API_전체문서_20260512_030000.xlsx`.
-- Pull request descriptions must be written in Korean.
-- Real broker orders are only allowed for explicitly approved live-order specs. For 005 and later auto-trading work, live order execution must default to disabled, require the user's `liveOrderEnabled=true` setting, pass safety guards, and never expose raw App Secret, access token, or account number.
-<!-- MANUAL ADDITIONS END -->
+```bash
+npm install      # 전체 의존성
+npm run migrate  # SQLite 마이그레이션
+npm test         # backend 테스트 (node --test)
+npm run build    # frontend 빌드
+npm run dev      # backend + frontend dev 서버 동시 실행
+```
+
+## 작업 규칙 (반드시 준수)
+
+- `main`에 직접 push 금지. feature 브랜치 → 상세한 PR → 리뷰 → 머지.
+- Pull request 설명은 **한국어**로 작성.
+- 줄바꿈은 항상 LF(Linux). Windows CRLF 금지.
+- **KIS 연동은 `KIS/`의 로컬 엑셀 문서를 1차 기준으로 확인**한다. TR 코드·필수 파라미터·응답 필드를 추측하지 말 것. 현재 기준 파일: `KIS/한국투자증권_오픈API_전체문서_20260512_030000.xlsx`.
+- **실주문 안전 원칙**: 실주문은 기본 비활성. 사용자별 `liveOrderEnabled=true`가 있고 미체결·중복·매수가능금액·보유 수량 안전 검사를 통과해야만 KIS 주문 API를 호출한다. App Secret·access token·계좌번호 원문을 frontend로 반환하거나 로그에 남기지 않는다. 예약주문 API는 구현하지 않으며 `ENABLE_RESERVED_ORDER=false`를 유지한다.
+- UI 한국어 문구는 자연스럽게 작성한다(AI가 쓴 듯한 도구적 설명 톤 회피).
+
+## 주의할 함정
+
+- SQLite `datetime('now')`는 OS 벽시계를 쓴다. JS `Date`를 mock해도 DB 시각은 mock되지 않으므로, 시간 의존 테스트는 `created_at` 등을 직접 UPDATE해 정렬한다.
+- 미국장 DST는 `Intl.DateTimeFormat('America/New_York')`로 OS tz 데이터에 위임한다.
+- KIS 매수가능금액은 정산 지연(T+n)으로 부정확할 수 있다. 누적 손익은 현금이 아니라 (실현 + 미실현) / 기준자본으로 계산한다.
