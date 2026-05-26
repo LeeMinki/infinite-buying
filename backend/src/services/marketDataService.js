@@ -71,6 +71,12 @@ export async function getDomesticHolidays(userId, baseDate) {
   return provider.getDomesticHolidays(baseDate);
 }
 
+// 해외주식 당일 분봉 — 미국장 랭킹 매수 후보의 단기 흐름(VWAP·거래량·장대 음봉) 검사용.
+export async function getOverseasTodayMinuteCandles(userId, symbol, exchange, options = {}) {
+  const provider = new KisMarketDataProvider(userId);
+  return provider.getOverseasTodayMinuteCandles(normalizeSymbol(symbol), exchange, options);
+}
+
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase();
 }

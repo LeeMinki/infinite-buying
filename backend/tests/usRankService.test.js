@@ -62,6 +62,10 @@ function withMockedFetch(state, run) {
         ]
       });
     }
+    if (text.includes('/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice')) {
+      // 매수 후보 단기 흐름 필터용 분봉. 기본은 필터를 통과하는 상승 추세, state.minuteCandles로 재정의 가능.
+      return json({ rt_cd: '0', output2: state.minuteCandles || passingMinuteCandles() });
+    }
     if (text.includes('/uapi/overseas-price/v1/quotations/price')) {
       return json({ rt_cd: '0', output: { last: String(state.price ?? 50) } });
     }
@@ -95,6 +99,24 @@ function withMockedFetch(state, run) {
 
 function json(body) {
   return { ok: true, status: 200, json: async () => body };
+}
+
+// 단기 흐름 필터(checkUsBuyCandidate)를 통과하는 상승 추세 분봉(시가<종가, 종가 상승, 거래량 일정).
+// KIS 해외 분봉은 최신 봉이 앞에 오므로 reverse 해 그 정렬도 함께 검증한다.
+function passingMinuteCandles() {
+  const out = [];
+  for (let i = 0; i < 10; i += 1) {
+    const close = 40 + i;
+    out.push({
+      xhms: String(100000 + i * 100),
+      open: (close - 0.5).toFixed(2),
+      high: (close + 0.2).toFixed(2),
+      low: (close - 0.7).toFixed(2),
+      last: close.toFixed(2),
+      evol: '100000'
+    });
+  }
+  return out.reverse();
 }
 
 test('매수 후보 없음(SCHEDULED)은 trade 행을 만들지 않고 로그도 남기지 않는다', async () => {
@@ -254,6 +276,28 @@ test('미국장 랭킹 매수는 고정 금액 설정이 있어도 매수가능�
       assert.equal(result.decision.decision, 'BUY');
       assert.equal(result.decision.expectedQuantity, 20);
       assert.equal(result.decision.expectedAmount, 1000);
+    });
+  });
+});
+
+test('단기 흐름 필터를 통과하지 못하면 매수하지 않고 SKIP 한다', async () => {
+  // 하락 추세 분봉(현재가가 VWAP/시작가 아래) → 필터 탈락 → 후보 없음 SKIP, 주문 없음.
+  const falling = [];
+  for (let i = 0; i < 10; i += 1) {
+    const close = 49 - i;
+    falling.push({ xhms: String(100000 + i * 100), open: (close + 0.5).toFixed(2), high: (close + 0.7).toFixed(2), low: (close - 0.2).toFixed(2), last: close.toFixed(2), evol: '100000' });
+  }
+  const state = { price: 50, cash: 1000, balanceQuantity: 0, rankingTopSymbol: 'WEAK', symbol: 'WEAK', minuteCandles: falling.reverse() };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      autoBudgetEnabled: true, fixedBuyUsdAmount: 0, targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    await service.startStrategy(user.id, strategy.id);
+    await withMockedDate('2026-05-21T14:00:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(result.decision.decision, 'SKIP');
+      assert.equal(result.order, null);
+      assert.equal(repo.listTrades(user.id, { strategyId: strategy.id }).length, 0);
     });
   });
 });

@@ -5,14 +5,25 @@ import {
   computeBuyQuantity,
   computeCycleProfitRate,
   etTradeDate,
+  checkUsBuyCandidate,
   evaluateSell,
   isUsForceCloseTime,
   isUsMarketHoliday,
   isUsRegularSession,
   makeUsRankIdempotencyKey,
   parseHhmmMinutes,
-  selectRankingCandidate
+  selectRankingCandidate,
+  selectRankingCandidates
 } from '../src/services/usRankStrategyEngine.js';
+
+function risingCandles() {
+  const out = [];
+  for (let i = 0; i < 10; i += 1) {
+    const close = 40 + i;
+    out.push({ time: String(100000 + i * 100), open: close - 0.5, high: close + 0.2, low: close - 0.7, close, volume: 100000 });
+  }
+  return out;
+}
 
 const tmp = useTempDb();
 const db = await bootstrapDb();
@@ -59,6 +70,38 @@ test('정규장 시간이어도 휴장일이면 isUsRegularSession은 false', ()
   assert.equal(isUsRegularSession(new Date('2026-05-25T14:30:00Z')), false);
   // 다음 평일은 정상 개장
   assert.equal(isUsRegularSession(new Date('2026-05-26T14:30:00Z')), true);
+});
+
+test('미국 매수 필터: 상승 추세는 통과, 흐름이 깨지면 거절', () => {
+  // 상승 추세(시가<종가·종가 상승·거래량 일정) → 통과
+  assert.equal(checkUsBuyCandidate(risingCandles()).ok, true);
+
+  // 분봉 부족 → 거절
+  assert.equal(checkUsBuyCandidate(risingCandles().slice(0, 2)).ok, false);
+
+  // 현재가가 VWAP/시작가 아래(하락 추세) → 거절
+  const falling = risingCandles().map((c, i) => {
+    const close = 49 - i;
+    return { ...c, open: close + 0.5, high: close + 0.7, low: close - 0.2, close };
+  });
+  assert.equal(checkUsBuyCandidate(falling).ok, false);
+
+  // 마지막에 거래량 동반 장대 음봉 → 거절
+  const bearish = risingCandles();
+  const last = bearish[bearish.length - 1];
+  bearish[bearish.length - 1] = { ...last, open: last.close + 5, close: last.close - 5, volume: 1_000_000 };
+  assert.equal(checkUsBuyCandidate(bearish).ok, false);
+});
+
+test('selectRankingCandidates는 가격·거래량 1차 필터 통과 후보를 상위 N개 반환', () => {
+  const ranking = [
+    { symbol: 'A', name: 'A', exchange: 'NAS', price: 50, volume: 20_000_000, fluctuationRate: 0.5 },
+    { symbol: 'B', name: 'B', exchange: 'NAS', price: 0.5, volume: 20_000_000, fluctuationRate: 0.4 }, // 1달러 미만 제외
+    { symbol: 'C', name: 'C', exchange: 'NAS', price: 30, volume: 1_000_000, fluctuationRate: 0.3 }, // 거래량 미달 제외
+    { symbol: 'D', name: 'D', exchange: 'NAS', price: 20, volume: 0, fluctuationRate: 0.2 } // 거래량 0 → 서버 필터 신뢰, 통과
+  ];
+  const picked = selectRankingCandidates(ranking, { limit: 3 }).map((c) => c.symbol);
+  assert.deepEqual(picked, ['A', 'D']);
 });
 
 test('강제 청산은 미국장이 열려 있고 KST 새벽 설정 시각 이후에만 true', () => {
