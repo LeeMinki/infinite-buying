@@ -54,10 +54,11 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/overseas-stock/v1/ranking/updown-rate')) {
       // 정렬은 등락률 내림차순이라 top 종목에 가장 큰 rate를 줘서 selectRankingCandidate가 top을 픽하게 한다.
       const top = state.rankingTopSymbol || 'HOT1';
+      // rate는 %값 — 30.0 → 등락률 0.30. 진입 유니버스 등락률 상한(+50%) 아래라 후보로 통과한다.
       return json({
         rt_cd: '0',
         output2: [
-          { symb: top, name: top, last: '50', rate: '50.0', rank: '1', tvol: '20000000' },
+          { symb: top, name: top, last: '50', rate: '30.0', rank: '1', tvol: '20000000' },
           { symb: 'OTHER', name: 'Other', last: '70', rate: '10.0', rank: '2', tvol: '15000000' }
         ]
       });
@@ -73,7 +74,15 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', output: { frcr_ord_psbl_amt1: String(state.cash ?? 1000), max_ord_psbl_qty: '999' } });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-nccs')) {
-      return json({ rt_cd: '0', output: [] });
+      return json({ rt_cd: '0', output: state.openOrders || [] });
+    }
+    if (text.includes('/uapi/overseas-stock/v1/trading/inquire-ccnl')) {
+      // 체결조회(TTTS3035R) — 매도 체결 확인용. state.orderHistory로 체결 내역을 재정의한다.
+      return json({ rt_cd: '0', output: state.orderHistory || [] });
+    }
+    if (options.method === 'POST' && text.includes('/uapi/overseas-stock/v1/trading/order-rvsecncl')) {
+      state.cancelCalls = (state.cancelCalls || 0) + 1;
+      return json({ rt_cd: '0', output: { ODNO: `CANCEL${state.cancelCalls}` } });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-balance')) {
       return json({
@@ -401,6 +410,100 @@ test('이전 거래일에 남은 SELECTED 매매는 오늘 이어받지 않고 �
     const stale = trades.find((t) => t.symbol === 'STALE');
     assert.equal(stale.status, 'FAILED'); // 전날 매매는 폐기됨
   });
+});
+
+test('실주문 손절 매도는 접수만으로 청산하지 않고 KIS 체결 확인 후 실제 체결가로 확정한다', async () => {
+  // 핵심 사고 방지: 매도 접수(ACCEPTED) != 체결. 접수를 청산으로 간주해 보유를 지우면 실제로는
+  // 안 팔린 포지션이 앱에서 사라진다(고아 포지션·허구 손익). 체결조회로 확인된 뒤에만 청산을 확정한다.
+  const sellUser = createUser(db, 'us-rank-sell@example.com');
+  credentialService.saveSettings(sellUser.id, { appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01' });
+  autoTradingRepo.updateLiveOrderSetting(sellUser.id, true);
+  const state = { price: 47, cash: 0, balanceQuantity: 10, averagePrice: 50, symbol: 'LIVESELL', rankingTopSymbol: 'LIVESELL' };
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(sellUser.id, {
+        targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+      });
+      await service.startStrategy(sellUser.id, strategy.id);
+      repo.setHolding(sellUser.id, strategy.id, { symbol: 'LIVESELL', symbolName: 'Live Sell', exchange: 'NAS', quantity: 10, averagePrice: 50 });
+
+      // tick1: -6%라 손절 트리거 → 매도 주문 접수(ACCEPTED). 아직 청산하지 않고 보유를 유지한다.
+      await withMockedDate('2026-05-18T14:00:00Z', async () => {
+        const sell = await service.evaluateStrategy(sellUser.id, strategy.id);
+        assert.equal(sell.decision.decision, 'SELL');
+        assert.equal(sell.decision.sellReason, 'STOP_LOSS');
+        assert.equal(sell.order.status, 'ACCEPTED');
+        assert.ok(/체결 확인/.test(sell.decision.reason));
+      });
+      const afterPlace = repo.getStrategy(sellUser.id, strategy.id);
+      assert.equal(afterPlace.holdingSymbol, 'LIVESELL'); // 아직 보유 — 접수만으론 청산 안 함
+      assert.equal(afterPlace.dayLockedOut, false);
+
+      // tick2: KIS 체결조회가 FILLED(평균 체결가 46.50)를 돌려준다 → 실제 체결가로 청산 확정.
+      state.orderHistory = [{ odno: 'ORD1', tot_ccld_qty: '10', nccs_qty: '0', avg_prvs: '46.50', sll_buy_dvsn_cd: '01' }];
+      await withMockedDate('2026-05-18T14:00:30Z', async () => {
+        const confirmed = await service.evaluateStrategy(sellUser.id, strategy.id);
+        assert.equal(confirmed.decision.decision, 'SELL');
+        assert.equal(confirmed.decision.sellReason, 'STOP_LOSS');
+        assert.ok(/체결 확정/.test(confirmed.decision.reason));
+      });
+      const closed = repo.getStrategy(sellUser.id, strategy.id);
+      assert.equal(closed.holdingSymbol, null);
+      assert.equal(closed.dayLockedOut, true);
+      const trade = repo.listTrades(sellUser.id, { strategyId: strategy.id }).find((t) => t.symbol === 'LIVESELL');
+      assert.equal(trade.status, 'CLOSED');
+      assert.equal(Number(trade.exitPrice), 46.5); // 판단 시점 현재가(47)가 아닌 실제 체결가로 기록
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(sellUser.id, false);
+  }
+});
+
+test('실주문 손절 매도가 미체결로 오래 머물면 취소하고 더 공격적인 가격으로 재호가한다', async () => {
+  const reqUser = createUser(db, 'us-rank-requote@example.com');
+  credentialService.saveSettings(reqUser.id, { appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01' });
+  autoTradingRepo.updateLiveOrderSetting(reqUser.id, true);
+  const state = { price: 47, cash: 0, balanceQuantity: 10, averagePrice: 50, symbol: 'REQUOTE', rankingTopSymbol: 'REQUOTE' };
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(reqUser.id, {
+        targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+      });
+      await service.startStrategy(reqUser.id, strategy.id);
+      repo.setHolding(reqUser.id, strategy.id, { symbol: 'REQUOTE', symbolName: 'Requote', exchange: 'NAS', quantity: 10, averagePrice: 50 });
+
+      // tick1: 손절 매도 접수.
+      await withMockedDate('2026-05-18T14:00:00Z', async () => {
+        const sell = await service.evaluateStrategy(reqUser.id, strategy.id);
+        assert.equal(sell.decision.sellReason, 'STOP_LOSS');
+        assert.equal(state.orderCalls, 1);
+      });
+      // 주문 created_at을 mock 시간축에 맞춰 결정적으로 덮어쓴다(SQLite는 실제 시계라 어긋남).
+      const sellOrder = repo.listOrders(reqUser.id, { strategyId: strategy.id }).find((o) => o.side === 'SELL');
+      db.prepare("UPDATE us_rank_orders SET created_at = ? WHERE id = ?").run('2026-05-18 14:00:00', sellOrder.id);
+
+      // tick2(+30초): 아직 stale 아님 → 체결 대기.
+      await withMockedDate('2026-05-18T14:00:30Z', async () => {
+        const wait = await service.evaluateStrategy(reqUser.id, strategy.id);
+        assert.equal(wait.decision.decision, 'SKIP');
+        assert.ok(/체결 대기/.test(wait.decision.reason));
+        assert.equal(state.orderCalls, 1); // 새 주문 없음
+      });
+
+      // tick3(+60초): stale → 취소하고 더 공격적인 가격으로 재호가(새 주문).
+      await withMockedDate('2026-05-18T14:01:00Z', async () => {
+        const requote = await service.evaluateStrategy(reqUser.id, strategy.id);
+        assert.equal(requote.decision.decision, 'SELL');
+        assert.ok(/재호가/.test(requote.decision.reason));
+        assert.equal(state.cancelCalls, 1); // 직전 주문 취소됨
+        assert.equal(state.orderCalls, 2); // 재호가 주문 발생
+      });
+      // 여전히 보유 — 재호가도 접수일 뿐 체결 확정은 다음 체결 확인에서.
+      assert.equal(repo.getStrategy(reqUser.id, strategy.id).holdingSymbol, 'REQUOTE');
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(reqUser.id, false);
+  }
 });
 
 test('실주문 미체결 지정가가 오래 머물면 취소하고 매매를 접는다', async () => {

@@ -401,6 +401,31 @@ export function countFailedOrders(idempotencyKey) {
   ).get(idempotencyKey).c;
 }
 
+// 한 매매(trade)에 대해 아직 살아 있는(취소·실패·거절이 아닌) 가장 최근 매도 주문.
+// 매도 체결 확인·재호가 판단에 쓴다. ACCEPTED는 접수일 뿐이라 이 주문이 실제 체결됐는지
+// service가 KIS 체결조회로 다시 확인한다.
+export function getActiveSellOrder(tradeId) {
+  return toOrder(getDb().prepare(`
+    SELECT * FROM us_rank_orders
+    WHERE trade_id = ? AND side = 'SELL' AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+    ORDER BY id DESC LIMIT 1
+  `).get(tradeId));
+}
+
+// 한 매매에 지금까지 낸 매도 주문 수(모든 상태). 재호가 시 멱등키 접미사(-R{n})를 만든다.
+export function countSellOrders(tradeId) {
+  return getDb().prepare(
+    "SELECT COUNT(*) AS c FROM us_rank_orders WHERE trade_id = ? AND side = 'SELL'"
+  ).get(tradeId).c;
+}
+
+// 한 매매에서 실패·거절된 매도 주문 수. 손절 매도가 반복 실패하면 무한 재시도를 멈추는 한도 판정용.
+export function countFailedSellOrders(tradeId) {
+  return getDb().prepare(
+    "SELECT COUNT(*) AS c FROM us_rank_orders WHERE trade_id = ? AND side = 'SELL' AND status IN ('FAILED', 'REJECTED')"
+  ).get(tradeId).c;
+}
+
 export function hasBlockingOpenOrder(userId, strategyId) {
   return Boolean(getDb().prepare(`
     SELECT 1 FROM us_rank_orders
