@@ -13,8 +13,19 @@ import {
 export const DEFAULT_TARGET_PROFIT_RATE = 0.02;
 export const DEFAULT_STOP_LOSS_RATE = 0.05;
 export const DEFAULT_FORCE_CLOSE_KST = '04:30';
-export const US_RANK_MIN_PRICE = 1;
+// 진입 유니버스 1차 필터. 상승률 1위라고 무조건 사지 않고, 변동성·유동성이 위험한 종목군을 먼저 배제한다.
+//   - 최소 가격 $5: $1~4 초저가(micro/penny) 종목은 스프레드·호가 공백이 커서 진입·청산 슬리피지가 크다.
+//     실거래에서 $0.32·$1.6 종목이 펌프 후 급락해 −10%대 손실을 냈던 패턴을 막는다.
+//   - 최소 거래대금 $50M: 주 수(거래량)만으로는 저가주가 통과하므로 가격×거래량(달러 유동성)으로 거른다.
+//   - 등락률 상한 +50%: 미국장은 가격제한폭이 없어 +100%도 가능한데, 이미 수직 급등한 종목을 추격하면
+//     블로우오프 고점을 사게 된다. 상한 이상이면 건너뛰고 차순위 후보를 본다.
+export const US_RANK_MIN_PRICE = 5;
 export const US_RANK_MIN_VOLUME = 10_000_000;
+export const US_RANK_MIN_TURNOVER_USD = 50_000_000;
+export const US_MAX_FLUCTUATION_RATE = 0.50;
+// 단기 흐름 필터의 과열 기준 — 현재가가 당일 VWAP보다 이 비율 넘게 높으면(평균에서 과도하게 이탈) 되돌림
+// 위험이 커 매수하지 않는다. "VWAP 위"만 보면 급등 막판에도 당연히 참이라 꼭대기를 통과시키는 문제를 보완.
+export const US_OVERHEAT_MAX_VWAP_PREMIUM = 0.15;
 // 단기 흐름 필터에 적용할 상위 후보 개수. 1위부터 차례로 분봉을 검사해 통과한 첫 종목을 산다.
 // 미국장은 정규장 내내 평가하므로 KIS 분봉 호출량(rate limit)을 고려해 국장(5)보다 보수적으로 둔다.
 export const US_RANK_CANDIDATE_LIMIT = 3;
@@ -157,24 +168,34 @@ export function parseHhmmMinutes(value) {
   return hours * 60 + minutes;
 }
 
-// 미국장은 한국처럼 가격제한폭(상한가)이 없어 등락률 상한 필터를 두지 않는다.
-// 대신 1달러 미만 종목을 제외하고, 거래량 1,000만 주 미만 종목도 제외한다.
+// 진입 유니버스 1차 필터. 등락률 상위라고 무조건 사지 않고 위험한 종목군을 먼저 배제한다:
+//   - 등락률 상한(US_MAX_FLUCTUATION_RATE) 이상 = 이미 수직 급등 → 추격 금지(블로우오프 회피).
+//   - 최소 가격(US_RANK_MIN_PRICE) 미만 = 초저가 micro-cap → 스프레드·호가 공백이 커 제외.
+//   - 거래대금(가격×거래량)이 최소 기준 미만 = 유동성 부족 → 제외.
 // 거래량은 KIS 랭킹 요청에서 VOL_RANG='6'(1,000만 주 이상)으로 이미 1차 필터링되므로,
 // 응답의 거래량 필드가 비어 있거나 파싱되지 않으면(필드명 변동 등) 서버 필터를 신뢰해 통과시킨다.
-// 거래량이 유효한 양수로 들어왔을 때만 1,000만 주 미만을 제외한다(이중 필터가 전원 탈락시키지 않도록).
-// 가격·거래량 1차 필터를 통과한 상위 후보들을 등락률 순서대로 최대 limit개 돌려준다.
+// 거래량이 유효한 양수로 들어왔을 때만 주 수·거래대금 기준을 적용한다(이중 필터가 전원 탈락시키지 않도록).
+// 1차 필터를 통과한 상위 후보들을 등락률 순서대로 최대 limit개 돌려준다.
 // 단기 흐름 필터(checkUsBuyCandidate)는 service가 분봉을 조회해 이 후보들에 순서대로 적용한다.
-export function selectRankingCandidates(rankingList = [], { limit = US_RANK_CANDIDATE_LIMIT } = {}) {
+export function selectRankingCandidates(rankingList = [], {
+  limit = US_RANK_CANDIDATE_LIMIT,
+  maxFluctuationRate = US_MAX_FLUCTUATION_RATE,
+  minTurnoverUsd = US_RANK_MIN_TURNOVER_USD
+} = {}) {
   if (!Array.isArray(rankingList)) return [];
   const out = [];
   for (const item of rankingList) {
     if (!item || !item.symbol) continue;
     const rate = Number(item.fluctuationRate);
     if (!Number.isFinite(rate)) continue;
+    if (Number.isFinite(maxFluctuationRate) && rate >= maxFluctuationRate) continue;
     const price = Number(item.price);
     if (!Number.isFinite(price) || price < US_RANK_MIN_PRICE) continue;
     const volume = Number(item.volume);
-    if (Number.isFinite(volume) && volume > 0 && volume < US_RANK_MIN_VOLUME) continue;
+    if (Number.isFinite(volume) && volume > 0) {
+      if (volume < US_RANK_MIN_VOLUME) continue;
+      if (price * volume < minTurnoverUsd) continue;
+    }
     out.push({
       symbol: String(item.symbol).trim().toUpperCase(),
       name: item.name || item.symbol,
@@ -213,6 +234,12 @@ export function checkUsBuyCandidate(candles, opts = {}) {
   const vwap = computeVwap(candles);
   if (vwap > 0 && current <= vwap) {
     return { ok: false, reason: `현재가 $${fmtUsd(current)}가 VWAP $${fmtUsd(vwap)} 아래라 매수하지 않습니다.` };
+  }
+  // 과열 회피: 현재가가 VWAP보다 과도하게 높으면(평균에서 너무 멀어짐) 되돌림 위험이 커 매수하지 않는다.
+  // "VWAP 위"만 보면 급등 막판에도 참이라 꼭대기를 통과시키므로, 이탈 폭에 상한을 둔다.
+  const maxVwapPremium = opts.maxVwapPremium ?? US_OVERHEAT_MAX_VWAP_PREMIUM;
+  if (vwap > 0 && Number.isFinite(maxVwapPremium) && current > vwap * (1 + maxVwapPremium)) {
+    return { ok: false, reason: `현재가 $${fmtUsd(current)}가 VWAP $${fmtUsd(vwap)} 대비 ${(maxVwapPremium * 100).toFixed(0)}% 넘게 높아(과열) 매수하지 않습니다.` };
   }
   if (isVolumeDecreasing(candles, opts.trendWindow, opts.volumeShrinkRatio)) {
     return { ok: false, reason: '최근 거래량이 직전 구간보다 크게 줄어 매수하지 않습니다.' };
@@ -253,6 +280,17 @@ export function computeCycleProfitRate({
   const avg = Number(averagePrice) || 0;
   const unrealized = qty > 0 && price > 0 && avg > 0 ? qty * (price - avg) : 0;
   return (realized + unrealized) / baseline;
+}
+
+// 청산 지정가. 미국은 시장가가 없어, 호가를 가로지르는(현재가보다 낮은) 지정가로 매도해 체결을 보장한다.
+// 미체결 재호가일수록(attempt↑) 더 깊게 내려 확실히 빠져나간다(최대 5%). 실제 체결은 그 가격이 아니라
+// 그 가격 이상인 최우선 매수호가에서 이뤄지므로, 깊은 지정가가 곧 그만큼 싸게 파는 것을 뜻하지는 않는다.
+export function aggressiveSellPrice(currentPrice, attempt = 0) {
+  const price = Number(currentPrice) || 0;
+  if (price <= 0) return price;
+  const n = Math.max(0, Math.trunc(Number(attempt) || 0));
+  const discount = Math.min(0.005 + 0.015 * n, 0.05);
+  return price * (1 - discount);
 }
 
 export function computeBuyQuantity(cashAvailable, price) {

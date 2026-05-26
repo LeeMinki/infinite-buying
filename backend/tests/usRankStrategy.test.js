@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { useTempDb, bootstrapDb, createUser } from './_helpers/dbHarness.js';
 import {
+  aggressiveSellPrice,
   computeBuyQuantity,
   computeCycleProfitRate,
   etTradeDate,
@@ -93,15 +94,49 @@ test('미국 매수 필터: 상승 추세는 통과, 흐름이 깨지면 거절'
   assert.equal(checkUsBuyCandidate(bearish).ok, false);
 });
 
-test('selectRankingCandidates는 가격·거래량 1차 필터 통과 후보를 상위 N개 반환', () => {
+test('미국 매수 필터: VWAP보다 과도하게 높으면(과열) 거절한다', () => {
+  // 마지막 봉만 VWAP 대비 크게 위로 띄운다(블로우오프). 다른 조건은 통과하지만 과열로 거절돼야 한다.
+  const candles = risingCandles();
+  const last = candles[candles.length - 1];
+  candles[candles.length - 1] = { ...last, close: last.close * 1.4, high: last.close * 1.45 };
+  const result = checkUsBuyCandidate(candles);
+  assert.equal(result.ok, false);
+  assert.ok(/과열/.test(result.reason));
+  // 과열 기준을 넉넉히 풀면 통과 — 임계값이 실제로 작동함을 확인.
+  assert.equal(checkUsBuyCandidate(candles, { maxVwapPremium: 1 }).ok, true);
+});
+
+test('청산 지정가는 현재가보다 낮고 재호가일수록 더 깊어진다(최대 5%)', () => {
+  assert.ok(aggressiveSellPrice(100, 0) < 100);
+  assert.equal(aggressiveSellPrice(100, 0).toFixed(2), '99.50'); // -0.5%
+  assert.equal(aggressiveSellPrice(100, 1).toFixed(2), '98.00'); // -2.0%
+  assert.equal(aggressiveSellPrice(100, 10).toFixed(2), '95.00'); // -5% 상한
+  assert.equal(aggressiveSellPrice(0, 3), 0); // 가격 0이면 그대로
+});
+
+test('selectRankingCandidates는 진입 유니버스 1차 필터 통과 후보를 상위 N개 반환', () => {
   const ranking = [
-    { symbol: 'A', name: 'A', exchange: 'NAS', price: 50, volume: 20_000_000, fluctuationRate: 0.5 },
-    { symbol: 'B', name: 'B', exchange: 'NAS', price: 0.5, volume: 20_000_000, fluctuationRate: 0.4 }, // 1달러 미만 제외
+    { symbol: 'A', name: 'A', exchange: 'NAS', price: 50, volume: 20_000_000, fluctuationRate: 0.4 },
+    { symbol: 'HOT', name: 'HOT', exchange: 'NAS', price: 10, volume: 20_000_000, fluctuationRate: 0.6 }, // 등락률 +50% 이상 제외(과열)
+    { symbol: 'B', name: 'B', exchange: 'NAS', price: 3, volume: 20_000_000, fluctuationRate: 0.4 }, // $5 미만 제외
     { symbol: 'C', name: 'C', exchange: 'NAS', price: 30, volume: 1_000_000, fluctuationRate: 0.3 }, // 거래량 미달 제외
+    { symbol: 'E', name: 'E', exchange: 'NAS', price: 5, volume: 5_000_000, fluctuationRate: 0.3 }, // 거래대금 2,500만<5천만 제외
     { symbol: 'D', name: 'D', exchange: 'NAS', price: 20, volume: 0, fluctuationRate: 0.2 } // 거래량 0 → 서버 필터 신뢰, 통과
   ];
   const picked = selectRankingCandidates(ranking, { limit: 3 }).map((c) => c.symbol);
   assert.deepEqual(picked, ['A', 'D']);
+});
+
+test('진입 유니버스 필터: 등락률 상한·최소 가격·거래대금·거래량을 적용한다', () => {
+  // 등락률 +50% 이상(과열) 제외
+  assert.equal(selectRankingCandidate([{ symbol: 'X', price: 10, volume: 20_000_000, fluctuationRate: 0.5 }]), null);
+  assert.equal(selectRankingCandidate([{ symbol: 'X', price: 10, volume: 20_000_000, fluctuationRate: 0.49 }]).symbol, 'X');
+  // $5 미만 제외
+  assert.equal(selectRankingCandidate([{ symbol: 'P', price: 4.99, volume: 20_000_000, fluctuationRate: 0.3 }]), null);
+  // 거래대금 5천만 달러 미만 제외 (가격 6 × 800만 주 = 4,800만)
+  assert.equal(selectRankingCandidate([{ symbol: 'T', price: 6, volume: 8_000_000, fluctuationRate: 0.3 }]), null);
+  // 거래량 0/누락은 서버 필터 신뢰 → 통과
+  assert.equal(selectRankingCandidate([{ symbol: 'NV', price: 10, fluctuationRate: 0.3 }]).symbol, 'NV');
 });
 
 test('강제 청산은 미국장이 열려 있고 KST 새벽 설정 시각 이후에만 true', () => {
@@ -121,7 +156,7 @@ test('HH:MM 파싱과 잘못된 형식을 구분한다', () => {
   assert.equal(parseHhmmMinutes('04:60'), null);
 });
 
-test('상승률 순위의 첫 유효 후보를 선택한다 (등락률 상한 없음)', () => {
+test('상승률 순위에서 등락률 상한 아래의 첫 유효 후보를 선택한다', () => {
   const ranking = [
     { symbol: 'AAA', name: '1위', price: 10, volume: 15_000_000, fluctuationRate: 0.35 },
     { symbol: 'BBB', name: '2위', price: 20, volume: 20_000_000, fluctuationRate: 0.19 }
@@ -130,9 +165,9 @@ test('상승률 순위의 첫 유효 후보를 선택한다 (등락률 상한 �
   assert.equal(picked.symbol, 'AAA');
 });
 
-test('가격 1달러 미만, 거래량 1천만주 미만, 등락률 파싱 실패 종목은 건너뛴다', () => {
+test('가격 $5 미만, 거래량 1천만주 미만, 등락률 파싱 실패 종목은 건너뛴다', () => {
   const ranking = [
-    { symbol: 'BAD1', price: 0.99, volume: 50_000_000, fluctuationRate: 0.5 },
+    { symbol: 'BAD1', price: 4.99, volume: 50_000_000, fluctuationRate: 0.4 },
     { symbol: 'BAD2', price: 10, volume: 9_999_999, fluctuationRate: 0.4 },
     { symbol: 'BAD3', price: 10, volume: 20_000_000, fluctuationRate: NaN },
     { symbol: 'OK', price: 10, volume: 10_000_000, fluctuationRate: 0.1 }
