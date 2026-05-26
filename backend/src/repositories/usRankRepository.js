@@ -259,20 +259,30 @@ export function getTradeById(id) {
   return toTrade(getDb().prepare('SELECT * FROM us_rank_trades WHERE id = ?').get(id));
 }
 
-export function listTrades(userId, { strategyId, limit = 100 } = {}) {
+export function listTrades(userId, { strategyId, limit = 50, offset = 0 } = {}) {
   const params = [userId];
   let where = 'user_id = ?';
   if (strategyId) {
     where += ' AND strategy_id = ?';
     params.push(strategyId);
   }
-  params.push(limit);
+  params.push(limit, offset);
   return getDb().prepare(`
     SELECT * FROM us_rank_trades
     WHERE ${where}
     ORDER BY trade_date DESC, trade_seq DESC, id DESC
-    LIMIT ?
+    LIMIT ? OFFSET ?
   `).all(...params).map(toTrade);
+}
+
+export function countTrades(userId, { strategyId = null } = {}) {
+  const params = [userId];
+  let where = 'user_id = ?';
+  if (strategyId) {
+    where += ' AND strategy_id = ?';
+    params.push(strategyId);
+  }
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM us_rank_trades WHERE ${where}`).get(...params).n;
 }
 
 export function createOrder(userId, input) {
@@ -340,20 +350,30 @@ export function getOrder(userId, id) {
   return toOrder(getDb().prepare('SELECT * FROM us_rank_orders WHERE user_id = ? AND id = ?').get(userId, id));
 }
 
-export function listOrders(userId, { strategyId = null, limit = 100 } = {}) {
+export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 } = {}) {
   const params = [userId];
   let where = 'user_id = ?';
   if (strategyId) {
     where += ' AND strategy_id = ?';
     params.push(strategyId);
   }
-  params.push(limit);
+  params.push(limit, offset);
   return getDb().prepare(`
     SELECT * FROM us_rank_orders
     WHERE ${where}
     ORDER BY created_at DESC, id DESC
-    LIMIT ?
+    LIMIT ? OFFSET ?
   `).all(...params).map(toOrder);
+}
+
+export function countOrders(userId, { strategyId = null } = {}) {
+  const params = [userId];
+  let where = 'user_id = ?';
+  if (strategyId) {
+    where += ' AND strategy_id = ?';
+    params.push(strategyId);
+  }
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM us_rank_orders WHERE ${where}`).get(...params).n;
 }
 
 export function hasDuplicateOrder(idempotencyKey) {
@@ -432,13 +452,19 @@ export function attachOrderIdToDecisionLog(decisionLogId, orderId) {
   getDb().prepare('UPDATE us_rank_decision_logs SET order_id = ? WHERE id = ?').run(orderId, decisionLogId);
 }
 
-export function listDecisionLogs(userId, strategyId, limit = 100) {
+export function listDecisionLogs(userId, strategyId, { limit = 50, offset = 0 } = {}) {
   return getDb().prepare(`
     SELECT * FROM us_rank_decision_logs
     WHERE user_id = ? AND strategy_id = ?
     ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(userId, strategyId, limit).map(toDecisionLog);
+    LIMIT ? OFFSET ?
+  `).all(userId, strategyId, limit, offset).map(toDecisionLog);
+}
+
+export function countDecisionLogs(userId, strategyId) {
+  return getDb().prepare(
+    'SELECT COUNT(*) AS n FROM us_rank_decision_logs WHERE user_id = ? AND strategy_id = ?'
+  ).get(userId, strategyId).n;
 }
 
 export function acquireLock(userId, strategyId, lockKey, lockedUntil) {

@@ -7,6 +7,7 @@ import {
   etTradeDate,
   evaluateSell,
   isUsForceCloseTime,
+  isUsMarketHoliday,
   isUsRegularSession,
   makeUsRankIdempotencyKey,
   parseHhmmMinutes,
@@ -34,6 +35,30 @@ test('미국 정규장 판정은 DST 전후에도 ET 기준으로 동작한다',
   assert.equal(isUsRegularSession(new Date('2026-01-05T15:00:00Z')), true); // 겨울 10:00 ET
   assert.equal(isUsRegularSession(new Date('2026-07-06T13:59:00Z')), false); // 여름 09:59 ET
   assert.equal(isUsRegularSession(new Date('2026-07-06T14:00:00Z')), true); // 여름 10:00 ET
+});
+
+test('NYSE 정규 휴장일(2026년)을 규칙으로 판정한다', () => {
+  // 고정일·변동일 모두 포함. month는 1-12.
+  assert.equal(isUsMarketHoliday(2026, 1, 1), true); // 신정 (목)
+  assert.equal(isUsMarketHoliday(2026, 1, 19), true); // MLK (1월 셋째 월)
+  assert.equal(isUsMarketHoliday(2026, 2, 16), true); // 대통령의 날 (2월 셋째 월)
+  assert.equal(isUsMarketHoliday(2026, 4, 3), true); // 성금요일 (부활절 4/5 직전 금)
+  assert.equal(isUsMarketHoliday(2026, 5, 25), true); // 메모리얼데이 (5월 마지막 월)
+  assert.equal(isUsMarketHoliday(2026, 6, 19), true); // 준틴스 (금)
+  assert.equal(isUsMarketHoliday(2026, 7, 3), true); // 독립기념일 7/4(토) → 7/3(금) 대체
+  assert.equal(isUsMarketHoliday(2026, 9, 7), true); // 노동절 (9월 첫째 월)
+  assert.equal(isUsMarketHoliday(2026, 11, 26), true); // 추수감사절 (11월 넷째 목)
+  assert.equal(isUsMarketHoliday(2026, 12, 25), true); // 크리스마스 (금)
+  // 휴장일이 아닌 평일
+  assert.equal(isUsMarketHoliday(2026, 5, 26), false);
+  assert.equal(isUsMarketHoliday(2026, 7, 6), false);
+});
+
+test('정규장 시간이어도 휴장일이면 isUsRegularSession은 false', () => {
+  // 2026-05-25(월) 메모리얼데이 10:30 ET (EDT, UTC-4 → 14:30 UTC). 휴장 체크가 없으면 true였을 시각.
+  assert.equal(isUsRegularSession(new Date('2026-05-25T14:30:00Z')), false);
+  // 다음 평일은 정상 개장
+  assert.equal(isUsRegularSession(new Date('2026-05-26T14:30:00Z')), true);
 });
 
 test('강제 청산은 미국장이 열려 있고 KST 새벽 설정 시각 이후에만 true', () => {

@@ -65,6 +65,12 @@ export async function getDomesticTodayMinuteCandles(userId, symbol, options = {}
   return provider.getDomesticTodayMinuteCandles(normalizeSymbol(symbol), options);
 }
 
+// 국내 증시 휴장일 조회 — 자동매매가 공휴일에 매수를 시도하지 않도록 개장일 여부를 확인한다.
+export async function getDomesticHolidays(userId, baseDate) {
+  const provider = new KisMarketDataProvider(userId);
+  return provider.getDomesticHolidays(baseDate);
+}
+
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase();
 }

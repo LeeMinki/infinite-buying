@@ -88,14 +88,14 @@
 
 ## 한국 국장 상승률 랭킹 전략 (`KR_RANK_MOMENTUM`)
 
-자동매매 도메인은 라오어 무한매수법 외에 한국 국장 상승률 랭킹 전략을 두 번째 독립 전략 종류로 함께 운용한다. 두 전략 종류는 각자의 테이블(`kr_rank_*`)·엔진(`krRankStrategyEngine`/`krRankService`)·평가 경로를 가지며, 실주문 실행 설정(`user_trading_settings.live_order_enabled`)·스케줄러(`autoTradingScheduler`)·KIS 연동(`kisAuthService`/`kisTradingService`)을 공유한다. 라오어 전략의 평가 사이클·상태 머신·기록은 이 전략 추가로 변경되지 않는다. 상세 동작은 `kr-rank-auto-trading` 스펙을 참고한다.
+자동매매 도메인은 라오어 무한매수법 외에 한국 국장 상승률 랭킹 전략을 두 번째 독립 전략 종류로 함께 운용한다. 두 전략 종류는 각자의 테이블(`kr_rank_*`)·엔진(`krRankStrategyEngine`/`krRankService`)·평가 경로를 가지며, 실주문 실행 설정(`user_trading_settings.live_order_enabled`)·스케줄러(`autoTradingScheduler`)·KIS 연동(`kisAuthService`/`kisTradingService`)을 공유한다. 라오어 전략의 평가 사이클·상태 머신·기록은 이 전략 추가로 변경되지 않는다. 상세 동작은 `kr-rank-auto-trading` 스펙을 참고한다. 평일·장 운영 시간(09:00~15:30 KST)을 통과해도, 공휴일에는 KIS 국내휴장일조회(TR `CTCA0903R`, `opnd_yn`)로 개장일이 아님을 확인하면 주문하지 않고 평가만 건너뛴다(휴장 판정은 날짜별 1회 조회 후 캐시).
 
 ## 미국장 상승률 랭킹 전략 (`US_RANK_MOMENTUM`)
 
 미국장 상승률 랭킹 전략은 세 번째 독립 전략 종류다. `us_rank_*` 테이블·`usRankStrategyEngine`·`usRankService`·`usRankRoutes`·프론트 패널을 별도로 사용하고, 실주문 실행 설정·KIS credential·스케줄러 프로세스만 공유한다.
 
 - KIS 해외주식 상승율/하락율 API(`/uapi/overseas-stock/v1/ranking/updown-rate`, TR `HHDFS76290000`)로 NASDAQ/NYSE/AMEX 상승률 랭킹을 조회한다.
-- 서버는 미국 정규장 ET 10:00~16:00 동안 30초 간격으로 RUNNING 전략을 평가한다. 시간 판정은 `Intl.DateTimeFormat('America/New_York')` 기반이라 DST를 OS tz 데이터에 위임한다.
+- 서버는 미국 정규장 ET 10:00~16:00 동안 30초 간격으로 RUNNING 전략을 평가한다. 시간 판정은 `Intl.DateTimeFormat('America/New_York')` 기반이라 DST를 OS tz 데이터에 위임한다. KIS에는 미국 휴장일 API가 없어 `isUsMarketHoliday`가 NYSE 정규 휴장일(신정·MLK·대통령의 날·성금요일·메모리얼데이·준틴스·독립기념일·노동절·추수감사절·크리스마스, 토/일은 금/월로 대체)을 규칙으로 계산해 휴장일에는 평가하지 않는다. 조기 폐장(반일장)은 다루지 않는다.
 - 보유 종목이 없으면 상승률 랭킹에서 현재가 1 USD 이상, 당일 거래량 1,000만 주 이상인 첫 유효 종목을 선택해 한 매매 사이클을 시작한다. 미국장은 한국장처럼 가격제한폭이 없어 별도 등락률 상한을 두지 않는다.
 - 매수는 평가 시점 미국 종목 매수가능금액 전액을 사용한다. 주문 수량은 정수 1주 단위다.
 - 보유 중에는 새 종목을 사지 않고 익절(기본 +2%), 손절(기본 -5%), 강제 청산(KST 기본 04:30)을 평가한다.

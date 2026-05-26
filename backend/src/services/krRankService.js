@@ -2,7 +2,7 @@ import * as repo from '../repositories/krRankRepository.js';
 import * as autoTradingRepo from '../repositories/autoTradingRepository.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
-import { getDomesticFluctuationRanking, getDomesticTodayMinuteCandles } from './marketDataService.js';
+import { getDomesticFluctuationRanking, getDomesticTodayMinuteCandles, getDomesticHolidays } from './marketDataService.js';
 import {
   ENTRY_WINDOWS,
   resolveEntryWindow,
@@ -25,6 +25,15 @@ const BUY_FILTER_CANDIDATE_LIMIT = 5;
 const ORDER_RETRY_LIMIT = 5;
 // 상한가를 조회하지 못했을 때 쓰는 보수적 배수 (가격제한폭 상단 = 전일종가 × 1.3 이하).
 const PRICE_LIMIT_MULTIPLIER = 1.3;
+// 판단 로그·주문 이력·진입 목록 페이징 기본/최대 페이지 크기.
+const PAGE_SIZE_DEFAULT = 50;
+const PAGE_SIZE_MAX = 200;
+
+function normalizePaging({ limit, offset } = {}) {
+  const limitNum = Math.min(Math.max(Math.trunc(Number(limit)) || PAGE_SIZE_DEFAULT, 1), PAGE_SIZE_MAX);
+  const offsetNum = Math.max(Math.trunc(Number(offset)) || 0, 0);
+  return { limit: limitNum, offset: offsetNum };
+}
 
 // ── 전략 CRUD ─────────────────────────────────────────────────────────────
 
@@ -59,7 +68,7 @@ export function startStrategy(userId, id) {
     decision: 'SKIP',
     liveOrderEnabled,
     evaluationSource: 'MANUAL',
-    reason: `한국 국장 상승률 랭킹 전략을 시작했습니다. 서버가 1분 간격으로 평가하며, 오전 09:10 진입(${strategy.autoBudgetEnabled ? '매수 금액 자동(매수가능금액 전액)' : `매수 금액 ${fmt(strategy.morningBudget)}원`})${strategy.lunchEntryEnabled ? `, 점심 11:30 진입(${strategy.autoBudgetEnabled ? '매수 금액 자동(매수가능금액 전액)' : `매수 금액 ${fmt(strategy.lunchBudget)}원`})` : ''}에 상승률 상위 종목을 매수합니다. 실주문 설정: ${liveOrderEnabled ? '켜짐' : '꺼짐'}.`
+    reason: `한국 국장 상승률 랭킹 전략을 시작했습니다. 서버가 30초 간격으로 평가하며, 오전 09:10 진입(${strategy.autoBudgetEnabled ? '매수 금액 자동(매수가능금액 전액)' : `매수 금액 ${fmt(strategy.morningBudget)}원`})${strategy.lunchEntryEnabled ? `, 점심 11:30 진입(${strategy.autoBudgetEnabled ? '매수 금액 자동(매수가능금액 전액)' : `매수 금액 ${fmt(strategy.lunchBudget)}원`})` : ''}에 상승률 상위 종목을 매수합니다. 실주문 설정: ${liveOrderEnabled ? '켜짐' : '꺼짐'}.`
   });
   return started;
 }
@@ -69,19 +78,28 @@ export function stopStrategy(userId, id) {
   return repo.stopStrategy(userId, id);
 }
 
-export function listOrders(userId, strategyId = null) {
+export function listOrders(userId, strategyId = null, paging = {}) {
   if (strategyId) requireStrategy(userId, strategyId);
-  return repo.listOrders(userId, { strategyId });
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listOrders(userId, { strategyId, limit, offset });
+  const total = repo.countOrders(userId, { strategyId });
+  return { items, total, limit, offset };
 }
 
-export function listDecisionLogs(userId, strategyId) {
+export function listDecisionLogs(userId, strategyId, paging = {}) {
   requireStrategy(userId, strategyId);
-  return repo.listDecisionLogs(userId, strategyId);
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listDecisionLogs(userId, strategyId, { limit, offset });
+  const total = repo.countDecisionLogs(userId, strategyId);
+  return { items, total, limit, offset };
 }
 
-export function listEntries(userId, strategyId) {
+export function listEntries(userId, strategyId, paging = {}) {
   requireStrategy(userId, strategyId);
-  return repo.listEntries(userId, strategyId);
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listEntries(userId, strategyId, { limit, offset });
+  const total = repo.countEntries(userId, strategyId);
+  return { items, total, limit, offset };
 }
 
 // 한국 랭킹 전략 탭 요약: 실주문 설정 + 전략 목록.
@@ -106,8 +124,12 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
   }
   try {
     if (scheduled && !isKrMarketOpen()) {
-      // 장 운영 시간 외 SKIP은 매분 폴링이라 로그를 만들지 않고 평가 시각만 갱신한다.
+      // 장 운영 시간 외 SKIP은 30초마다 폴링이라 로그를 만들지 않고 평가 시각만 갱신한다.
       return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource, { noLog: true });
+    }
+    if (scheduled && !(await isKrTradingDay(userId))) {
+      // 공휴일 등 휴장일에는 평일·시간 조건을 통과해도 매수하지 않는다. 폴링이라 로그는 남기지 않는다.
+      return saveSkip(userId, strategy, '한국 증시 휴장일이라 주문하지 않습니다.', evaluationSource, { noLog: true });
     }
     return await evaluateUnlocked(userId, strategy, evaluationSource);
   } finally {
@@ -705,6 +727,32 @@ function isKrMarketOpen() {
   if (day === 0 || day === 6) return false;
   const minutes = kst.getHours() * 60 + kst.getMinutes();
   return minutes >= 9 * 60 && minutes <= 15 * 60 + 30;
+}
+
+// 휴장일 판정 결과는 시장 전체에 공통이라 날짜별로 1회만 KIS에 묻고 프로세스 캐시에 담는다
+// (KIS 안내: 국내휴장일조회는 1일 1회 호출 권장). 평일·장중에만 호출되므로 호출량이 적다.
+let krTradingDayCache = { date: null, isOpen: null };
+
+async function isKrTradingDay(userId) {
+  const today = kstYyyymmdd();
+  if (krTradingDayCache.date === today && krTradingDayCache.isOpen !== null) {
+    return krTradingDayCache.isOpen;
+  }
+  try {
+    const holidays = await getDomesticHolidays(userId, today);
+    const todayEntry = holidays.find((row) => row.date === today);
+    // 응답에 오늘이 없으면 보수적으로 개장일로 간주해 기존 동작(평일·시간 체크)에 맡긴다.
+    const isOpen = todayEntry ? todayEntry.isOpen : true;
+    krTradingDayCache = { date: today, isOpen };
+    return isOpen;
+  } catch {
+    // 휴장일 API 실패는 평가를 막지 않는다. 평일·시간 체크에 위임(개장일로 간주)하고 다음 tick에 재시도.
+    return true;
+  }
+}
+
+function kstYyyymmdd() {
+  return kstToday().replace(/-/g, '');
 }
 
 function kstToday() {

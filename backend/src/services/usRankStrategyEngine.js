@@ -31,8 +31,87 @@ export function isUsRegularSession(now = new Date()) {
   const et = timeParts(now, ET_FORMATTER);
   const day = new Date(Date.UTC(et.year, et.month - 1, et.day)).getUTCDay();
   if (day === 0 || day === 6) return false;
+  if (isUsMarketHoliday(et.year, et.month, et.day)) return false;
   const minutes = et.hour * 60 + et.minute;
   return minutes >= 10 * 60 && minutes < 16 * 60;
+}
+
+// NYSE/NASDAQ 정규 휴장일을 규칙으로 계산한다. KIS에는 미국 휴장일 API가 없어,
+// 공휴일에 매수를 반복 시도·로그하지 않도록 직접 판정한다.
+// 고정일(신정·6/19·7/4·12/25)은 토요일이면 직전 금요일, 일요일이면 다음 월요일로 대체된다.
+// (단 신정은 토요일이어도 대체휴장하지 않는 NYSE 관례를 따른다.)
+// 변동일은 MLK(1월 3번째 월)·대통령의 날(2월 3번째 월)·성금요일(부활절 직전 금)·
+// 메모리얼데이(5월 마지막 월)·노동절(9월 1번째 월)·추수감사절(11월 4번째 목).
+// 조기 폐장(반일장)은 다루지 않는다 — 그 시간대 미체결 주문이 거부될 뿐 잘못된 매매로 이어지지 않는다.
+export function isUsMarketHoliday(year, month, day) {
+  return nyseHolidaySet(year).has(`${month}-${day}`);
+}
+
+const nyseHolidayCache = new Map();
+
+function nyseHolidaySet(year) {
+  if (nyseHolidayCache.has(year)) return nyseHolidayCache.get(year);
+  const set = new Set();
+  const add = (m, d) => set.add(`${m}-${d}`);
+  const addObserved = (m, d, { newYear = false } = {}) => {
+    const date = new Date(Date.UTC(year, m - 1, d));
+    const wd = date.getUTCDay();
+    if (wd === 6 && !newYear) date.setUTCDate(date.getUTCDate() - 1); // 토 → 금
+    else if (wd === 0) date.setUTCDate(date.getUTCDate() + 1); // 일 → 월
+    add(date.getUTCMonth() + 1, date.getUTCDate());
+  };
+
+  addObserved(1, 1, { newYear: true }); // 신정
+  add(...monthDay(nthWeekday(year, 1, 1, 3))); // MLK (1월 셋째 월)
+  add(...monthDay(nthWeekday(year, 2, 1, 3))); // 대통령의 날 (2월 셋째 월)
+  add(...monthDay(goodFriday(year))); // 성금요일
+  add(...monthDay(lastWeekday(year, 5, 1))); // 메모리얼데이 (5월 마지막 월)
+  addObserved(6, 19); // 준틴스(2021~)
+  addObserved(7, 4); // 독립기념일
+  add(...monthDay(nthWeekday(year, 9, 1, 1))); // 노동절 (9월 첫째 월)
+  add(...monthDay(nthWeekday(year, 11, 4, 4))); // 추수감사절 (11월 넷째 목)
+  addObserved(12, 25); // 크리스마스
+
+  nyseHolidayCache.set(year, set);
+  return set;
+}
+
+function monthDay(date) {
+  return [date.getUTCMonth() + 1, date.getUTCDate()];
+}
+
+// year/month(1-12)의 n번째 weekday(0=일~6=토) 날짜.
+function nthWeekday(year, month, weekday, n) {
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const offset = (weekday - first.getUTCDay() + 7) % 7;
+  return new Date(Date.UTC(year, month - 1, 1 + offset + (n - 1) * 7));
+}
+
+function lastWeekday(year, month, weekday) {
+  const last = new Date(Date.UTC(year, month, 0)); // 해당 월 마지막 날
+  const offset = (last.getUTCDay() - weekday + 7) % 7;
+  return new Date(Date.UTC(year, month - 1, last.getUTCDate() - offset));
+}
+
+// 부활절(서방교회, Computus)의 직전 금요일 = 성금요일.
+function goodFriday(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  const easter = new Date(Date.UTC(year, month - 1, day));
+  easter.setUTCDate(easter.getUTCDate() - 2);
+  return easter;
 }
 
 export function isUsForceCloseTime(now = new Date(), forceCloseKst = DEFAULT_FORCE_CLOSE_KST) {
