@@ -2,11 +2,13 @@ import * as repo from '../repositories/usRankRepository.js';
 import * as autoTradingRepo from '../repositories/autoTradingRepository.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
-import { getOverseasFluctuationRanking } from './marketDataService.js';
+import { getOverseasFluctuationRanking, getOverseasTodayMinuteCandles } from './marketDataService.js';
 import {
   DEFAULT_FORCE_CLOSE_KST,
   DEFAULT_STOP_LOSS_RATE,
   DEFAULT_TARGET_PROFIT_RATE,
+  US_RANK_CANDIDATE_LIMIT,
+  checkUsBuyCandidate,
   computeBuyQuantity,
   computeCycleProfitRate,
   etTradeDate,
@@ -16,7 +18,7 @@ import {
   kstNowMinutes,
   makeUsRankIdempotencyKey,
   parseHhmmMinutes,
-  selectRankingCandidate
+  selectRankingCandidates
 } from './usRankStrategyEngine.js';
 
 const LOCK_KEY = 'evaluate';
@@ -503,6 +505,29 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   return { ...log, order };
 }
 
+// 상위 후보들에 단기 흐름 필터를 순서대로 적용해 첫 통과 종목을 고른다.
+// 분봉 조회 실패는 그 후보만 건너뛰고 다음 후보로 넘어간다. 모두 탈락하면 picked=null과 마지막 사유를 돌려준다.
+async function pickFilteredCandidate(userId, ranking) {
+  const candidates = selectRankingCandidates(ranking, { limit: US_RANK_CANDIDATE_LIMIT });
+  if (candidates.length === 0) {
+    return { picked: null, reason: '미국 상승률 랭킹에서 유효한 매수 후보가 없어 이번 tick은 건너뜁니다.' };
+  }
+  let lastReason = '상위 후보가 단기 흐름 필터를 통과하지 못해 이번 tick은 건너뜁니다.';
+  for (const candidate of candidates) {
+    let candles = [];
+    try {
+      candles = await getOverseasTodayMinuteCandles(userId, candidate.symbol, candidate.exchange, { minutes: 1, count: 120 });
+    } catch (error) {
+      lastReason = `${candidate.symbol} 분봉 조회 실패로 건너뜁니다: ${error.message || '시세 조회 오류'}`;
+      continue;
+    }
+    const check = checkUsBuyCandidate(candles);
+    if (check.ok) return { picked: candidate, reason: null };
+    lastReason = `${candidate.symbol}(등락률 ${pct(candidate.fluctuationRate)}) 제외 — ${check.reason}`;
+  }
+  return { picked: null, reason: lastReason };
+}
+
 async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrderEnabled, evaluationSource }) {
   // 무보유 상태에서 누적 실현손익이 baseline 대비 목표 수익률 이상이면 사이클을 즉시 완료한다.
   // 예: 매도 직후 누적 실현손익이 baseline×target을 넘었을 때 다음 tick에서 신규 매수 없이 STOPPED.
@@ -544,10 +569,11 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
   let rankingSnapshot = trade?.rankingSnapshot || null;
   if (!trade) {
     const ranking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
-    const picked = selectRankingCandidate(ranking);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+    // 가격·거래량 1차 필터 통과 후보들에 단기 흐름 필터(분봉 기반)를 순서대로 적용해 첫 통과 종목을 고른다.
+    const { picked, reason: candidateReason } = await pickFilteredCandidate(userId, ranking);
     if (!picked) {
-      // 후보 없음은 trade 행을 만들지 않고 decision log만 남긴다. 매분 폴링이라
+      // 후보 없음/필터 탈락은 trade 행을 만들지 않고 decision log만 남긴다. 30초 폴링이라
       // 스케줄러 SCHEDULED는 noLog로 노이즈를 줄이고 MANUAL은 사유를 응답에 보여주기 위해 기록.
       return saveDecision(userId, strategy, {
         decision: 'SKIP',
@@ -555,7 +581,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
         rankingSnapshot,
         liveOrderEnabled,
         evaluationSource,
-        reason: '미국 상승률 랭킹에서 유효한 매수 후보가 없어 이번 tick은 건너뜁니다.',
+        reason: candidateReason,
         noLog: evaluationSource !== 'MANUAL'
       });
     }

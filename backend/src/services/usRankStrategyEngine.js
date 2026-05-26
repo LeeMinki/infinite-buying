@@ -1,11 +1,23 @@
 // 미국 상승률 랭킹 전략(US_RANK_MOMENTUM)의 순수 판단 로직.
 // KIS 호출·DB 기록은 usRankService 가 담당하고, 여기서는 시간 판정과 매수/매도 판단만 한다.
 
+// 매수 후보 단기 흐름 검사는 국장 전략의 검증된 순수 캔들 함수를 그대로 재사용한다.
+import {
+  BUY_FILTER_DEFAULTS,
+  computeVwap,
+  isVolumeDecreasing,
+  findLargeBearishCandle,
+  isFailingHighBreakout
+} from './krRankStrategyEngine.js';
+
 export const DEFAULT_TARGET_PROFIT_RATE = 0.02;
 export const DEFAULT_STOP_LOSS_RATE = 0.05;
 export const DEFAULT_FORCE_CLOSE_KST = '04:30';
 export const US_RANK_MIN_PRICE = 1;
 export const US_RANK_MIN_VOLUME = 10_000_000;
+// 단기 흐름 필터에 적용할 상위 후보 개수. 1위부터 차례로 분봉을 검사해 통과한 첫 종목을 산다.
+// 미국장은 정규장 내내 평가하므로 KIS 분봉 호출량(rate limit)을 고려해 국장(5)보다 보수적으로 둔다.
+export const US_RANK_CANDIDATE_LIMIT = 3;
 
 const ET_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
@@ -150,8 +162,11 @@ export function parseHhmmMinutes(value) {
 // 거래량은 KIS 랭킹 요청에서 VOL_RANG='6'(1,000만 주 이상)으로 이미 1차 필터링되므로,
 // 응답의 거래량 필드가 비어 있거나 파싱되지 않으면(필드명 변동 등) 서버 필터를 신뢰해 통과시킨다.
 // 거래량이 유효한 양수로 들어왔을 때만 1,000만 주 미만을 제외한다(이중 필터가 전원 탈락시키지 않도록).
-export function selectRankingCandidate(rankingList = []) {
-  if (!Array.isArray(rankingList)) return null;
+// 가격·거래량 1차 필터를 통과한 상위 후보들을 등락률 순서대로 최대 limit개 돌려준다.
+// 단기 흐름 필터(checkUsBuyCandidate)는 service가 분봉을 조회해 이 후보들에 순서대로 적용한다.
+export function selectRankingCandidates(rankingList = [], { limit = US_RANK_CANDIDATE_LIMIT } = {}) {
+  if (!Array.isArray(rankingList)) return [];
+  const out = [];
   for (const item of rankingList) {
     if (!item || !item.symbol) continue;
     const rate = Number(item.fluctuationRate);
@@ -160,16 +175,59 @@ export function selectRankingCandidate(rankingList = []) {
     if (!Number.isFinite(price) || price < US_RANK_MIN_PRICE) continue;
     const volume = Number(item.volume);
     if (Number.isFinite(volume) && volume > 0 && volume < US_RANK_MIN_VOLUME) continue;
-    return {
+    out.push({
       symbol: String(item.symbol).trim().toUpperCase(),
       name: item.name || item.symbol,
       exchange: item.exchange || 'NAS',
       price,
       volume: Number.isFinite(volume) ? volume : 0,
       fluctuationRate: rate
-    };
+    });
+    if (out.length >= limit) break;
   }
-  return null;
+  return out;
+}
+
+export function selectRankingCandidate(rankingList = []) {
+  return selectRankingCandidates(rankingList, { limit: 1 })[0] || null;
+}
+
+// 매수 후보의 당일 분봉으로 단기 흐름을 검사한다(국장 전략과 같은 규칙, 미국장은 가격제한폭 없음).
+// 현재가가 최근 구간 시작가·VWAP 위에 있고, 거래량이 유지되며, 거래량 동반 장대 음봉이 없고,
+// 직전 고점을 밀리지 않은 종목만 통과시켜 블로우오프 고점 추격을 줄인다.
+// 순수 캔들 판정은 국장 엔진의 검증된 함수를 재사용한다(거래소만 다르고 규칙은 동일).
+export function checkUsBuyCandidate(candles, opts = {}) {
+  const minCandles = opts.minimumCandles ?? BUY_FILTER_DEFAULTS.minimumCandles;
+  if (!Array.isArray(candles) || candles.length < minCandles) {
+    return { ok: false, reason: '분봉 데이터가 부족해 단기 흐름을 확인할 수 없습니다.' };
+  }
+  const last = candles[candles.length - 1];
+  const recentStart = Number(candles[0]?.open) || 0;
+  const current = Number(last?.close) || 0;
+  if (recentStart <= 0 || current <= 0) {
+    return { ok: false, reason: '분봉 가격이 비어 있어 단기 흐름을 확인할 수 없습니다.' };
+  }
+  if (current <= recentStart) {
+    return { ok: false, reason: `현재가 $${fmtUsd(current)}가 최근 구간 시작가 $${fmtUsd(recentStart)} 아래라 매수하지 않습니다.` };
+  }
+  const vwap = computeVwap(candles);
+  if (vwap > 0 && current <= vwap) {
+    return { ok: false, reason: `현재가 $${fmtUsd(current)}가 VWAP $${fmtUsd(vwap)} 아래라 매수하지 않습니다.` };
+  }
+  if (isVolumeDecreasing(candles, opts.trendWindow, opts.volumeShrinkRatio)) {
+    return { ok: false, reason: '최근 거래량이 직전 구간보다 크게 줄어 매수하지 않습니다.' };
+  }
+  if (findLargeBearishCandle(candles, opts)) {
+    return { ok: false, reason: '거래량을 동반한 장대 음봉이 발생해 매수하지 않습니다.' };
+  }
+  if (isFailingHighBreakout(candles, opts)) {
+    return { ok: false, reason: '직전 고점을 돌파하지 못하고 밀려 매수하지 않습니다.' };
+  }
+  return { ok: true, reason: null };
+}
+
+function fmtUsd(value) {
+  return Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // 누적 손익률 = (실현손익 + 평가손익) / baseline.

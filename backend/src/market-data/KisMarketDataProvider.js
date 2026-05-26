@@ -118,6 +118,31 @@ export class KisMarketDataProvider {
     return normalized;
   }
 
+  // 해외주식 당일 분봉 (해외주식-030). TR HHDFS76950200, GET /uapi/overseas-price/v1/quotations/inquire-time-itemchartprice.
+  // 미국장 랭킹 전략의 매수 후보 단기 흐름(VWAP·거래량·장대 음봉) 검사용. 한 번에 최근 120건까지 조회된다.
+  async getOverseasTodayMinuteCandles(symbol, exchange = 'NAS', options = {}) {
+    const data = await this.requestJson('/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice', {
+      trId: 'HHDFS76950200',
+      query: {
+        AUTH: '',
+        EXCD: exchange,
+        SYMB: symbol,
+        NMIN: String(options.minutes || 1), // 1분봉
+        PINC: '0',                           // 전일 미포함(당일 흐름만)
+        NEXT: '',
+        NREC: String(options.count || 120),  // 최대 120건
+        FILL: '',
+        KEYB: ''
+      }
+    });
+    const rows = Array.isArray(data?.output2) ? data.output2 : [];
+    return rows
+      .map((row) => normalizeOverseasMinuteCandle(row))
+      .filter(Boolean)
+      // KIS 응답은 최신 봉이 앞에 오므로 시간 오름차순으로 재정렬.
+      .sort((a, b) => a.time.localeCompare(b.time));
+  }
+
   async getDomesticDailyPrices(symbol, options = {}) {
     const from = compactDate(options.from || currentDate());
     const to = compactDate(options.to || currentDate());
@@ -638,6 +663,21 @@ function normalizeMinuteCandle(row) {
   const low = normalizeNumber(row.stck_lwpr);
   const close = normalizeNumber(row.stck_prpr);
   const volume = normalizeNumber(row.cntg_vol);
+  if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) return null;
+  return { time, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
+}
+
+// 해외주식 분봉(HHDFS76950200) output2 한 행을 공용 캔들 형태로 정규화한다.
+// 필드: xhms(현지시각 HHMMSS), open/high/low, last(종가/체결가), evol(해당 분봉 거래량).
+function normalizeOverseasMinuteCandle(row) {
+  if (!row || typeof row !== 'object') return null;
+  const time = String(row.xhms ?? row.khms ?? '').padStart(6, '0');
+  if (!/^\d{6}$/.test(time)) return null;
+  const open = normalizeNumber(row.open);
+  const high = normalizeNumber(row.high);
+  const low = normalizeNumber(row.low);
+  const close = normalizeNumber(row.last);
+  const volume = normalizeNumber(row.evol);
   if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) return null;
   return { time, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 };
 }
