@@ -26,6 +26,15 @@ const ORDER_RETRY_LIMIT = 5;
 // 미체결 주문을 취소·재시도하지 않으면 그날 내내 멈춘다(진입 구간이 없어 종일 막힘).
 // 매수 주문이 이 시간(ms)을 넘겨도 체결되지 않으면 취소하고 이번 매매를 접어 다음 후보로 넘어간다.
 const BUY_STALE_LIMIT_MS = 3 * 60 * 1000;
+// 판단 로그·주문 이력·매매 사이클 페이징 기본/최대 페이지 크기.
+const PAGE_SIZE_DEFAULT = 50;
+const PAGE_SIZE_MAX = 200;
+
+function normalizePaging({ limit, offset } = {}) {
+  const limitNum = Math.min(Math.max(Math.trunc(Number(limit)) || PAGE_SIZE_DEFAULT, 1), PAGE_SIZE_MAX);
+  const offsetNum = Math.max(Math.trunc(Number(offset)) || 0, 0);
+  return { limit: limitNum, offset: offsetNum };
+}
 
 export function createStrategy(userId, input) {
   return repo.createStrategy(userId, normalizeStrategyInput(input));
@@ -87,19 +96,28 @@ export function stopStrategy(userId, id) {
   return repo.stopStrategy(userId, id);
 }
 
-export function listTrades(userId, strategyId) {
+export function listTrades(userId, strategyId, paging = {}) {
   requireStrategy(userId, strategyId);
-  return repo.listTrades(userId, { strategyId });
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listTrades(userId, { strategyId, limit, offset });
+  const total = repo.countTrades(userId, { strategyId });
+  return { items, total, limit, offset };
 }
 
-export function listOrders(userId, strategyId) {
+export function listOrders(userId, strategyId, paging = {}) {
   requireStrategy(userId, strategyId);
-  return repo.listOrders(userId, { strategyId });
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listOrders(userId, { strategyId, limit, offset });
+  const total = repo.countOrders(userId, { strategyId });
+  return { items, total, limit, offset };
 }
 
-export function listDecisionLogs(userId, strategyId) {
+export function listDecisionLogs(userId, strategyId, paging = {}) {
   requireStrategy(userId, strategyId);
-  return repo.listDecisionLogs(userId, strategyId);
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listDecisionLogs(userId, strategyId, { limit, offset });
+  const total = repo.countDecisionLogs(userId, strategyId);
+  return { items, total, limit, offset };
 }
 
 export function getOverview(userId) {

@@ -2233,6 +2233,18 @@ td.neutral {
   margin: 0 0 10px;
 }
 
+.load-more-footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.load-more-footer .helper {
+  margin: 0;
+}
+
 .compact-grid {
   grid-template-columns: repeat(4, minmax(120px, 1fr));
 }

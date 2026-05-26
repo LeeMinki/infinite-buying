@@ -80,7 +80,7 @@ router.post('/strategies/:id/evaluate', async (req, res, next) => {
 
 router.get('/strategies/:id/trades', (req, res, next) => {
   try {
-    res.json(service.listTrades(req.userId, Number(req.params.id)));
+    res.json(service.listTrades(req.userId, Number(req.params.id), req.query));
   } catch (error) {
     next(error);
   }
@@ -88,7 +88,7 @@ router.get('/strategies/:id/trades', (req, res, next) => {
 
 router.get('/strategies/:id/orders', (req, res, next) => {
   try {
-    res.json(service.listOrders(req.userId, Number(req.params.id)));
+    res.json(service.listOrders(req.userId, Number(req.params.id), req.query));
   } catch (error) {
     next(error);
   }
@@ -96,7 +96,7 @@ router.get('/strategies/:id/orders', (req, res, next) => {
 
 router.get('/strategies/:id/decisions', (req, res, next) => {
   try {
-    res.json(service.listDecisionLogs(req.userId, Number(req.params.id)));
+    res.json(service.listDecisionLogs(req.userId, Number(req.params.id), req.query));
   } catch (error) {
     next(error);
   }

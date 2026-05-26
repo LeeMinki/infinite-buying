@@ -11,15 +11,17 @@ import {
   startKrRankStrategy,
   stopKrRankStrategy
 } from '../api/client.js';
+import { usePagedList } from '../hooks/usePagedList.js';
+import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
 
 const ENTRY_WINDOW_LABEL = { MORNING: '오전 진입', LUNCH: '점심 진입' };
 
 export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [orders, setOrders] = useState([]);
-  const [decisions, setDecisions] = useState([]);
-  const [entries, setEntries] = useState([]);
+  const ordersList = usePagedList(listKrRankOrders);
+  const decisionsList = usePagedList(listKrRankDecisions);
+  const entriesList = usePagedList(listKrRankEntries);
   const [form, setForm] = useState(defaultForm);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
@@ -65,18 +67,15 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
     const target = nextSelectedId || nextStrategies[0]?.id || null;
     setSelectedId(target);
     if (target) {
-      const [nextOrders, nextDecisions, nextEntries] = await Promise.all([
-        listKrRankOrders(target),
-        listKrRankDecisions(target),
-        listKrRankEntries(target)
+      await Promise.all([
+        ordersList.load(target),
+        decisionsList.load(target),
+        entriesList.load(target)
       ]);
-      setOrders(nextOrders);
-      setDecisions(nextDecisions);
-      setEntries(nextEntries);
     } else {
-      setOrders([]);
-      setDecisions([]);
-      setEntries([]);
+      ordersList.reset();
+      decisionsList.reset();
+      entriesList.reset();
     }
   }
 
@@ -151,6 +150,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
   }
 
   const todayEntries = useMemo(() => {
+    const entries = entriesList.items;
     if (!entries.length) return {};
     const latestDate = entries[0]?.tradeDate;
     const map = {};
@@ -158,7 +158,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
       if (entry.tradeDate === latestDate) map[entry.entryWindow] = entry;
     }
     return { date: latestDate, ...map };
-  }, [entries]);
+  }, [entriesList.items]);
 
   return (
     <>
@@ -372,9 +372,9 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
               <button type="button" className="ghost" disabled={busy === 'evaluate'}
                 onClick={() => runAction(evaluateKrRankStrategy, 'evaluate')}>지금 평가</button>
             </div>
-            <DecisionLogTable decisions={decisions} />
-            <OrdersTable orders={orders} />
-            <EntryTable entries={entries} />
+            <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
+            <OrdersTable list={ordersList} onLoadMore={() => ordersList.loadMore(selected.id)} />
+            <EntryTable list={entriesList} onLoadMore={() => entriesList.loadMore(selected.id)} />
           </>
         ) : (
           <div className="empty">전략을 만들면 상세가 표시됩니다.</div>
@@ -482,11 +482,12 @@ function KrRankAccountSummaryPanel({ summary, loading, onRefresh }) {
   );
 }
 
-function DecisionLogTable({ decisions }) {
+function DecisionLogTable({ list, onLoadMore }) {
+  const decisions = list.items;
   return (
     <section className="subsection">
       <h4>판단 로그</h4>
-      <p className="helper">랭킹 조회·종목 선택·매수/매도·보유 평가 기록입니다. 스케줄러는 장 운영 시간(09:00~15:30) 안에서 1분마다 기록합니다.</p>
+      <p className="helper">랭킹 조회·종목 선택·매수/매도·보유 평가 기록입니다. 스케줄러는 장 운영 시간(09:00~15:30) 안에서 30초마다 기록합니다.</p>
       <div className="table-wrap">
         <table>
           <thead>
@@ -525,11 +526,13 @@ function DecisionLogTable({ decisions }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter shown={decisions.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }
 
-function OrdersTable({ orders }) {
+function OrdersTable({ list, onLoadMore }) {
+  const orders = list.items;
   return (
     <section className="subsection">
       <h4>주문 이력</h4>
@@ -578,11 +581,13 @@ function OrdersTable({ orders }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }
 
-function EntryTable({ entries }) {
+function EntryTable({ list, onLoadMore }) {
+  const entries = list.items;
   return (
     <section className="subsection">
       <h4>진입 기록</h4>
@@ -614,6 +619,7 @@ function EntryTable({ entries }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter shown={entries.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }

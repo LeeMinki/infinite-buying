@@ -140,9 +140,9 @@ export const deleteKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${i
 export const startKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/start`, { method: 'POST' });
 export const stopKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/stop`, { method: 'POST' });
 export const evaluateKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/evaluate`, { method: 'POST' });
-export const listKrRankOrders = (id) => request(`/api/kr-rank/strategies/${id}/orders`);
-export const listKrRankDecisions = (id) => request(`/api/kr-rank/strategies/${id}/decisions`);
-export const listKrRankEntries = (id) => request(`/api/kr-rank/strategies/${id}/entries`);
+export const listKrRankOrders = (id, paging) => request(`/api/kr-rank/strategies/${id}/orders${pageQuery(paging)}`);
+export const listKrRankDecisions = (id, paging) => request(`/api/kr-rank/strategies/${id}/decisions${pageQuery(paging)}`);
+export const listKrRankEntries = (id, paging) => request(`/api/kr-rank/strategies/${id}/entries${pageQuery(paging)}`);
 
 // 미국장 상승률 랭킹 자동매매 전략
 export const getUsRankOverview = () => request('/api/us-rank/overview');
@@ -156,9 +156,18 @@ export const deleteUsRankStrategy = (id) => request(`/api/us-rank/strategies/${i
 export const startUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/start`, { method: 'POST' });
 export const stopUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/stop`, { method: 'POST' });
 export const evaluateUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/evaluate`, { method: 'POST' });
-export const listUsRankTrades = (id) => request(`/api/us-rank/strategies/${id}/trades`);
-export const listUsRankOrders = (id) => request(`/api/us-rank/strategies/${id}/orders`);
-export const listUsRankDecisions = (id) => request(`/api/us-rank/strategies/${id}/decisions`);
+export const listUsRankTrades = (id, paging) => request(`/api/us-rank/strategies/${id}/trades${pageQuery(paging)}`);
+export const listUsRankOrders = (id, paging) => request(`/api/us-rank/strategies/${id}/orders${pageQuery(paging)}`);
+export const listUsRankDecisions = (id, paging) => request(`/api/us-rank/strategies/${id}/decisions${pageQuery(paging)}`);
+
+// 페이징 쿼리스트링 생성. limit/offset 둘 다 없으면 빈 문자열.
+function pageQuery({ limit, offset } = {}) {
+  const params = new URLSearchParams();
+  if (limit != null) params.set('limit', String(limit));
+  if (offset != null) params.set('offset', String(offset));
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
 
 function normalizeMarket(value, symbol) {
   const market = String(value || '').trim().toUpperCase();

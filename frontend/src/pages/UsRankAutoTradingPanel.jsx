@@ -11,6 +11,8 @@ import {
   startUsRankStrategy,
   stopUsRankStrategy
 } from '../api/client.js';
+import { usePagedList } from '../hooks/usePagedList.js';
+import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
 
 const EXCHANGE_LABELS = {
   ALL: '전체',
@@ -22,9 +24,9 @@ const EXCHANGE_LABELS = {
 export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [trades, setTrades] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [decisions, setDecisions] = useState([]);
+  const tradesList = usePagedList(listUsRankTrades);
+  const ordersList = usePagedList(listUsRankOrders);
+  const decisionsList = usePagedList(listUsRankDecisions);
   const [form, setForm] = useState(defaultForm);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
@@ -37,10 +39,11 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
     [strategies, selectedId]
   );
   const todayTradeCount = useMemo(() => {
+    const trades = tradesList.items;
     if (!trades.length) return 0;
     const latestDate = trades[0]?.tradeDate;
     return trades.filter((trade) => trade.tradeDate === latestDate).length;
-  }, [trades]);
+  }, [tradesList.items]);
 
   async function refresh(nextSelectedId = selectedId) {
     const nextStrategies = await listUsRankStrategies();
@@ -48,18 +51,15 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
     const target = nextSelectedId || nextStrategies[0]?.id || null;
     setSelectedId(target);
     if (target) {
-      const [nextTrades, nextOrders, nextDecisions] = await Promise.all([
-        listUsRankTrades(target),
-        listUsRankOrders(target),
-        listUsRankDecisions(target)
+      await Promise.all([
+        tradesList.load(target),
+        ordersList.load(target),
+        decisionsList.load(target)
       ]);
-      setTrades(nextTrades);
-      setOrders(nextOrders);
-      setDecisions(nextDecisions);
     } else {
-      setTrades([]);
-      setOrders([]);
-      setDecisions([]);
+      tradesList.reset();
+      ordersList.reset();
+      decisionsList.reset();
     }
   }
 
@@ -305,7 +305,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
               <Metric label="현재 보유" value={selected.holdingSymbol || '무보유'} hint={selected.holdingSymbol ? `${formatNumber(selected.holdingQuantity)}주 · 평단 ${formatUsd(selected.holdingAveragePrice)}` : '랭킹 진입 대기'} />
             </div>
             <div className="metric-grid compact-grid">
-              <Metric label="오늘 매매" value={`${todayTradeCount}회`} hint={trades[0]?.tradeDate || '없음'} />
+              <Metric label="오늘 매매" value={`${todayTradeCount}회`} hint={tradesList.items[0]?.tradeDate || '없음'} />
               <Metric
                 label="오늘 잠금"
                 value={selected.dayLockedOut ? '켜짐' : '꺼짐'}
@@ -337,9 +337,9 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
             <p className="auto-log-note">
               시작 후 서버는 ET 10:00~16:00에 30초마다 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 익절하면 전량 매도 후 다음 평가에서 다시 진입하고, 손절 또는 강제 청산이 발생하면 같은 미국 거래일에는 신규 매수를 하지 않습니다.
             </p>
-            <DecisionLogTable decisions={decisions} />
-            <OrdersTable orders={orders} />
-            <TradeTable trades={trades} />
+            <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
+            <OrdersTable list={ordersList} onLoadMore={() => ordersList.loadMore(selected.id)} />
+            <TradeTable list={tradesList} onLoadMore={() => tradesList.loadMore(selected.id)} />
           </>
         ) : (
           <div className="empty">전략을 만들면 상세가 표시됩니다.</div>
@@ -362,7 +362,8 @@ function Metric({ label, value, hint }) {
   );
 }
 
-function DecisionLogTable({ decisions }) {
+function DecisionLogTable({ list, onLoadMore }) {
+  const decisions = list.items;
   return (
     <section className="subsection">
       <h4>판단 로그</h4>
@@ -403,11 +404,13 @@ function DecisionLogTable({ decisions }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter shown={decisions.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }
 
-function OrdersTable({ orders }) {
+function OrdersTable({ list, onLoadMore }) {
+  const orders = list.items;
   return (
     <section className="subsection">
       <h4>주문 이력</h4>
@@ -444,11 +447,13 @@ function OrdersTable({ orders }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }
 
-function TradeTable({ trades }) {
+function TradeTable({ list, onLoadMore }) {
+  const trades = list.items;
   return (
     <section className="subsection">
       <h4>매매 사이클</h4>
@@ -486,6 +491,7 @@ function TradeTable({ trades }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter shown={trades.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }

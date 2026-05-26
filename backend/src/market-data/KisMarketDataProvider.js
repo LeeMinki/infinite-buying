@@ -404,6 +404,23 @@ export class KisMarketDataProvider {
     return rows;
   }
 
+  // 국내휴장일조회 (국내주식-040). TR CTCA0903R, GET /uapi/domestic-stock/v1/quotations/chk-holiday.
+  // opnd_yn(개장일여부 Y/N)로 주식시장 개장 여부를 판단한다. KIS 안내: 1일 1회 호출 권장.
+  // baseDate(YYYYMMDD) 이후 약 한 달치 영업일 정보를 output 배열로 돌려준다.
+  async getDomesticHolidays(baseDate) {
+    const data = await this.requestJson('/uapi/domestic-stock/v1/quotations/chk-holiday', {
+      trId: 'CTCA0903R',
+      query: { BASS_DT: baseDate, CTX_AREA_NK: '', CTX_AREA_FK: '' }
+    });
+    const rows = Array.isArray(data?.output) ? data.output : [];
+    return rows
+      .map((row) => ({
+        date: String(row.bass_dt ?? '').trim(), // YYYYMMDD
+        isOpen: String(row.opnd_yn ?? '').trim().toUpperCase() === 'Y'
+      }))
+      .filter((row) => row.date);
+  }
+
   async requestJson(path, { trId, query }) {
     const context = await getAuthContext(this.userId);
     const url = new URL(`${context.baseUrl}${path}`);
