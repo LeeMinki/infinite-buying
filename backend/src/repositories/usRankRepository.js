@@ -420,16 +420,19 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
        LIMIT 1
      )
     WHERE t.user_id = ? AND t.strategy_id = ?
+      AND t.status IN ('BOUGHT', 'CLOSED')
     ORDER BY t.trade_date DESC, t.trade_seq DESC, t.id DESC
     LIMIT ? OFFSET ?
   `).all(userId, strategyId, limit, offset).map(toRoundTripOrder);
 }
 
+// 실제 매수가 일어난 매매 사이클만 센다. SELECTED(미체결)·FAILED(체결 실패)는 "매수/매도 기록"이 아니라 제외한다.
 export function countRoundTripOrders(userId, { strategyId }) {
   return getDb().prepare(`
     SELECT COUNT(*) AS n
     FROM us_rank_trades
     WHERE user_id = ? AND strategy_id = ?
+      AND status IN ('BOUGHT', 'CLOSED')
   `).get(userId, strategyId).n;
 }
 

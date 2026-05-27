@@ -199,6 +199,48 @@ test('미국장 랭킹 전략 삭제는 전략만 숨기고 주문·판단·매�
   assert.throws(() => usService.listRoundTripOrders(bob.id, strategy.id, { limit: 10 }), /찾을 수 없습니다/);
 });
 
+test('왕복 주문 이력은 실패·미체결(관망) 건을 제외하고 실제 매수/매도만 보여준다', () => {
+  // 한국장: 체결된 매수 1건 + 실패한 매수 1건 → 왕복 이력엔 체결 건만.
+  const kr = krService.createStrategy(alice.id, {
+    autoBudgetEnabled: false, morningBudget: 1_000_000, morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    morningLiquidateTime: null, lunchEntryEnabled: false, lunchBudget: 0, lunchTargetProfitRate: null, lunchStopLossRate: null, lunchLiquidateTime: null
+  });
+  krRepo.createOrder(alice.id, {
+    strategyId: kr.id, symbol: '000010', symbolName: '체결종목', side: 'BUY', entryWindow: 'MORNING',
+    quantity: 10, orderPrice: 10000, estimatedAmount: 100000, status: 'DRY_RUN',
+    idempotencyKey: 'kr-ok-buy', decisionReason: '매수', liveOrderEnabled: false
+  });
+  krRepo.createOrder(alice.id, {
+    strategyId: kr.id, symbol: '000020', symbolName: '실패종목', side: 'BUY', entryWindow: 'MORNING',
+    quantity: 5, orderPrice: 20000, estimatedAmount: 100000, status: 'FAILED',
+    idempotencyKey: 'kr-failed-buy', decisionReason: '매수', liveOrderEnabled: true, errorMessage: 'KIS 거절'
+  });
+  const krHistory = krService.listRoundTripOrders(alice.id, kr.id, { limit: 50 });
+  assert.equal(krHistory.total, 1);
+  assert.equal(krHistory.items.length, 1);
+  assert.equal(krHistory.items[0].symbol, '000010');
+
+  // 미국장: CLOSED 매매 1건 + FAILED 매매 다수 → 왕복 이력엔 CLOSED만(아카리식 연속 FAILED 노이즈 차단).
+  const us = usService.createStrategy(alice.id, {
+    autoBudgetEnabled: true, fixedBuyUsdAmount: 0, targetProfitRate: 0.02, stopLossRate: 0.05,
+    forceCloseKst: '04:30', exchange: 'NAS', cycleTargetProfitRate: null
+  });
+  const okTrade = usRepo.createTrade(alice.id, {
+    strategyId: us.id, tradeDate: '2026-05-27', tradeSeq: 1, symbol: 'AAA', symbolName: 'AAA', exchange: 'NAS', selectedPrice: 10, status: 'BOUGHT'
+  });
+  usRepo.updateTradeOutcome(okTrade.id, { status: 'CLOSED', entryPrice: 10, entryQuantity: 3, exitPrice: 11, exitReason: 'TARGET', profitRate: 0.1, close: true });
+  for (let i = 0; i < 5; i += 1) {
+    const failed = usRepo.createTrade(alice.id, {
+      strategyId: us.id, tradeDate: '2026-05-27', tradeSeq: 2 + i, symbol: 'BBB', symbolName: '실패', exchange: 'NAS', selectedPrice: 18.27, status: 'SELECTED'
+    });
+    usRepo.updateTradeOutcome(failed.id, { status: 'FAILED', errorMessage: '미체결', close: true });
+  }
+  const usHistory = usService.listRoundTripOrders(alice.id, us.id, { limit: 50 });
+  assert.equal(usHistory.total, 1);
+  assert.equal(usHistory.items.length, 1);
+  assert.equal(usHistory.items[0].symbol, 'AAA');
+});
+
 test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문 이력, 판단 로그 10개 표시를 갖는다', () => {
   const root = path.resolve('../');
   const app = fs.readFileSync(path.join(root, 'frontend/src/pages/AutoTradingPage.jsx'), 'utf8');

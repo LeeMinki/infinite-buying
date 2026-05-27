@@ -126,7 +126,10 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
 
   async function removeStrategy(strategy) {
     if (!strategy) return;
-    const proceed = window.confirm('이 전략을 목록에서 삭제합니다. 기존 주문 이력과 판단 로그는 보존됩니다. 계속할까요?');
+    const holdingWarn = strategy.holdingSymbol
+      ? `\n\n⚠️ 현재 ${strategy.holdingSymbolName || strategy.holdingSymbol} 보유 중입니다. 삭제하면 이 포지션은 자동으로 매도되지 않으니, 먼저 매도하거나 직접 청산하세요.`
+      : '';
+    const proceed = window.confirm(`이 전략을 목록에서 삭제합니다. 기존 주문 이력과 판단 로그는 보존됩니다. 계속할까요?${holdingWarn}`);
     if (!proceed) return;
     setBusy(`delete-${strategy.id}`);
     setError('');
@@ -456,50 +459,6 @@ function OrdersTable({ list, onLoadMore }) {
   );
 }
 
-function TradeTable({ list, onLoadMore }) {
-  const trades = list.items;
-  return (
-    <section className="subsection">
-      <h4>매매 사이클</h4>
-      <p className="helper">한 번 매수하고 매도까지 끝나는 과정을 하나의 사이클로 기록합니다.</p>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>거래일</th>
-              <th>회차</th>
-              <th>상태</th>
-              <th>종목</th>
-              <th>선택가</th>
-              <th>등락률</th>
-              <th>매수가</th>
-              <th>매도가</th>
-              <th>수익률</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((trade) => (
-              <tr key={trade.id}>
-                <td className="muted">{trade.tradeDate}</td>
-                <td>{trade.tradeSeq}</td>
-                <td>{tradeStatusLabel(trade.status)}</td>
-                <td>{trade.symbol ? `${trade.symbolName || ''} ${trade.symbol}`.trim() : '-'}</td>
-                <td>{trade.selectedPrice > 0 ? formatUsd(trade.selectedPrice) : '-'}</td>
-                <td>{trade.selectedFluctuationRate != null ? `${(trade.selectedFluctuationRate * 100).toFixed(2)}%` : '-'}</td>
-                <td>{trade.entryPrice > 0 ? `${formatUsd(trade.entryPrice)} · ${formatNumber(trade.entryQuantity)}주` : '-'}</td>
-                <td>{trade.exitPrice > 0 ? `${formatUsd(trade.exitPrice)} · ${sellReasonLabel(trade.exitReason)}` : '-'}</td>
-                <td>{trade.profitRate != null ? `${(trade.profitRate * 100).toFixed(2)}%` : '-'}</td>
-              </tr>
-            ))}
-            {trades.length === 0 && <tr><td className="empty-row" colSpan="9">아직 매매 사이클이 없습니다.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <LoadMoreFooter shown={trades.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
-    </section>
-  );
-}
-
 function defaultForm() {
   return {
     targetProfitPercent: '2',
@@ -554,17 +513,6 @@ function orderStatusLabel(status) {
   return labels[status] || status;
 }
 
-function tradeStatusLabel(status) {
-  const labels = {
-    NO_CANDIDATE: '후보 없음',
-    SELECTED: '선택',
-    BOUGHT: '보유 중',
-    CLOSED: '청산',
-    FAILED: '실패',
-    SKIPPED: '건너뜀'
-  };
-  return labels[status] || status;
-}
 
 function pct(rate) {
   return `${(Number(rate || 0) * 100).toFixed(1)}%`;

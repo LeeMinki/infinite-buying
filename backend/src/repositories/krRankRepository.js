@@ -333,6 +333,7 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
       WHERE o.user_id = ?
         AND o.strategy_id = ?
         AND o.side = 'BUY'
+        AND o.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
     )
     SELECT
       b.id AS buy_order_id,
@@ -368,6 +369,7 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
      AND s.symbol = b.symbol
      AND s.entry_window = b.entry_window
      AND s.created_at >= b.created_at
+     AND s.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
      AND s.id = (
        SELECT s2.id
        FROM kr_rank_orders s2
@@ -377,6 +379,7 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
          AND s2.symbol = b.symbol
          AND s2.entry_window = b.entry_window
          AND s2.created_at >= b.created_at
+         AND s2.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
        ORDER BY s2.created_at ASC, s2.id ASC
        LIMIT 1
      )
@@ -385,11 +388,13 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
   `).all(userId, strategyId, limit, offset).map(toRoundTripOrder);
 }
 
+// 실제 체결을 시도한 매수만 센다. FAILED/REJECTED/CANCELED는 "매수/매도 기록"이 아니라 제외한다.
 export function countRoundTripOrders(userId, { strategyId }) {
   return getDb().prepare(`
     SELECT COUNT(*) AS n
     FROM kr_rank_orders
     WHERE user_id = ? AND strategy_id = ? AND side = 'BUY'
+      AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
   `).get(userId, strategyId).n;
 }
 

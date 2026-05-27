@@ -131,8 +131,11 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
 
   async function removeStrategy(strategy) {
     if (!strategy) return;
+    const holdingWarn = strategy.holdingSymbol
+      ? `\n\n⚠️ 현재 ${strategy.holdingSymbolName || strategy.holdingSymbol} 보유 중입니다. 삭제하면 이 포지션은 자동으로 매도되지 않으니, 먼저 매도하거나 직접 청산하세요.`
+      : '';
     const proceed = window.confirm(
-      '이 전략을 목록에서 삭제합니다. 기존 주문 이력과 판단 로그는 보존됩니다. 계속할까요?'
+      `이 전략을 목록에서 삭제합니다. 기존 주문 이력과 판단 로그는 보존됩니다. 계속할까요?${holdingWarn}`
     );
     if (!proceed) return;
     setBusy(`delete-${strategy.id}`);
@@ -572,44 +575,6 @@ function OrdersTable({ list, onLoadMore }) {
         </table>
       </div>
       <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
-    </section>
-  );
-}
-
-function EntryTable({ list, onLoadMore }) {
-  const entries = list.items;
-  return (
-    <section className="subsection">
-      <h4>진입 기록</h4>
-      <p className="helper">날짜·진입 구간별로 한 번씩만 기록됩니다. 선택 종목과 매수 여부를 확인할 수 있습니다.</p>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>날짜</th>
-              <th>진입 구간</th>
-              <th>상태</th>
-              <th>선택 종목</th>
-              <th>등락률</th>
-              <th>매수</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => (
-              <tr key={entry.id}>
-                <td className="muted">{entry.tradeDate}</td>
-                <td>{ENTRY_WINDOW_LABEL[entry.entryWindow] || entry.entryWindow}</td>
-                <td>{entryStatusText(entry.status)}</td>
-                <td>{entry.selectedSymbol ? `${entry.selectedSymbolName || ''} ${entry.selectedSymbol}`.trim() : '-'}</td>
-                <td>{entry.selectedFluctuationRate != null ? `${(entry.selectedFluctuationRate * 100).toFixed(2)}%` : '-'}</td>
-                <td>{entry.bought ? '✅' : '-'}</td>
-              </tr>
-            ))}
-            {entries.length === 0 && <tr><td className="empty-row" colSpan="6">아직 진입 기록이 없습니다.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <LoadMoreFooter shown={entries.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }

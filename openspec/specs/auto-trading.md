@@ -105,6 +105,10 @@
 - `cycle_target_profit_rate`가 설정되어 있고 현재 평가 손익이 시작 기준 자본(`cycle_baseline_usd`) 대비 목표 수익률에 닿으면 `CYCLE_COMPLETE` 매도로 보유분을 정리하고 전략을 `STOPPED`로 종료한다. 손절·강제 청산·누적 목표 종료가 발생하면 그 미국 거래일 사이클은 끝난다.
 - 실주문 실행 설정이 꺼져 있으면 실제 KIS 주문 호출 없이 주문 예정 기록만 `DRY_RUN`으로 저장한다. 켜져 있으면 지정가 주문으로 KIS 해외 주문 경로를 호출한다(매수는 현재가, 매도는 체결 보장을 위해 호가를 가로지르는 공격적 지정가).
 
+## 랭킹 전략 삭제(soft delete)
+
+한국·미국 랭킹 전략 삭제는 행을 물리 삭제하지 않고 `deleted_at`을 기록하는 soft delete다. 삭제된 전략은 기본 목록과 스케줄러 평가 대상(`listRunningStrategies`)에서 제외되고 신규 평가·주문을 만들 수 없지만, 주문 이력·판단 로그·진입 기록·매매 사이클은 보존되어 소유자만 조회할 수 있다(이력 조회 경로는 `includeDeleted`로 삭제 전략도 열람). 과거 하드 삭제로 전략을 재생성할 때마다 실거래 기록이 사라지던 문제를 막는다. 주문 이력(왕복 거래) 조회는 실제 체결을 시도한 건만 보여주고 `FAILED`/`REJECTED`/`CANCELED`·미체결(SELECTED) 건은 제외한다.
+
 ## 분할회차 cap
 
 전략 생성 시 종목 현재가 기준 최대 분할회차 = `floor(totalBudget / (referencePrice × 2))` (한 회차의 절반이 최소 1주 가격 이상이 되도록). 프론트엔드 입력 박스가 이 값으로 클램프하고, 백엔드 `autoTradingService.normalizeStrategyInput`도 `referencePrice`가 전달되면 검증해 초과 시 400.
