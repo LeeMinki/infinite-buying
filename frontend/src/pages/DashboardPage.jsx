@@ -6,8 +6,8 @@ import {
   listBacktests
 } from '../api/client.js';
 
-// 메인 중앙 작업 공간. 현재 상태(KIS 연결·자동매매·전략·최근 백테스트)와 다음 행동(설정·백테스트·
-// 자동매매)을 한눈에 보여준다. 전략/백테스트/주문 로직은 건드리지 않고 조회만 한다.
+// 메인 중앙 작업 공간. 현재 상태(KIS 연결·자동매매·전략)와 다음 행동(설정·백테스트·자동매매)을
+// 한눈에 보여준다. 전략/백테스트/주문 로직은 건드리지 않고 조회만 한다.
 export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTrading }) {
   const [state, setState] = useState({ loading: true });
 
@@ -46,9 +46,7 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
   const runningStrategies = allStrategies.filter((s) => s.status === 'RUNNING');
   const autoTradingRunning = runningStrategies.length > 0;
   const hasStrategy = allStrategies.length > 0;
-  const backtests = state.backtests;
-  const hasBacktest = backtests.length > 0;
-  const recentBacktest = backtests[0] || null;
+  const hasBacktest = (state.backtests || []).length > 0;
 
   const checklist = [
     { key: 'kis', label: 'KIS API 키 등록', done: kisConnected, action: onOpenKis, cta: 'KIS 설정' },
@@ -57,7 +55,6 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
     { key: 'backtest', label: '백테스트 실행', done: hasBacktest, action: onOpenBacktest, cta: '백테스트' },
     { key: 'auto', label: '자동매매 시작', done: autoTradingRunning, action: onOpenAutoTrading, cta: '자동매매' }
   ];
-  const allDone = checklist.every((item) => item.done);
 
   return (
     <section className="content dashboard">
@@ -74,11 +71,6 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
           tone={autoTradingRunning ? 'ok' : 'muted'}
         />
         <StatusCard label="운용 전략" value={hasStrategy ? `${allStrategies.length}개` : '없음'} tone={hasStrategy ? 'info' : 'muted'} />
-        <StatusCard
-          label="최근 백테스트"
-          value={recentBacktest ? `${recentBacktest.symbol} ${formatPct(recentBacktest.returnRate)}` : '없음'}
-          tone={recentBacktest ? 'info' : 'muted'}
-        />
         <StatusCard label="실주문" value={liveOrderEnabled ? '켜짐' : '꺼짐'} tone={liveOrderEnabled ? 'warn' : 'muted'} />
       </div>
 
@@ -102,12 +94,8 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
 
       <div className="dashboard-grid">
         <section className="subsection dashboard-checklist">
-          <h4>시작 체크리스트</h4>
-          {allDone ? (
-            <p className="helper">설정이 모두 완료됐습니다. 자동매매 상태를 확인하세요.</p>
-          ) : (
-            <p className="helper">자동매매를 시작하려면 다음 설정이 필요합니다.</p>
-          )}
+          <h4>체크리스트</h4>
+          <p className="helper">자동매매를 시작하려면 다음 설정을 확인하세요.</p>
           <ul className="checklist">
             {checklist.map((item) => (
               <li key={item.key} className={item.done ? 'done' : 'todo'}>
@@ -119,40 +107,6 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
               </li>
             ))}
           </ul>
-        </section>
-
-        <section className="subsection dashboard-activity">
-          <h4>최근 활동</h4>
-          {hasBacktest ? (
-            <div className="activity-item">
-              <span className="activity-title">최근 백테스트</span>
-              <span className="activity-body">
-                {recentBacktest.symbol} · 수익률 {formatPct(recentBacktest.returnRate)} · {recentBacktest.fromDate}~{recentBacktest.toDate}
-              </span>
-              <button type="button" className="ghost sm" onClick={onOpenBacktest}>백테스트 화면</button>
-            </div>
-          ) : (
-            <div className="activity-item empty-activity">
-              <span className="activity-title">최근 백테스트</span>
-              <span className="activity-body">아직 백테스트 결과가 없습니다. 백테스트를 실행하면 여기에 표시됩니다.</span>
-              <button type="button" className="ghost sm" onClick={onOpenBacktest}>백테스트 실행</button>
-            </div>
-          )}
-          {autoTradingRunning ? (
-            <div className="activity-item">
-              <span className="activity-title">주문/체결 로그</span>
-              <span className="activity-body">
-                실행 중: {runningStrategies.map((s) => s.holdingSymbol ? `${s.holdingSymbolName || s.holdingSymbol}` : (s.exchange || '랭킹')).join(', ')}
-              </span>
-              <button type="button" className="ghost sm" onClick={onOpenAutoTrading}>자동매매 화면</button>
-            </div>
-          ) : (
-            <div className="activity-item empty-activity">
-              <span className="activity-title">주문/체결 로그</span>
-              <span className="activity-body">자동매매를 시작하면 주문·체결 기록이 여기에 표시됩니다.</span>
-              <button type="button" className="ghost sm" onClick={onOpenAutoTrading}>자동매매 설정</button>
-            </div>
-          )}
         </section>
       </div>
     </section>
@@ -166,10 +120,4 @@ function StatusCard({ label, value, tone }) {
       <strong className="status-card-value">{value}</strong>
     </div>
   );
-}
-
-function formatPct(rate) {
-  const n = Number(rate);
-  if (!Number.isFinite(n)) return '-';
-  return `${n >= 0 ? '+' : ''}${(n * 100).toFixed(2)}%`;
 }
