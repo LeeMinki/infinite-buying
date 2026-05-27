@@ -23,7 +23,7 @@ import { KrRankAutoTradingPanel } from './KrRankAutoTradingPanel.jsx';
 import { UsRankAutoTradingPanel } from './UsRankAutoTradingPanel.jsx';
 
 export function AutoTradingPage({ onBack, initialStrategy }) {
-  const [tab, setTab] = useState('laor');
+  const [tab, setTab] = useState(initialStrategy ? 'laor' : 'kr-rank');
   const [settings, setSettings] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [strategies, setStrategies] = useState([]);
@@ -261,15 +261,6 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         <button
           type="button"
           role="tab"
-          aria-selected={tab === 'laor'}
-          className={`strategy-type-tab ${tab === 'laor' ? 'active' : ''}`}
-          onClick={() => setTab('laor')}
-        >
-          라오어 무한매수법
-        </button>
-        <button
-          type="button"
-          role="tab"
           aria-selected={tab === 'kr-rank'}
           className={`strategy-type-tab ${tab === 'kr-rank' ? 'active' : ''}`}
           onClick={() => setTab('kr-rank')}
@@ -284,6 +275,15 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
           onClick={() => setTab('us-rank')}
         >
           미국장 상승률 랭킹 전략
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'laor'}
+          className={`strategy-type-tab ${tab === 'laor' ? 'active' : ''}`}
+          onClick={() => setTab('laor')}
+        >
+          라오어 무한매수법
         </button>
       </nav>
 

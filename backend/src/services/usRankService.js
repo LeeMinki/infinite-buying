@@ -103,7 +103,7 @@ export function stopStrategy(userId, id) {
 }
 
 export function listTrades(userId, strategyId, paging = {}) {
-  requireStrategy(userId, strategyId);
+  requireStrategy(userId, strategyId, { includeDeleted: true });
   const { limit, offset } = normalizePaging(paging);
   const items = repo.listTrades(userId, { strategyId, limit, offset });
   const total = repo.countTrades(userId, { strategyId });
@@ -111,15 +111,23 @@ export function listTrades(userId, strategyId, paging = {}) {
 }
 
 export function listOrders(userId, strategyId, paging = {}) {
-  requireStrategy(userId, strategyId);
+  requireStrategy(userId, strategyId, { includeDeleted: true });
   const { limit, offset } = normalizePaging(paging);
   const items = repo.listOrders(userId, { strategyId, limit, offset });
   const total = repo.countOrders(userId, { strategyId });
   return { items, total, limit, offset };
 }
 
+export function listRoundTripOrders(userId, strategyId, paging = {}) {
+  requireStrategy(userId, strategyId, { includeDeleted: true });
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listRoundTripOrders(userId, { strategyId, limit, offset });
+  const total = repo.countRoundTripOrders(userId, { strategyId });
+  return { items, total, limit, offset };
+}
+
 export function listDecisionLogs(userId, strategyId, paging = {}) {
-  requireStrategy(userId, strategyId);
+  requireStrategy(userId, strategyId, { includeDeleted: true });
   const { limit, offset } = normalizePaging(paging);
   const items = repo.listDecisionLogs(userId, strategyId, { limit, offset });
   const total = repo.countDecisionLogs(userId, strategyId);
@@ -1134,8 +1142,8 @@ function isForceCloseWindow(forceCloseKst) {
   return force != null && now < 12 * 60 && now >= Math.max(0, force - 1);
 }
 
-function requireStrategy(userId, id) {
-  const strategy = repo.getStrategy(userId, Number(id));
+function requireStrategy(userId, id, { includeDeleted = false } = {}) {
+  const strategy = repo.getStrategy(userId, Number(id), { includeDeleted });
   if (!strategy) throw notFound('미국장 랭킹 전략을 찾을 수 없습니다.');
   return strategy;
 }

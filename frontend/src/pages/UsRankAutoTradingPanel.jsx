@@ -5,9 +5,9 @@ import {
   evaluateUsRankStrategy,
   getAutoTradingBuyingPowerPreview,
   listUsRankDecisions,
-  listUsRankOrders,
   listUsRankStrategies,
   listUsRankTrades,
+  listUsRankTradeHistory,
   startUsRankStrategy,
   stopUsRankStrategy
 } from '../api/client.js';
@@ -25,8 +25,8 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const tradesList = usePagedList(listUsRankTrades);
-  const ordersList = usePagedList(listUsRankOrders);
-  const decisionsList = usePagedList(listUsRankDecisions);
+  const ordersList = usePagedList(listUsRankTradeHistory);
+  const decisionsList = usePagedList(listUsRankDecisions, 10);
   const [form, setForm] = useState(defaultForm);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
@@ -126,7 +126,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
 
   async function removeStrategy(strategy) {
     if (!strategy) return;
-    const proceed = window.confirm('이 전략과 매매 사이클·판단·주문 기록을 삭제합니다. 계속할까요?');
+    const proceed = window.confirm('이 전략을 목록에서 삭제합니다. 기존 주문 이력과 판단 로그는 보존됩니다. 계속할까요?');
     if (!proceed) return;
     setBusy(`delete-${strategy.id}`);
     setError('');
@@ -339,9 +339,8 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
             <p className="auto-log-note">
               시작 후 서버는 ET 10:00~16:00에 30초마다 랭킹, 보유 수량, 매수가능금액, 미체결 주문을 확인합니다. 익절하면 전량 매도 후 다음 평가에서 다시 진입하고, 손절 또는 강제 청산이 발생하면 같은 미국 거래일에는 신규 매수를 하지 않습니다.
             </p>
-            <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
             <OrdersTable list={ordersList} onLoadMore={() => ordersList.loadMore(selected.id)} />
-            <TradeTable list={tradesList} onLoadMore={() => tradesList.loadMore(selected.id)} />
+            <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
           </>
         ) : (
           <div className="empty">전략을 만들면 상세가 표시됩니다.</div>
@@ -416,36 +415,39 @@ function OrdersTable({ list, onLoadMore }) {
   return (
     <section className="subsection">
       <h4>주문 이력</h4>
+      <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 아직 보유 중이면 매도 정보는 진행 중으로 표시됩니다.</p>
       <div className="table-wrap">
         <table className="decision-log-table">
           <thead>
             <tr>
-              <th>시간</th>
+              <th>매수 시각(KST)</th>
               <th>종목</th>
-              <th>구분</th>
-              <th>매도 사유</th>
-              <th>상태</th>
-              <th>수량</th>
-              <th>가격</th>
-              <th>총 금액</th>
+              <th>매수가</th>
+              <th>매도 시각</th>
+              <th>매도가</th>
               <th>사유</th>
+              <th>손익</th>
             </tr>
           </thead>
           <tbody>
-            {orders.map((order) => (
-              <tr key={order.id}>
-                <td className="muted">{formatDate(order.createdAt)}</td>
-                <td>{order.symbolName ? `${order.symbolName} ${order.symbol}` : order.symbol}</td>
-                <td>{order.side === 'BUY' ? '매수' : '매도'}</td>
-                <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '-'}</td>
-                <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' || order.status === 'REJECTED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
-                <td>{formatNumber(order.quantity)}주</td>
-                <td>{formatUsd(order.orderPrice)}</td>
-                <td>{formatUsd(order.estimatedAmount)}</td>
-                <td className="muted">{order.decisionReason}{order.errorMessage ? ` / ${order.errorMessage}` : ''}</td>
-              </tr>
-            ))}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="9">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.map((order) => {
+              const profit = Number(order.profitRate);
+              const hasProfit = Number.isFinite(profit);
+              return (
+                <tr key={order.tradeId}>
+                  <td className="muted">{formatDate(order.buyTime)}</td>
+                  <td>{order.symbolName ? `${order.symbolName} (${order.symbol})` : order.symbol}</td>
+                  <td>{order.buyPrice > 0 ? formatUsd(order.buyPrice) : '-'}</td>
+                  <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
+                  <td>{order.sellPrice > 0 ? formatUsd(order.sellPrice) : '-'}</td>
+                  <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '보유 중'}</td>
+                  <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
+                    {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : '-'}
+                  </td>
+                </tr>
+              );
+            })}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="7">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>

@@ -427,6 +427,61 @@ tbody tr:last-child td {
   padding: 7px 9px;
 }
 
+.home-actions {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.home-action-card {
+  appearance: none;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  text-align: left;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.home-action-card:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.home-action-card span {
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.home-action-card strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.home-action-card small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.home-action-card.primary-card {
+  background: #111827;
+  border-color: #111827;
+  color: #ffffff;
+}
+
+.home-action-card.primary-card span,
+.home-action-card.primary-card small {
+  color: #cbd5e1;
+}
+
 /* Onboarding card */
 .onboard {
   background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #818cf8 100%);
@@ -2192,6 +2247,11 @@ button.danger-button:hover:not(:disabled) {
 
 td.positive {
   color: #166534;
+  font-weight: 600;
+}
+
+td.negative {
+  color: #b91c1c;
   font-weight: 600;
 }
 

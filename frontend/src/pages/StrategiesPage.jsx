@@ -1,13 +1,7 @@
 import React from 'react';
-import { createStrategy, deleteStrategy } from '../api/client.js';
-import { StrategyForm } from '../components/StrategyForm.jsx';
+import { deleteStrategy } from '../api/client.js';
 
 export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKis, onOpenBacktest, onOpenAutoTrading, user, onLogout }) {
-  async function create(payload) {
-    const strategy = await createStrategy(payload);
-    await onChanged(strategy.id);
-  }
-
   async function remove(id) {
     if (!confirm('이 전략과 관련된 가상 보유, 가상 주문, 판단 로그가 모두 삭제됩니다. 계속할까요?')) return;
     await deleteStrategy(id);
@@ -30,7 +24,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         <div className="brand-logo" aria-hidden="true">∞</div>
         <div className="brand-text">
           <h1>무한매수 해죠</h1>
-          <span>전략 관리와 검증</span>
+          <span>백테스트와 자동매매</span>
         </div>
       </div>
 
@@ -44,48 +38,27 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         </div>
       </div>
 
-      <div className="disclaimer" role="note">
-        <div className="dot" aria-hidden="true" />
-        <div>
-          <b>실주문은 별도 설정으로 제어합니다.</b><br />
-          자동매매 화면에서 기록 모드일 때는 주문을 전송하지 않고 모의 주문 기록만 남깁니다.
-        </div>
-      </div>
-
-      <section className="algorithm-card" aria-label="전략 알고리즘">
-        <div className="algorithm-card-head">
-          <span className="algo-kicker">LAOR_INFINITE_V2</span>
-          <h2>40분할 무한매수</h2>
-        </div>
-        <p>
-          총 시드를 여러 회차로 나누고, 한국투자증권(Korea Investment & Securities Co., Ltd., 이하 KIS) 일봉 데이터로 매수·매도 조건을 검증합니다.
-        </p>
-        <div className="algorithm-steps">
-          <span>시가 기준 첫 매수</span>
-          <span>기준가 이하 추가 매수</span>
-          <span>목표가 도달 시 전량 매도</span>
-        </div>
+      <section className="home-actions" aria-label="주요 기능">
+        <button type="button" className="home-action-card primary-card" onClick={onOpenAutoTrading}>
+          <span>자동매매</span>
+          <strong>한국장·미국장 랭킹 전략 실행</strong>
+          <small>실주문 설정을 확인하고 전략별 기록을 관리합니다.</small>
+        </button>
+        <button type="button" className="home-action-card" onClick={onOpenBacktest}>
+          <span>백테스트</span>
+          <strong>과거 가격으로 전략 검증</strong>
+          <small>KIS 일봉 데이터로 라오어 전략 결과를 확인합니다.</small>
+        </button>
+        <button type="button" className="home-action-card" onClick={onOpenKis}>
+          <span>KIS 설정</span>
+          <strong>API 키와 계좌 연결 확인</strong>
+          <small>가격 조회와 자동매매에 필요한 연결 상태를 점검합니다.</small>
+        </button>
       </section>
-
-      <section className="onboard" aria-label="시작 가이드">
-        <h2>시작 가이드</h2>
-        <p>공통 전략 초안을 만들고, 같은 설정을 백테스트와 자동매매로 가져가 검증하거나 실행합니다.</p>
-        <ol>
-          <li><b>1</b><span>공통 전략 초안에서 종목·예산·분할 회차를 정합니다.</span></li>
-          <li><b>2</b><span>KIS 설정에서 App Key와 App Secret을 저장합니다.</span></li>
-          <li><b>3</b><span>전략 상세의 백테스트 버튼으로 같은 설정을 가져가 과거 가격 기준 결과를 확인합니다.</span></li>
-          <li><b>4</b><span>자동매매 전략 만들기 버튼으로 같은 설정을 가져가 실행 전략을 생성합니다.</span></li>
-        </ol>
-      </section>
-
-      <div className="sidebar-section">
-        <h4>공통 전략 초안 만들기</h4>
-        <StrategyForm onSubmit={create} />
-      </div>
 
       <div className="sidebar-section">
         <div className="section-title" style={{ marginBottom: 10 }}>
-          <h4 style={{ margin: 0 }}>내 전략</h4>
+          <h4 style={{ margin: 0 }}>라오어 초안</h4>
           <span className="heading-meta">{strategies.length}개</span>
         </div>
         <div className="strategy-list">
@@ -110,7 +83,7 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
           })}
           {strategies.length === 0 && (
             <div className="empty" style={{ background: '#fafbff', border: '1px dashed var(--border-strong)', borderRadius: 12 }}>
-              아직 등록된 전략이 없습니다.<br />위에서 첫 전략을 만들어 주세요.
+              아직 저장된 라오어 초안이 없습니다.<br />백테스트나 자동매매 화면에서 바로 시작할 수 있습니다.
             </div>
           )}
         </div>

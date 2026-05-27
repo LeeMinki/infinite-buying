@@ -79,15 +79,23 @@ export function stopStrategy(userId, id) {
 }
 
 export function listOrders(userId, strategyId = null, paging = {}) {
-  if (strategyId) requireStrategy(userId, strategyId);
+  if (strategyId) requireStrategy(userId, strategyId, { includeDeleted: true });
   const { limit, offset } = normalizePaging(paging);
   const items = repo.listOrders(userId, { strategyId, limit, offset });
   const total = repo.countOrders(userId, { strategyId });
   return { items, total, limit, offset };
 }
 
+export function listRoundTripOrders(userId, strategyId, paging = {}) {
+  requireStrategy(userId, strategyId, { includeDeleted: true });
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listRoundTripOrders(userId, { strategyId, limit, offset });
+  const total = repo.countRoundTripOrders(userId, { strategyId });
+  return { items, total, limit, offset };
+}
+
 export function listDecisionLogs(userId, strategyId, paging = {}) {
-  requireStrategy(userId, strategyId);
+  requireStrategy(userId, strategyId, { includeDeleted: true });
   const { limit, offset } = normalizePaging(paging);
   const items = repo.listDecisionLogs(userId, strategyId, { limit, offset });
   const total = repo.countDecisionLogs(userId, strategyId);
@@ -95,7 +103,7 @@ export function listDecisionLogs(userId, strategyId, paging = {}) {
 }
 
 export function listEntries(userId, strategyId, paging = {}) {
-  requireStrategy(userId, strategyId);
+  requireStrategy(userId, strategyId, { includeDeleted: true });
   const { limit, offset } = normalizePaging(paging);
   const items = repo.listEntries(userId, strategyId, { limit, offset });
   const total = repo.countEntries(userId, strategyId);
@@ -715,8 +723,8 @@ function optionalHhmm(value, label, { afterMinutes = null, afterLabel = null } =
   return value;
 }
 
-function requireStrategy(userId, id) {
-  const strategy = repo.getStrategy(userId, Number(id));
+function requireStrategy(userId, id, { includeDeleted = false } = {}) {
+  const strategy = repo.getStrategy(userId, Number(id), { includeDeleted });
   if (!strategy) throw notFound('한국 랭킹 전략을 찾을 수 없습니다.');
   return strategy;
 }
