@@ -7,7 +7,7 @@ import { listStrategies } from './api/client.js';
 const SIDEBAR_KEY = 'ib.sidebarOpen';
 const NARROW_QUERY = '(max-width: 1100px)';
 const StrategiesPage = lazy(() => import('./pages/StrategiesPage.jsx').then((module) => ({ default: module.StrategiesPage })));
-const StrategyDetailPage = lazy(() => import('./pages/StrategyDetailPage.jsx').then((module) => ({ default: module.StrategyDetailPage })));
+const DashboardPage = lazy(() => import('./pages/DashboardPage.jsx').then((module) => ({ default: module.DashboardPage })));
 const KisSetupPage = lazy(() => import('./pages/KisSetupPage.jsx').then((module) => ({ default: module.KisSetupPage })));
 const BacktestPage = lazy(() => import('./pages/BacktestPage.jsx').then((module) => ({ default: module.BacktestPage })));
 const AutoTradingPage = lazy(() => import('./pages/AutoTradingPage.jsx').then((module) => ({ default: module.AutoTradingPage })));
@@ -191,10 +191,7 @@ function AuthenticatedApp() {
           aria-hidden="true"
         />
         <StrategiesPage
-          strategies={strategies}
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          onChanged={refreshStrategies}
+          activeView="dashboard"
           onClose={() => setSidebar(false)}
           onOpenKis={() => setView('kis')}
           onOpenBacktest={() => openBacktest()}
@@ -202,11 +199,11 @@ function AuthenticatedApp() {
           user={auth.user}
           onLogout={auth.logout}
         />
-        <StrategyDetailPage
-          strategyId={selectedId}
-          onChanged={refreshStrategies}
-          onOpenBacktest={openBacktest}
-          onOpenAutoTrading={openAutoTrading}
+        <DashboardPage
+          user={auth.user}
+          onOpenKis={() => setView('kis')}
+          onOpenBacktest={() => openBacktest()}
+          onOpenAutoTrading={() => openAutoTrading()}
         />
       </main>
     </Suspense>

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { useTempDb, bootstrapDb, createUser } from './_helpers/dbHarness.js';
 
 const tmp = useTempDb();
@@ -242,19 +243,21 @@ test('왕복 주문 이력은 실패·미체결(관망) 건을 제외하고 실�
 });
 
 test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문 이력, 판단 로그 10개 표시를 갖는다', () => {
-  const root = path.resolve('../');
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const app = fs.readFileSync(path.join(root, 'frontend/src/pages/AutoTradingPage.jsx'), 'utf8');
   const home = fs.readFileSync(path.join(root, 'frontend/src/pages/StrategiesPage.jsx'), 'utf8');
+  const dashboard = fs.readFileSync(path.join(root, 'frontend/src/pages/DashboardPage.jsx'), 'utf8');
   const krPanel = fs.readFileSync(path.join(root, 'frontend/src/pages/KrRankAutoTradingPanel.jsx'), 'utf8');
   const usPanel = fs.readFileSync(path.join(root, 'frontend/src/pages/UsRankAutoTradingPanel.jsx'), 'utf8');
 
   assert.match(app, /useState\(initialStrategy \? 'laor' : 'kr-rank'\)/);
   assert.ok(app.indexOf('한국 국장 상승률 랭킹 전략') < app.indexOf('미국장 상승률 랭킹 전략'));
   assert.ok(app.indexOf('미국장 상승률 랭킹 전략') < app.indexOf('라오어 무한매수법'));
-  assert.match(home, /className="home-actions"/);
-  assert.match(home, /백테스트/);
-  assert.match(home, /자동매매/);
-  assert.match(home, /KIS 설정/);
+  assert.match(home, /주문\/체결 로그/);
+  assert.match(dashboard, /className="home-actions"/);
+  assert.match(dashboard, /백테스트/);
+  assert.match(dashboard, /자동매매/);
+  assert.match(dashboard, /KIS 설정/);
 
   for (const panel of [krPanel, usPanel]) {
     assert.match(panel, /매수 시각\(KST\)/);
