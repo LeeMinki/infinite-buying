@@ -1,25 +1,44 @@
-import React from 'react';
-import { deleteStrategy } from '../api/client.js';
+import React, { useEffect, useState } from 'react';
+import { getKisSettings, getKrRankOverview, getUsRankOverview } from '../api/client.js';
 
-export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, onClose, onOpenKis, onOpenBacktest, onOpenAutoTrading, user, onLogout }) {
-  async function remove(id) {
-    if (!confirm('이 전략과 관련된 가상 보유, 가상 주문, 판단 로그가 모두 삭제됩니다. 계속할까요?')) return;
-    await deleteStrategy(id);
-    await onChanged(null);
-  }
+// 사이드바: 네비게이션 + 가벼운 상태 요약만 담당한다. 주요 행동·상태 상세는 중앙 대시보드(DashboardPage)에 있다.
+export function StrategiesPage({ activeView = 'dashboard', onClose, onOpenKis, onOpenBacktest, onOpenAutoTrading, user, onLogout }) {
+  const [status, setStatus] = useState({ kisConnected: null, autoTradingRunning: null });
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [kis, kr, us] = await Promise.all([
+        getKisSettings().catch(() => null),
+        getKrRankOverview().catch(() => ({ strategies: [] })),
+        getUsRankOverview().catch(() => ({ strategies: [] }))
+      ]);
+      if (!alive) return;
+      const running = [...(kr?.strategies || []), ...(us?.strategies || [])].some((s) => s.status === 'RUNNING');
+      setStatus({ kisConnected: Boolean(kis?.configured), autoTradingRunning: running });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const navItems = [
+    { key: 'dashboard', label: '대시보드', onClick: onClose },
+    { key: 'strategies', label: '전략', onClick: onOpenAutoTrading },
+    { key: 'backtest', label: '백테스트', onClick: onOpenBacktest },
+    { key: 'auto-trading', label: '자동매매', onClick: onOpenAutoTrading },
+    { key: 'orders', label: '주문/체결 로그', onClick: onOpenAutoTrading },
+    { key: 'kis', label: 'KIS 설정', onClick: onOpenKis }
+  ];
 
   return (
     <aside className="sidebar">
-      <button
-        type="button"
-        className="sidebar-close"
-        onClick={onClose}
-        aria-label="사이드바 닫기"
-      >
+      <button type="button" className="sidebar-close" onClick={onClose} aria-label="사이드바 닫기">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
           <path d="M3 3L11 11M11 3L3 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
       </button>
+
       <div className="brand">
         <div className="brand-logo" aria-hidden="true">∞</div>
         <div className="brand-text">
@@ -28,75 +47,28 @@ export function StrategiesPage({ strategies, selectedId, onSelect, onChanged, on
         </div>
       </div>
 
-      <div className="account-bar">
-        <span>{user?.email}</span>
-        <div className="button-row compact">
-          <button type="button" className="sm" onClick={onOpenBacktest}>백테스트</button>
-          <button type="button" className="sm" onClick={onOpenAutoTrading}>자동매매</button>
-          <button type="button" className="sm" onClick={onOpenKis}>KIS 설정</button>
-          <button type="button" className="ghost sm" onClick={onLogout}>로그아웃</button>
-        </div>
-      </div>
-
-      <section className="home-actions" aria-label="주요 기능">
-        <button type="button" className="home-action-card primary-card" onClick={onOpenAutoTrading}>
-          <span>자동매매</span>
-          <strong>한국장·미국장 랭킹 전략 실행</strong>
-          <small>실주문 설정을 확인하고 전략별 기록을 관리합니다.</small>
-        </button>
-        <button type="button" className="home-action-card" onClick={onOpenBacktest}>
-          <span>백테스트</span>
-          <strong>과거 가격으로 전략 검증</strong>
-          <small>KIS 일봉 데이터로 라오어 전략 결과를 확인합니다.</small>
-        </button>
-        <button type="button" className="home-action-card" onClick={onOpenKis}>
-          <span>KIS 설정</span>
-          <strong>API 키와 계좌 연결 확인</strong>
-          <small>가격 조회와 자동매매에 필요한 연결 상태를 점검합니다.</small>
-        </button>
-      </section>
-
-      <div className="sidebar-section">
-        <div className="section-title" style={{ marginBottom: 10 }}>
-          <h4 style={{ margin: 0 }}>라오어 초안</h4>
-          <span className="heading-meta">{strategies.length}개</span>
-        </div>
-        <div className="strategy-list">
-          {strategies.map((strategy) => {
-            const isPaused = strategy.status === 'PAUSED';
-            return (
-              <button
-                className={`strategy-item ${strategy.id === selectedId ? 'active' : ''}`}
-                key={strategy.id}
-                type="button"
-                onClick={() => onSelect(strategy.id)}
-              >
-                <span className="name">
-                  <strong>{strategy.name}</strong>
-                  <span className="sub">{strategy.stockCode} · {strategy.stockName}</span>
-                </span>
-                <span className={`badge ${isPaused ? 'warning' : 'active'}`}>
-                  {isPaused ? '일시정지' : '진행 중'}
-                </span>
-              </button>
-            );
-          })}
-          {strategies.length === 0 && (
-            <div className="empty" style={{ background: '#fafbff', border: '1px dashed var(--border-strong)', borderRadius: 12 }}>
-              아직 저장된 라오어 초안이 없습니다.<br />백테스트나 자동매매 화면에서 바로 시작할 수 있습니다.
-            </div>
-          )}
-        </div>
-        {selectedId && (
+      <nav className="sidebar-nav" aria-label="주요 메뉴">
+        {navItems.map((item) => (
           <button
-            className="ghost danger-button sm"
+            key={item.key}
             type="button"
-            onClick={() => remove(selectedId)}
-            style={{ marginTop: 10 }}
+            className={`sidebar-nav-item ${item.key === activeView ? 'active' : ''}`}
+            onClick={item.onClick}
           >
-            선택한 전략 삭제
+            {item.label}
           </button>
-        )}
+        ))}
+      </nav>
+
+      <div className="sidebar-status">
+        <span className="sidebar-status-email">{user?.email}</span>
+        <span className={`status-dot ${status.kisConnected ? 'ok' : 'warn'}`}>
+          KIS {status.kisConnected == null ? '확인 중' : status.kisConnected ? '연결됨' : '미연결'}
+        </span>
+        <span className={`status-dot ${status.autoTradingRunning ? 'ok' : 'muted'}`}>
+          자동매매 {status.autoTradingRunning == null ? '확인 중' : status.autoTradingRunning ? '실행 중' : '정지'}
+        </span>
+        <button type="button" className="ghost sm" onClick={onLogout}>로그아웃</button>
       </div>
     </aside>
   );
