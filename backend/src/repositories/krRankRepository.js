@@ -56,7 +56,7 @@ export function updateStrategy(userId, id, input) {
 export function listStrategies(userId) {
   return getDb().prepare(`
     SELECT * FROM kr_rank_strategies
-    WHERE user_id = ?
+    WHERE user_id = ? AND deleted_at IS NULL
     ORDER BY updated_at DESC, id DESC
   `).all(userId).map(toStrategy);
 }
@@ -64,14 +64,15 @@ export function listStrategies(userId) {
 export function listRunningStrategies() {
   return getDb().prepare(`
     SELECT * FROM kr_rank_strategies
-    WHERE status = 'RUNNING'
+    WHERE status = 'RUNNING' AND deleted_at IS NULL
     ORDER BY last_evaluated_at IS NOT NULL, last_evaluated_at ASC, id ASC
   `).all().map(toStrategy);
 }
 
-export function getStrategy(userId, id) {
+export function getStrategy(userId, id, { includeDeleted = false } = {}) {
+  const deletedClause = includeDeleted ? '' : ' AND deleted_at IS NULL';
   return toStrategy(getDb().prepare(`
-    SELECT * FROM kr_rank_strategies WHERE user_id = ? AND id = ?
+    SELECT * FROM kr_rank_strategies WHERE user_id = ? AND id = ?${deletedClause}
   `).get(userId, id));
 }
 
@@ -95,7 +96,14 @@ export function stopStrategy(userId, id) {
 }
 
 export function deleteStrategy(userId, id) {
-  return getDb().prepare('DELETE FROM kr_rank_strategies WHERE user_id = ? AND id = ?').run(userId, id).changes > 0;
+  return getDb().prepare(`
+    UPDATE kr_rank_strategies
+    SET status = 'STOPPED',
+        stopped_at = COALESCE(stopped_at, datetime('now')),
+        deleted_at = COALESCE(deleted_at, datetime('now')),
+        updated_at = datetime('now')
+    WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+  `).run(userId, id).changes > 0;
 }
 
 export function markEvaluation(userId, id, { decision, errorMessage = null } = {}) {
@@ -317,6 +325,79 @@ export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 }
   `).all(...params).map(toOrder);
 }
 
+export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0 } = {}) {
+  return getDb().prepare(`
+    WITH buy_orders AS (
+      SELECT o.*
+      FROM kr_rank_orders o
+      WHERE o.user_id = ?
+        AND o.strategy_id = ?
+        AND o.side = 'BUY'
+        AND o.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+    )
+    SELECT
+      b.id AS buy_order_id,
+      b.strategy_id,
+      b.entry_id,
+      b.symbol,
+      b.symbol_name,
+      b.market,
+      b.currency,
+      b.entry_window,
+      b.quantity AS buy_quantity,
+      COALESCE(b.average_filled_price, b.order_price) AS buy_price,
+      b.created_at AS buy_time,
+      b.status AS buy_status,
+      s.id AS sell_order_id,
+      s.quantity AS sell_quantity,
+      COALESCE(s.average_filled_price, s.order_price) AS sell_price,
+      s.created_at AS sell_time,
+      s.status AS sell_status,
+      s.sell_reason,
+      CASE
+        WHEN s.id IS NULL THEN NULL
+        WHEN COALESCE(b.average_filled_price, b.order_price) > 0
+        THEN (COALESCE(s.average_filled_price, s.order_price) - COALESCE(b.average_filled_price, b.order_price))
+             / COALESCE(b.average_filled_price, b.order_price)
+        ELSE NULL
+      END AS profit_rate
+    FROM buy_orders b
+    LEFT JOIN kr_rank_orders s
+      ON s.user_id = b.user_id
+     AND s.strategy_id = b.strategy_id
+     AND s.side = 'SELL'
+     AND s.symbol = b.symbol
+     AND s.entry_window = b.entry_window
+     AND s.created_at >= b.created_at
+     AND s.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+     AND s.id = (
+       SELECT s2.id
+       FROM kr_rank_orders s2
+       WHERE s2.user_id = b.user_id
+         AND s2.strategy_id = b.strategy_id
+         AND s2.side = 'SELL'
+         AND s2.symbol = b.symbol
+         AND s2.entry_window = b.entry_window
+         AND s2.created_at >= b.created_at
+         AND s2.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+       ORDER BY s2.created_at ASC, s2.id ASC
+       LIMIT 1
+     )
+    ORDER BY b.created_at DESC, b.id DESC
+    LIMIT ? OFFSET ?
+  `).all(userId, strategyId, limit, offset).map(toRoundTripOrder);
+}
+
+// 실제 체결을 시도한 매수만 센다. FAILED/REJECTED/CANCELED는 "매수/매도 기록"이 아니라 제외한다.
+export function countRoundTripOrders(userId, { strategyId }) {
+  return getDb().prepare(`
+    SELECT COUNT(*) AS n
+    FROM kr_rank_orders
+    WHERE user_id = ? AND strategy_id = ? AND side = 'BUY'
+      AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+  `).get(userId, strategyId).n;
+}
+
 export function countOrders(userId, { strategyId = null } = {}) {
   const params = [userId];
   let where = 'user_id = ?';
@@ -458,8 +539,34 @@ function toStrategy(row) {
     lastEvaluatedAt: row.last_evaluated_at,
     lastDecision: row.last_decision,
     lastErrorMessage: row.last_error_message,
+    deletedAt: row.deleted_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function toRoundTripOrder(row) {
+  if (!row) return null;
+  return {
+    buyOrderId: row.buy_order_id,
+    sellOrderId: row.sell_order_id,
+    strategyId: row.strategy_id,
+    entryId: row.entry_id,
+    symbol: row.symbol,
+    symbolName: row.symbol_name,
+    market: row.market,
+    currency: row.currency,
+    entryWindow: row.entry_window,
+    buyTime: row.buy_time,
+    buyPrice: row.buy_price,
+    buyQuantity: row.buy_quantity,
+    buyStatus: row.buy_status,
+    sellTime: row.sell_time,
+    sellPrice: row.sell_price,
+    sellQuantity: row.sell_quantity,
+    sellStatus: row.sell_status,
+    sellReason: row.sell_reason,
+    profitRate: row.profit_rate
   };
 }
 

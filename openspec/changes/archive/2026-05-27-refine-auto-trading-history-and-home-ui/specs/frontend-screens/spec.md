@@ -1,8 +1,5 @@
-# frontend-screens Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after archive.
-## Requirements
 ### Requirement: 자동매매 화면 전략 종류 탭
 
 자동매매 화면(`AutoTradingPage`)은 전략 종류를 선택하는 탭을 제공해야 한다(MUST). 탭 순서는 `한국 국장 상승률 랭킹 전략`, `미국장 상승률 랭킹 전략`, `라오어 무한매수법` 순서여야 한다(MUST). 각 탭은 해당 종류의 전략 생성·시작·종료·조회 UI만 보여주어야 하며, 한 탭의 동작이 다른 탭의 전략에 영향을 주어서는 안 된다. 라오어 무한매수법 전략 탭은 유지하되 자동매매 화면의 첫 노출은 랭킹 전략 중심이어야 한다.
@@ -23,6 +20,8 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 #### Scenario: 탭 간 독립성
 - **WHEN** 한 탭에서 전략을 시작/종료
 - **THEN** 다른 탭의 전략 상태는 바뀌지 않아야 한다
+
+## ADDED Requirements
 
 ### Requirement: 메인 화면은 주요 기능 진입을 우선한다
 
@@ -67,4 +66,3 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 #### Scenario: 더보기로 추가 표시
 - **WHEN** 사용자가 판단 로그 더보기를 누름
 - **THEN** 다음 판단 로그 묶음이 기존 목록 아래에 추가되어야 한다
-

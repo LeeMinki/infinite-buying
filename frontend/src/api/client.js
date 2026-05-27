@@ -141,6 +141,7 @@ export const startKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id
 export const stopKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/stop`, { method: 'POST' });
 export const evaluateKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/evaluate`, { method: 'POST' });
 export const listKrRankOrders = (id, paging) => request(`/api/kr-rank/strategies/${id}/orders${pageQuery(paging)}`);
+export const listKrRankTradeHistory = (id, paging) => request(`/api/kr-rank/strategies/${id}/trade-history${pageQuery(paging)}`);
 export const listKrRankDecisions = (id, paging) => request(`/api/kr-rank/strategies/${id}/decisions${pageQuery(paging)}`);
 export const listKrRankEntries = (id, paging) => request(`/api/kr-rank/strategies/${id}/entries${pageQuery(paging)}`);
 
@@ -158,6 +159,7 @@ export const stopUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}
 export const evaluateUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/evaluate`, { method: 'POST' });
 export const listUsRankTrades = (id, paging) => request(`/api/us-rank/strategies/${id}/trades${pageQuery(paging)}`);
 export const listUsRankOrders = (id, paging) => request(`/api/us-rank/strategies/${id}/orders${pageQuery(paging)}`);
+export const listUsRankTradeHistory = (id, paging) => request(`/api/us-rank/strategies/${id}/trade-history${pageQuery(paging)}`);
 export const listUsRankDecisions = (id, paging) => request(`/api/us-rank/strategies/${id}/decisions${pageQuery(paging)}`);
 
 // 페이징 쿼리스트링 생성. limit/offset 둘 다 없으면 빈 문자열.

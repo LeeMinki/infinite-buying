@@ -94,6 +94,14 @@ router.get('/strategies/:id/orders', (req, res, next) => {
   }
 });
 
+router.get('/strategies/:id/trade-history', (req, res, next) => {
+  try {
+    res.json(service.listRoundTripOrders(req.userId, Number(req.params.id), req.query));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/strategies/:id/decisions', (req, res, next) => {
   try {
     res.json(service.listDecisionLogs(req.userId, Number(req.params.id), req.query));

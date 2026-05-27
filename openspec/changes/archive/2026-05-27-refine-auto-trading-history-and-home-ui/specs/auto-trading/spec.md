@@ -1,8 +1,5 @@
-# auto-trading Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after archive.
-## Requirements
 ### Requirement: 자동매매 도메인은 복수 전략 종류를 독립 운용한다
 
 자동매매 도메인은 라오어 무한매수법 전략(`LAOR_INFINITE_V2`), 한국 국장 상승률 랭킹 전략(`KR_RANK_MOMENTUM`), 미국장 상승률 랭킹 전략(`US_RANK_MOMENTUM`)을 서로 독립된 전략 종류로 함께 운용해야 한다(MUST). 세 전략 종류는 각자의 테이블·엔진·평가 경로를 가지며, 한 종류의 추가·평가·상태 변경·삭제가 다른 종류의 알고리즘·기록·상태에 영향을 주어서는 안 된다.
@@ -22,9 +19,11 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 - **WHEN** 한국 랭킹 전략 또는 미국 랭킹 전략이 추가되어 운용됨
 - **THEN** 라오어 전략의 회차·이월 예산·사이클 예산·판단 로그 동작은 종전과 동일해야 한다
 
+## ADDED Requirements
+
 ### Requirement: 랭킹 전략 삭제 시 매매 이력을 보존한다
 
-시스템은 한국 국장 상승률 랭킹 전략과 미국장 상승률 랭킹 전략을 삭제할 때 전략 행을 실행 대상과 기본 목록에서 제외하되, 해당 전략의 주문 이력·판단 로그·진입 기록·매매 사이클 데이터는 보존해야 한다(MUST). 삭제는 soft delete(`deleted_at` 기록)로 처리하며, 삭제된 전략은 스케줄러 평가 대상이 아니어야 하고 신규 평가·주문을 만들 수 없어야 한다. 사용자별 데이터 격리는 유지되어야 한다.
+시스템은 한국 국장 상승률 랭킹 전략과 미국장 상승률 랭킹 전략을 삭제할 때 전략 행을 실행 대상과 기본 목록에서 제외하되, 해당 전략의 주문 이력·판단 로그·진입 기록·매매 사이클 데이터는 보존해야 한다(MUST). 삭제된 전략은 스케줄러 평가 대상이 아니어야 하며, 사용자별 데이터 격리는 유지되어야 한다.
 
 #### Scenario: 한국 랭킹 전략 삭제 후 이력 보존
 - **WHEN** 사용자가 한국 국장 상승률 랭킹 전략을 삭제

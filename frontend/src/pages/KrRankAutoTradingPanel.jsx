@@ -6,8 +6,8 @@ import {
   getAutoTradingBuyingPowerPreview,
   listKrRankDecisions,
   listKrRankEntries,
-  listKrRankOrders,
   listKrRankStrategies,
+  listKrRankTradeHistory,
   startKrRankStrategy,
   stopKrRankStrategy
 } from '../api/client.js';
@@ -19,8 +19,8 @@ const ENTRY_WINDOW_LABEL = { MORNING: '오전 진입', LUNCH: '점심 진입' };
 export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const ordersList = usePagedList(listKrRankOrders);
-  const decisionsList = usePagedList(listKrRankDecisions);
+  const ordersList = usePagedList(listKrRankTradeHistory);
+  const decisionsList = usePagedList(listKrRankDecisions, 10);
   const entriesList = usePagedList(listKrRankEntries);
   const [form, setForm] = useState(defaultForm);
   const [busy, setBusy] = useState('');
@@ -131,8 +131,11 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
 
   async function removeStrategy(strategy) {
     if (!strategy) return;
+    const holdingWarn = strategy.holdingSymbol
+      ? `\n\n⚠️ 현재 ${strategy.holdingSymbolName || strategy.holdingSymbol} 보유 중입니다. 삭제하면 이 포지션은 자동으로 매도되지 않으니, 먼저 매도하거나 직접 청산하세요.`
+      : '';
     const proceed = window.confirm(
-      `이 전략과 관련된 모든 진입·판단·주문 기록을 삭제합니다. 되돌릴 수 없습니다. 계속할까요?`
+      `이 전략을 목록에서 삭제합니다. 기존 주문 이력과 판단 로그는 보존됩니다. 계속할까요?${holdingWarn}`
     );
     if (!proceed) return;
     setBusy(`delete-${strategy.id}`);
@@ -372,9 +375,8 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
               <button type="button" className="ghost" disabled={busy === 'evaluate'}
                 onClick={() => runAction(evaluateKrRankStrategy, 'evaluate')}>지금 평가</button>
             </div>
-            <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
             <OrdersTable list={ordersList} onLoadMore={() => ordersList.loadMore(selected.id)} />
-            <EntryTable list={entriesList} onLoadMore={() => entriesList.loadMore(selected.id)} />
+            <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
           </>
         ) : (
           <div className="empty">전략을 만들면 상세가 표시됩니다.</div>
@@ -536,90 +538,43 @@ function OrdersTable({ list, onLoadMore }) {
   return (
     <section className="subsection">
       <h4>주문 이력</h4>
+      <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 아직 보유 중이면 매도 정보는 진행 중으로 표시됩니다.</p>
       <div className="table-wrap">
         <table className="decision-log-table">
           <thead>
             <tr>
-              <th>시간</th>
-              <th>구분</th>
-              <th>진입 구간</th>
-              <th>매도 사유</th>
-              <th>상태</th>
-              <th>실주문</th>
-              <th>수량</th>
-              <th>가격</th>
-              <th>총 금액</th>
+              <th>매수 시각(KST)</th>
+              <th>종목</th>
+              <th>매수가</th>
+              <th>매도 시각</th>
+              <th>매도가</th>
               <th>사유</th>
+              <th>손익</th>
             </tr>
           </thead>
           <tbody>
             {orders.map((order) => {
-              const totalAmount = Number(order.estimatedAmount) > 0
-                ? Number(order.estimatedAmount)
-                : Number(order.quantity || 0) * Number(order.orderPrice || 0);
+              const profit = Number(order.profitRate);
+              const hasProfit = Number.isFinite(profit);
               return (
-                <tr key={order.id}>
-                  <td className="muted">{formatDate(order.createdAt)}</td>
-                  <td>{order.side === 'BUY' ? '매수' : '매도'}</td>
-                  <td>{ENTRY_WINDOW_LABEL[order.entryWindow] || '-'}</td>
-                  <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '-'}</td>
-                  <td><span className={`badge ${order.status === 'DRY_RUN' ? 'warning' : order.status === 'FAILED' || order.status === 'REJECTED' ? 'danger' : 'active'}`}>{orderStatusLabel(order.status)}</span></td>
-                  <td className="muted">{order.liveOrderEnabled ? '실주문' : '기록만'}</td>
-                  <td>{formatNumber(order.quantity)}주</td>
-                  <td>{formatKrw(order.orderPrice)}</td>
-                  <td>{totalAmount > 0 ? formatKrw(totalAmount) : '-'}</td>
-                  <td className="muted">
-                    {order.decisionReason}
-                    {(order.status === 'FAILED' || order.status === 'REJECTED') && order.errorMessage && (
-                      <div className="order-error">⚠ 실패 사유: {order.errorMessage}</div>
-                    )}
+                <tr key={`${order.buyOrderId}-${order.sellOrderId || 'open'}`}>
+                  <td className="muted">{formatDate(order.buyTime)}</td>
+                  <td>{order.symbolName ? `${order.symbolName} ${order.symbol}` : order.symbol}</td>
+                  <td>{order.buyPrice > 0 ? formatKrw(order.buyPrice) : '-'}</td>
+                  <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
+                  <td>{order.sellPrice > 0 ? formatKrw(order.sellPrice) : '-'}</td>
+                  <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '보유 중'}</td>
+                  <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
+                    {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : '-'}
                   </td>
                 </tr>
               );
             })}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="10">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="7">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
       <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
-    </section>
-  );
-}
-
-function EntryTable({ list, onLoadMore }) {
-  const entries = list.items;
-  return (
-    <section className="subsection">
-      <h4>진입 기록</h4>
-      <p className="helper">날짜·진입 구간별로 한 번씩만 기록됩니다. 선택 종목과 매수 여부를 확인할 수 있습니다.</p>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>날짜</th>
-              <th>진입 구간</th>
-              <th>상태</th>
-              <th>선택 종목</th>
-              <th>등락률</th>
-              <th>매수</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => (
-              <tr key={entry.id}>
-                <td className="muted">{entry.tradeDate}</td>
-                <td>{ENTRY_WINDOW_LABEL[entry.entryWindow] || entry.entryWindow}</td>
-                <td>{entryStatusText(entry.status)}</td>
-                <td>{entry.selectedSymbol ? `${entry.selectedSymbolName || ''} ${entry.selectedSymbol}`.trim() : '-'}</td>
-                <td>{entry.selectedFluctuationRate != null ? `${(entry.selectedFluctuationRate * 100).toFixed(2)}%` : '-'}</td>
-                <td>{entry.bought ? '✅' : '-'}</td>
-              </tr>
-            ))}
-            {entries.length === 0 && <tr><td className="empty-row" colSpan="6">아직 진입 기록이 없습니다.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <LoadMoreFooter shown={entries.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );
 }

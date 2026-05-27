@@ -63,7 +63,7 @@ export function markCycleCompleted(userId, id) {
 export function listStrategies(userId) {
   return getDb().prepare(`
     SELECT * FROM us_rank_strategies
-    WHERE user_id = ?
+    WHERE user_id = ? AND deleted_at IS NULL
     ORDER BY updated_at DESC, id DESC
   `).all(userId).map(toStrategy);
 }
@@ -71,13 +71,16 @@ export function listStrategies(userId) {
 export function listRunningStrategies() {
   return getDb().prepare(`
     SELECT * FROM us_rank_strategies
-    WHERE status = 'RUNNING'
+    WHERE status = 'RUNNING' AND deleted_at IS NULL
     ORDER BY last_evaluated_at IS NOT NULL, last_evaluated_at ASC, id ASC
   `).all().map(toStrategy);
 }
 
-export function getStrategy(userId, id) {
-  return toStrategy(getDb().prepare('SELECT * FROM us_rank_strategies WHERE user_id = ? AND id = ?').get(userId, id));
+export function getStrategy(userId, id, { includeDeleted = false } = {}) {
+  const deletedClause = includeDeleted ? '' : ' AND deleted_at IS NULL';
+  return toStrategy(getDb().prepare(`
+    SELECT * FROM us_rank_strategies WHERE user_id = ? AND id = ?${deletedClause}
+  `).get(userId, id));
 }
 
 export function startStrategy(userId, id) {
@@ -100,7 +103,14 @@ export function stopStrategy(userId, id) {
 }
 
 export function deleteStrategy(userId, id) {
-  return getDb().prepare('DELETE FROM us_rank_strategies WHERE user_id = ? AND id = ?').run(userId, id).changes > 0;
+  return getDb().prepare(`
+    UPDATE us_rank_strategies
+    SET status = 'STOPPED',
+        stopped_at = COALESCE(stopped_at, datetime('now')),
+        deleted_at = COALESCE(deleted_at, datetime('now')),
+        updated_at = datetime('now')
+    WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+  `).run(userId, id).changes > 0;
 }
 
 export function markEvaluation(userId, id, { decision, errorMessage = null } = {}) {
@@ -366,6 +376,66 @@ export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 }
   `).all(...params).map(toOrder);
 }
 
+export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0 } = {}) {
+  return getDb().prepare(`
+    SELECT
+      t.id AS trade_id,
+      t.strategy_id,
+      t.trade_date,
+      t.trade_seq,
+      t.symbol,
+      t.symbol_name,
+      t.exchange,
+      'US' AS market,
+      'USD' AS currency,
+      COALESCE(t.entry_price, b.average_filled_price, b.order_price, t.selected_price) AS buy_price,
+      COALESCE(b.created_at, t.opened_at) AS buy_time,
+      COALESCE(t.entry_quantity, b.filled_quantity, b.quantity) AS buy_quantity,
+      b.status AS buy_status,
+      COALESCE(t.exit_price, s.average_filled_price, s.order_price) AS sell_price,
+      COALESCE(s.created_at, t.closed_at) AS sell_time,
+      COALESCE(s.filled_quantity, s.quantity) AS sell_quantity,
+      s.status AS sell_status,
+      COALESCE(t.exit_reason, s.sell_reason) AS sell_reason,
+      t.profit_rate
+    FROM us_rank_trades t
+    LEFT JOIN us_rank_orders b
+      ON b.trade_id = t.id
+     AND b.side = 'BUY'
+     AND b.id = (
+       SELECT b2.id
+       FROM us_rank_orders b2
+       WHERE b2.trade_id = t.id AND b2.side = 'BUY'
+       ORDER BY b2.created_at ASC, b2.id ASC
+       LIMIT 1
+     )
+    LEFT JOIN us_rank_orders s
+      ON s.trade_id = t.id
+     AND s.side = 'SELL'
+     AND s.id = (
+       SELECT s2.id
+       FROM us_rank_orders s2
+       WHERE s2.trade_id = t.id AND s2.side = 'SELL'
+       ORDER BY s2.created_at DESC, s2.id DESC
+       LIMIT 1
+     )
+    WHERE t.user_id = ? AND t.strategy_id = ?
+      AND t.status IN ('BOUGHT', 'CLOSED')
+    ORDER BY t.trade_date DESC, t.trade_seq DESC, t.id DESC
+    LIMIT ? OFFSET ?
+  `).all(userId, strategyId, limit, offset).map(toRoundTripOrder);
+}
+
+// 실제 매수가 일어난 매매 사이클만 센다. SELECTED(미체결)·FAILED(체결 실패)는 "매수/매도 기록"이 아니라 제외한다.
+export function countRoundTripOrders(userId, { strategyId }) {
+  return getDb().prepare(`
+    SELECT COUNT(*) AS n
+    FROM us_rank_trades
+    WHERE user_id = ? AND strategy_id = ?
+      AND status IN ('BOUGHT', 'CLOSED')
+  `).get(userId, strategyId).n;
+}
+
 export function countOrders(userId, { strategyId = null } = {}) {
   const params = [userId];
   let where = 'user_id = ?';
@@ -541,8 +611,34 @@ function toStrategy(row) {
     lastEvaluatedAt: row.last_evaluated_at,
     lastDecision: row.last_decision,
     lastErrorMessage: row.last_error_message,
+    deletedAt: row.deleted_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function toRoundTripOrder(row) {
+  if (!row) return null;
+  return {
+    tradeId: row.trade_id,
+    strategyId: row.strategy_id,
+    tradeDate: row.trade_date,
+    tradeSeq: row.trade_seq,
+    symbol: row.symbol,
+    symbolName: row.symbol_name,
+    exchange: row.exchange,
+    market: row.market,
+    currency: row.currency,
+    buyTime: row.buy_time,
+    buyPrice: row.buy_price,
+    buyQuantity: row.buy_quantity,
+    buyStatus: row.buy_status,
+    sellTime: row.sell_time,
+    sellPrice: row.sell_price,
+    sellQuantity: row.sell_quantity,
+    sellStatus: row.sell_status,
+    sellReason: row.sell_reason,
+    profitRate: row.profit_rate
   };
 }
 
