@@ -253,11 +253,17 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.match(app, /useState\(initialStrategy \? 'laor' : 'kr-rank'\)/);
   assert.ok(app.indexOf('한국 국장 상승률 랭킹 전략') < app.indexOf('미국장 상승률 랭킹 전략'));
   assert.ok(app.indexOf('미국장 상승률 랭킹 전략') < app.indexOf('라오어 무한매수법'));
-  assert.match(home, /주문\/체결 로그/);
+  assert.match(home, /top-nav/);
+  assert.doesNotMatch(home, /주문\/체결 로그/);
+  assert.doesNotMatch(home, /key: 'strategies'/);
   assert.match(dashboard, /className="home-actions"/);
   assert.match(dashboard, /백테스트/);
   assert.match(dashboard, /자동매매/);
   assert.match(dashboard, /KIS 설정/);
+  assert.match(dashboard, /체크리스트/);
+  assert.doesNotMatch(dashboard, /시작 체크리스트/);
+  assert.doesNotMatch(dashboard, /최근 활동/);
+  assert.doesNotMatch(dashboard, /최근 백테스트/);
 
   for (const panel of [krPanel, usPanel]) {
     assert.match(panel, /매수 시각\(KST\)/);
