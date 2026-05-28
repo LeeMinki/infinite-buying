@@ -139,6 +139,14 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
       // 공휴일 등 휴장일에는 평일·시간 조건을 통과해도 매수하지 않는다. 폴링이라 로그는 남기지 않는다.
       return saveSkip(userId, strategy, '한국 증시 휴장일이라 주문하지 않습니다.', evaluationSource, { noLog: true });
     }
+    // 평가 본 흐름에 들어가기 전에 미체결 주문의 실제 체결가를 KIS에서 끌어와 DB에 채운다.
+    // 화면 렌더링이 아니라 평가 tick(이미 30초마다 도는 작업)에 끼워, 추가 폴링 없이 갱신한다.
+    // 실패해도 평가는 계속 진행한다 — 체결가는 다음 tick에 다시 시도하면 된다.
+    try {
+      await syncOrderFills(userId, { strategyId: id });
+    } catch {
+      // 동기화 실패는 평가를 막지 않는다.
+    }
     return await evaluateUnlocked(userId, strategy, evaluationSource);
   } finally {
     repo.releaseLock(id, LOCK_KEY);
@@ -521,6 +529,83 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   });
 }
 
+// ── 체결가 동기화 ─────────────────────────────────────────────────────────
+
+// 미체결(접수/부분체결/UNKNOWN) 상태인 실주문의 실제 체결가를 KIS 체결조회로 가져와
+// kr_rank_orders.average_filled_price·filled_quantity·status를 갱신한다.
+//
+// 호출 원칙: 화면 렌더링이 아니라 "주문 이벤트"가 발생했을 때만 호출한다 — 평가 tick(30초),
+// 주문 직후 지연 트리거, 서버 시작 후 1회. 종결 상태(FILLED/CANCELED/REJECTED/FAILED/DRY_RUN)는
+// listFillSyncCandidates가 제외하므로 평소(거래 없음)에는 KIS 호출이 0이다.
+//
+// 같은 종목의 여러 주문은 KIS 체결조회를 1회만 호출하고 주문번호로 매칭한다(KIS 호출 절감).
+export async function syncOrderFills(userId, { strategyId = null, limit = 20 } = {}) {
+  const candidates = repo.listFillSyncCandidates(userId, { strategyId, limit });
+  if (candidates.length === 0) return [];
+  let trading;
+  try {
+    await getValidAccessToken(userId);
+    trading = new KisTradingService(userId);
+  } catch {
+    // KIS 토큰 발급 실패는 일시적일 수 있다. 다음 호출에서 재시도.
+    return [];
+  }
+
+  // 같은 symbol에 대한 KIS 체결조회는 1회만 호출하고 캐시한다(주문번호로 행 매칭).
+  const historyCache = new Map();
+  const updated = [];
+  for (const order of candidates) {
+    try {
+      let history = historyCache.get(order.symbol);
+      if (history == null) {
+        try {
+          history = await trading.getOrderHistory(order.symbol, { market: 'KR' });
+        } catch {
+          history = [];
+        }
+        if (!Array.isArray(history)) history = [];
+        historyCache.set(order.symbol, history);
+      }
+      const matched = history.find((row) => (
+        (order.kisOrderNo && row.orderNo === order.kisOrderNo)
+        || (order.kisOriginalOrderNo && row.originalOrderNo === order.kisOriginalOrderNo)
+      ));
+      if (!matched) continue;
+      const filledQty = Math.floor(Number(matched.filledQuantity || 0));
+      const remaining = matched.remainingQuantity != null && matched.remainingQuantity !== ''
+        ? Number(matched.remainingQuantity)
+        : null;
+      const avgFilledPrice = Number(matched.averageFilledPrice || 0);
+      // 체결 정보가 전혀 없으면(아직 체결 전) 갱신하지 않는다 — 다음 tick에 다시 시도.
+      if (filledQty <= 0 && avgFilledPrice <= 0) continue;
+
+      const status = matched.status === 'FILLED' || (remaining != null && remaining <= 0 && filledQty > 0)
+        ? 'FILLED'
+        : (filledQty > 0 ? 'PARTIALLY_FILLED' : order.status);
+
+      const result = repo.updateOrder(userId, order.id, {
+        status,
+        // updateOrder는 NULL을 그대로 덮어쓰니, 새 데이터가 없으면 기존 값으로 유지한다.
+        filledQuantity: filledQty > 0 ? filledQty : (order.filledQuantity ?? null),
+        remainingQuantity: remaining != null ? remaining : (order.remainingQuantity ?? null),
+        averageFilledPrice: avgFilledPrice > 0 ? avgFilledPrice : (order.averageFilledPrice ?? null)
+      });
+      if (result) updated.push(result);
+    } catch {
+      // 한 주문의 동기화 실패는 다른 주문 처리를 막지 않는다.
+    }
+  }
+  return updated;
+}
+
+// 주문 접수 직후(체결까지 보통 수 초)에 호출해, 다음 30초 tick보다 빠르게 체결가를 갱신한다.
+// 비동기 fire-and-forget — 호출자는 await 하지 않는다. 실패해도 다음 평가 tick이 재시도한다.
+function scheduleFillSyncAfterPlacement(userId, strategyId) {
+  setTimeout(() => {
+    syncOrderFills(userId, { strategyId }).catch(() => {});
+  }, 3000).unref?.();
+}
+
 // ── 주문 실행 ─────────────────────────────────────────────────────────────
 
 // 실주문 OFF면 DRY_RUN 기록만, ON이면 KIS로 실제 전송. 실패해도 재시도하지 않는다.
@@ -544,7 +629,7 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     const result = baseOrder.side === 'BUY'
       ? await trading.placeBuyOrder({ ...orderInput })
       : await trading.placeSellOrder({ ...orderInput });
-    return repo.createOrder(userId, {
+    const created = repo.createOrder(userId, {
       ...orderInput,
       status: result.status || 'ACCEPTED',
       kisOrderNo: result.orderNo,
@@ -552,6 +637,12 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
       requestPayloadMasked: result.requestPayloadMasked || maskPayload(orderInput),
       responsePayloadMasked: result.responsePayloadMasked
     });
+    // 시장가는 보통 수 초 내 체결되므로, 다음 30초 tick을 기다리지 않고
+    // 3초 뒤 1회 체결조회로 실체결가를 일찍 끌어오게 한다. 실패해도 다음 tick이 재시도.
+    if (created && created.kisOrderNo) {
+      scheduleFillSyncAfterPlacement(userId, baseOrder.strategyId);
+    }
+    return created;
   } catch (error) {
     return repo.createOrder(userId, {
       ...orderInput,

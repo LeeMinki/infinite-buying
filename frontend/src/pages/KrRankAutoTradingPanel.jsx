@@ -563,12 +563,12 @@ function OrdersTable({ list, onLoadMore }) {
                 <tr key={`${order.buyOrderId}-${order.sellOrderId || 'open'}`}>
                   <td className="muted">{formatDate(order.buyTime)}</td>
                   <td>{order.symbolName ? `${order.symbolName} ${order.symbol}` : order.symbol}</td>
-                  <td>{order.buyPrice > 0 ? formatKrw(order.buyPrice) : '-'}</td>
+                  <td>{formatFillPrice(order.buyPrice)}</td>
                   <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
-                  <td>{order.sellPrice > 0 ? formatKrw(order.sellPrice) : '-'}</td>
+                  <td>{order.sellTime ? formatFillPrice(order.sellPrice) : '-'}</td>
                   <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '보유 중'}</td>
                   <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
-                    {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : '-'}
+                    {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : (order.sellTime ? '체결 확인 중' : '-')}
                   </td>
                 </tr>
               );
@@ -657,6 +657,14 @@ function pct(rate) {
 
 function formatKrw(value) {
   return `${Number(value || 0).toLocaleString('ko-KR', { maximumFractionDigits: 0 })} KRW`;
+}
+
+// 주문 이력 매수가·매도가 칸 전용. KIS가 알려준 실체결가가 들어왔으면 그 값을 보여주고,
+// 아직 안 들어온 실주문은 '체결 확인 중'으로 표시한다(주문 시점 추정가를 실체결가로 오인하지 않게).
+function formatFillPrice(value) {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) return '체결 확인 중';
+  return formatKrw(price);
 }
 
 function formatNumber(value) {

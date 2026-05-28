@@ -376,7 +376,36 @@ export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 }
   `).all(...params).map(toOrder);
 }
 
+// 실주문 중 KIS 체결조회로 average_filled_price를 채워야 하는 후보(접수/부분체결/UNKNOWN).
+// kis_order_no가 비어 있으면 매칭할 수 없으므로 제외하고, DRY_RUN·FILLED·CANCELED 등은 자체적으로
+// 동기화 대상이 아니라 후보에서 빠진다. 평소(거래 없는 시간)에는 후보가 0건이라 KIS 호출이 발생하지 않는다.
+export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 } = {}) {
+  const params = [userId];
+  let where = `
+    user_id = ?
+    AND live_order_enabled = 1
+    AND kis_order_no IS NOT NULL
+    AND kis_order_no <> ''
+    AND status IN ('ACCEPTED', 'REQUESTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+  `;
+  if (strategyId) {
+    where += ' AND strategy_id = ?';
+    params.push(strategyId);
+  }
+  params.push(limit);
+  return getDb().prepare(`
+    SELECT * FROM us_rank_orders
+    WHERE ${where}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(...params).map(toOrder);
+}
+
 export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0 } = {}) {
+  // 매수가·매도가는 "KIS가 알려준 실제 체결가"만 신뢰한다. order_price(주문 기준가)는 미국장 지정가
+  // 슬리피지 때문에 실제 체결가와 다르고, t.entry_price/exit_price는 종목 전체 평단(다른 외부 매수 영향)이
+  // 섞일 수 있다 — 두 폴백 모두 KIS 앱 손익률과 어긋날 위험이 있다.
+  // 단, DRY_RUN(실주문 OFF 시뮬레이션)은 실제 체결이 없어 order_price를 가짜 체결가로 쓴다.
   return getDb().prepare(`
     SELECT
       t.id AS trade_id,
@@ -388,11 +417,19 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
       t.exchange,
       'US' AS market,
       'USD' AS currency,
-      COALESCE(t.entry_price, b.average_filled_price, b.order_price, t.selected_price) AS buy_price,
+      CASE
+        WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
+        WHEN b.status = 'DRY_RUN' THEN b.order_price
+        ELSE t.entry_price
+      END AS buy_price,
       COALESCE(b.created_at, t.opened_at) AS buy_time,
       COALESCE(t.entry_quantity, b.filled_quantity, b.quantity) AS buy_quantity,
       b.status AS buy_status,
-      COALESCE(t.exit_price, s.average_filled_price, s.order_price) AS sell_price,
+      CASE
+        WHEN s.average_filled_price IS NOT NULL AND s.average_filled_price > 0 THEN s.average_filled_price
+        WHEN s.status = 'DRY_RUN' THEN s.order_price
+        ELSE t.exit_price
+      END AS sell_price,
       COALESCE(s.created_at, t.closed_at) AS sell_time,
       COALESCE(s.filled_quantity, s.quantity) AS sell_quantity,
       s.status AS sell_status,
