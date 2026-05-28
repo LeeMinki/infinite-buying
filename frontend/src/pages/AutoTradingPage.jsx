@@ -19,6 +19,7 @@ import {
 import { LaorStrategyGuide } from '../components/LaorStrategyGuide.jsx';
 import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
+import { StrategyPeriodReturns } from '../components/StrategyPeriodReturns.jsx';
 import { usePagedList } from '../hooks/usePagedList.js';
 import { KrRankAutoTradingPanel } from './KrRankAutoTradingPanel.jsx';
 import { UsRankAutoTradingPanel } from './UsRankAutoTradingPanel.jsx';
@@ -283,11 +284,11 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       </nav>
 
       {tab === 'kr-rank' && (
-        <KrRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} />
+        <KrRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} periodReturns={dashboard?.periodReturns} />
       )}
 
       {tab === 'us-rank' && (
-        <UsRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} />
+        <UsRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} periodReturns={dashboard?.periodReturns} />
       )}
 
       {tab === 'laor' && (
@@ -302,6 +303,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
         liveOrderEnabled={settings?.liveOrderEnabled}
         hasStrategy={Boolean(selected)}
       />
+
+      <StrategyPeriodReturns periods={dashboard?.periodReturns} strategyType="laor" />
 
       <section className="metric-grid auto-metrics">
         <Metric label="실행 중 전략" value={dashboard?.stats?.runningStrategyCount || 0} hint="스케줄러 평가 대상" />

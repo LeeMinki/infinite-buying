@@ -13,10 +13,11 @@ import {
 } from '../api/client.js';
 import { usePagedList } from '../hooks/usePagedList.js';
 import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
+import { StrategyPeriodReturns } from '../components/StrategyPeriodReturns.jsx';
 
 const ENTRY_WINDOW_LABEL = { MORNING: '오전 진입', LUNCH: '점심 진입' };
 
-export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
+export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const ordersList = usePagedList(listKrRankTradeHistory);
@@ -176,6 +177,8 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled }) {
         loading={accountSummaryLoading}
         onRefresh={loadAccountSummary}
       />
+
+      <StrategyPeriodReturns periods={periodReturns} strategyType="kr-rank" />
 
       <section className="panel section">
         <div className="panel-heading">

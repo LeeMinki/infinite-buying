@@ -301,4 +301,8 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.doesNotMatch(app, /LatestPosition/);
   assert.equal(/<EntryTable/.test(krPanel), false);
   assert.equal(/<TradeTable/.test(usPanel), false);
+  // 기간별 수익률 패널이 국장·미국장·라오어 탭에 각각 전략 종류별로 붙어야 한다.
+  assert.match(app, /<StrategyPeriodReturns[^>]*strategyType="laor"/);
+  assert.match(krPanel, /<StrategyPeriodReturns[^>]*strategyType="kr-rank"/);
+  assert.match(usPanel, /<StrategyPeriodReturns[^>]*strategyType="us-rank"/);
 });
