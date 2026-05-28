@@ -97,7 +97,7 @@ function createAcceptedSellOrder(strategyId, { symbol = '043590', symbolName = '
   });
 }
 
-test('syncOrderFills: 미체결 실주문은 후보로 잡히고 DRY_RUN/FILLED는 제외된다', () => {
+test('syncOrderFills: 미체결 실주문과 실체결가가 비어 있는 FILLED 주문은 후보로 잡힌다', () => {
   const strategy = createStrategyForUser();
   const accepted = createAcceptedBuyOrder(strategy.id, { kisOrderNo: 'A1' });
   // DRY_RUN은 실주문이 아니라 동기화 대상이 아니다.
@@ -106,11 +106,23 @@ test('syncOrderFills: 미체결 실주문은 후보로 잡히고 DRY_RUN/FILLED�
     quantity: 1, orderPrice: 100, estimatedAmount: 100, status: 'DRY_RUN',
     idempotencyKey: 'DRY-1', decisionReason: 't', liveOrderEnabled: false
   });
-  // 이미 체결 완료된 주문도 후보가 아니다.
-  repo.createOrder(user.id, {
+  // 이미 FILLED로 끝났더라도 실체결가가 비어 있으면 과거 이력 보정을 위해 후보다.
+  const filledMissingPrice = repo.createOrder(user.id, {
     strategyId: strategy.id, symbol: '000222', side: 'BUY', entryWindow: 'MORNING',
     quantity: 1, orderPrice: 100, estimatedAmount: 100, status: 'FILLED',
     kisOrderNo: 'F1', idempotencyKey: 'FILLED-1', decisionReason: 't', liveOrderEnabled: true
+  });
+  // 실체결가와 체결수량이 이미 있으면 다시 조회하지 않는다.
+  const alreadySynced = repo.createOrder(user.id, {
+    strategyId: strategy.id, symbol: '000224', side: 'BUY', entryWindow: 'MORNING',
+    quantity: 1, orderPrice: 100, estimatedAmount: 100, status: 'FILLED',
+    kisOrderNo: 'F2', idempotencyKey: 'FILLED-2', decisionReason: 't', liveOrderEnabled: true
+  });
+  repo.updateOrder(user.id, alreadySynced.id, {
+    status: 'FILLED',
+    filledQuantity: 1,
+    remainingQuantity: 0,
+    averageFilledPrice: 101
   });
   // kis_order_no가 비어 있으면 KIS 조회로 매칭할 키가 없어 후보가 아니다.
   repo.createOrder(user.id, {
@@ -119,8 +131,8 @@ test('syncOrderFills: 미체결 실주문은 후보로 잡히고 DRY_RUN/FILLED�
     idempotencyKey: 'NOKIS-1', decisionReason: 't', liveOrderEnabled: true
   });
   const candidates = repo.listFillSyncCandidates(user.id, { strategyId: strategy.id });
-  assert.equal(candidates.length, 1);
-  assert.equal(candidates[0].id, accepted.id);
+  assert.equal(candidates.length, 2);
+  assert.deepEqual(candidates.map((candidate) => candidate.id).sort((a, b) => a - b), [accepted.id, filledMissingPrice.id].sort((a, b) => a - b));
 });
 
 test('syncOrderFills: KIS 체결조회로 받은 실체결가·수량을 DB에 채워 넣는다', async () => {

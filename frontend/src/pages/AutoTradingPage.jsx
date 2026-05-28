@@ -74,6 +74,10 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
     }
   }
 
+  async function refreshDashboardPeriodReturns() {
+    setDashboard(await getAutoTradingDashboard({ refreshPeriodReturns: true }));
+  }
+
   useEffect(() => {
     refresh().catch((err) => setError(err.message));
   }, []);
@@ -284,11 +288,19 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       </nav>
 
       {tab === 'kr-rank' && (
-        <KrRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} periodReturns={dashboard?.periodReturns} />
+        <KrRankAutoTradingPanel
+          liveOrderEnabled={settings?.liveOrderEnabled}
+          periodReturns={dashboard?.periodReturns}
+          onPeriodReturnsRefresh={refreshDashboardPeriodReturns}
+        />
       )}
 
       {tab === 'us-rank' && (
-        <UsRankAutoTradingPanel liveOrderEnabled={settings?.liveOrderEnabled} periodReturns={dashboard?.periodReturns} />
+        <UsRankAutoTradingPanel
+          liveOrderEnabled={settings?.liveOrderEnabled}
+          periodReturns={dashboard?.periodReturns}
+          onPeriodReturnsRefresh={refreshDashboardPeriodReturns}
+        />
       )}
 
       {tab === 'laor' && (

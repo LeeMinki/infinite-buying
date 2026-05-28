@@ -318,7 +318,18 @@ export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 }
     AND live_order_enabled = 1
     AND kis_order_no IS NOT NULL
     AND kis_order_no <> ''
-    AND status IN ('ACCEPTED', 'REQUESTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+    AND (
+      status IN ('ACCEPTED', 'REQUESTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+      OR (
+        status = 'FILLED'
+        AND (
+          average_filled_price IS NULL
+          OR average_filled_price <= 0
+          OR filled_quantity IS NULL
+          OR filled_quantity <= 0
+        )
+      )
+    )
   `;
   if (strategyId) {
     where += ' AND strategy_id = ?';

@@ -455,7 +455,7 @@ export function listPositionSnapshots(userId, strategyId) {
   return repo.listPositionSnapshots(userId, strategyId);
 }
 
-export async function getDashboard(userId) {
+export async function getDashboard(userId, { refreshPeriodReturns = false } = {}) {
   const settings = repo.getSettings(userId);
   const kis = kisCredentialService.getSettings(userId);
   const laorStrategies = repo.listStrategies(userId);
@@ -472,11 +472,15 @@ export async function getDashboard(userId) {
     buildStrategyGroup('us-rank', '미국장 상승률 랭킹', usOverview.strategies, usRecent.decision, usRecent.order)
   ];
   const account = await buildDashboardAccount(userId, kis);
-  const periodReturns = buildDashboardPeriodReturns(userId, {
-    laorStrategies,
-    krStrategies: krOverview.strategies,
-    usStrategies: usOverview.strategies
-  });
+  const periodReturns = buildDashboardPeriodReturns(
+    userId,
+    {
+      laorStrategies,
+      krStrategies: krOverview.strategies,
+      usStrategies: usOverview.strategies
+    },
+    { refresh: refreshPeriodReturns }
+  );
   // 전략 종류별 1건만 모으던 기존 방식 대신, 이미 조회한 판단 로그에서 ERROR·SKIP을
   // 모아 최근순으로 보여준다(헤딩이 "목록"을 기대하므로).
   const recentErrors = buildRecentIssues([
@@ -536,9 +540,9 @@ function collectRankRecent(userId, strategies, service) {
   return { orders: orders.slice(0, 10), decisions: decisions.slice(0, 10), order: orders[0] || null, decision: decisions[0] || null };
 }
 
-function buildDashboardPeriodReturns(userId, { laorStrategies, krStrategies, usStrategies }) {
+function buildDashboardPeriodReturns(userId, { laorStrategies, krStrategies, usStrategies }, { refresh = false } = {}) {
   const cached = periodReturnsCache.get(userId);
-  if (cached && Date.now() - cached.at < PERIOD_RETURNS_CACHE_TTL_MS) {
+  if (!refresh && cached && Date.now() - cached.at < PERIOD_RETURNS_CACHE_TTL_MS) {
     return cached.value;
   }
   // 1년 구간까지 매도의 짝(매수)을 찾으려면 과거 매수 이력 전체가 필요하다.

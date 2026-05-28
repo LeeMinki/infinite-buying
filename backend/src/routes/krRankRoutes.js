@@ -78,6 +78,18 @@ router.post('/strategies/:id/evaluate', async (req, res, next) => {
   }
 });
 
+router.post('/strategies/:id/sync-fills', async (req, res, next) => {
+  try {
+    const updated = await service.syncOrderFills(req.userId, {
+      strategyId: Number(req.params.id),
+      limit: 100
+    });
+    res.json({ updatedCount: updated.length, updated });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/strategies/:id/orders', (req, res, next) => {
   try {
     res.json(service.listOrders(req.userId, Number(req.params.id), req.query));
