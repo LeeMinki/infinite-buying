@@ -306,6 +306,8 @@ export class KisTradingService {
   }
 
   async getDomesticOrderHistory(context, symbol) {
+    // KIS 주식일별주문체결조회(TTTC0081R). 3개월 이내 체결내역만 본다(오늘 체결 동기화 용도).
+    // EXCG_ID_DVSN_CD는 신규 필수 파라미터로, 거래소 통합 조회 시 'KRX'를 사용한다(모의투자는 KRX만 제공).
     const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-daily-ccld', {
       method: 'GET',
       trId: 'TTTC0081R',
@@ -323,6 +325,7 @@ export class KisTradingService {
         ODNO: '',
         INQR_DVSN_3: '00',
         INQR_DVSN_1: '',
+        EXCG_ID_DVSN_CD: 'KRX',
         CTX_AREA_FK100: '',
         CTX_AREA_NK100: ''
       }
@@ -561,7 +564,8 @@ function maskValue(value) {
 function normalizeOrderRow(row, market, currency) {
   const orderedQuantity = num(row.ord_qty ?? row.ft_ord_qty ?? row.ovrs_ord_qty);
   const filledQuantity = num(row.tot_ccld_qty ?? row.ft_ccld_qty ?? row.ccld_qty);
-  const remainingQuantity = num(row.nccs_qty ?? row.ft_nccs_qty ?? row.rmnd_qty);
+  // 국내 inquire-daily-ccld는 잔여수량을 rmn_qty로 돌려준다. 미체결 조회(inquire-psbl-rvsecncl)는 nccs_qty.
+  const remainingQuantity = num(row.nccs_qty ?? row.ft_nccs_qty ?? row.rmnd_qty ?? row.rmn_qty);
   const orderNo = String(row.odno ?? row.ODNO ?? '').trim() || null;
   const status = remainingQuantity > 0
     ? (filledQuantity > 0 ? 'PARTIALLY_FILLED' : 'ACCEPTED')

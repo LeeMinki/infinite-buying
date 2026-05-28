@@ -311,6 +311,28 @@ export function getOrder(userId, id) {
   return toOrder(getDb().prepare('SELECT * FROM kr_rank_orders WHERE user_id = ? AND id = ?').get(userId, id));
 }
 
+export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 } = {}) {
+  const params = [userId];
+  let where = `
+    user_id = ?
+    AND live_order_enabled = 1
+    AND kis_order_no IS NOT NULL
+    AND kis_order_no <> ''
+    AND status IN ('ACCEPTED', 'REQUESTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+  `;
+  if (strategyId) {
+    where += ' AND strategy_id = ?';
+    params.push(strategyId);
+  }
+  params.push(limit);
+  return getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE ${where}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(...params).map(toOrder);
+}
+
 export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 } = {}) {
   const params = [userId];
   let where = 'user_id = ?';
@@ -326,6 +348,10 @@ export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 }
 }
 
 export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0 } = {}) {
+  // 매수가·매도가는 "KIS가 확인해 준 실제 체결가(average_filled_price)"만 신뢰한다.
+  // 주문 접수 시점의 order_price는 실제 체결가와 다를 수 있어(시장가 슬리피지, 지정가의 호가 차)
+  // 화면에 그대로 보여주면 KIS 앱과 어긋난다 — 사용자가 0.2~0.4% 단위로 손익률이 다르게 보인다.
+  // 단, DRY_RUN(실주문 OFF 시뮬레이션)은 실제 체결이 없으니 order_price를 가짜 체결가로 쓴다.
   return getDb().prepare(`
     WITH buy_orders AS (
       SELECT o.*
@@ -345,21 +371,57 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
       b.currency,
       b.entry_window,
       b.quantity AS buy_quantity,
-      COALESCE(b.average_filled_price, b.order_price) AS buy_price,
+      CASE
+        WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
+        WHEN b.status = 'DRY_RUN' THEN b.order_price
+        ELSE NULL
+      END AS buy_price,
       b.created_at AS buy_time,
       b.status AS buy_status,
       s.id AS sell_order_id,
       s.quantity AS sell_quantity,
-      COALESCE(s.average_filled_price, s.order_price) AS sell_price,
+      CASE
+        WHEN s.average_filled_price IS NOT NULL AND s.average_filled_price > 0 THEN s.average_filled_price
+        WHEN s.status = 'DRY_RUN' THEN s.order_price
+        ELSE NULL
+      END AS sell_price,
       s.created_at AS sell_time,
       s.status AS sell_status,
       s.sell_reason,
       CASE
         WHEN s.id IS NULL THEN NULL
-        WHEN COALESCE(b.average_filled_price, b.order_price) > 0
-        THEN (COALESCE(s.average_filled_price, s.order_price) - COALESCE(b.average_filled_price, b.order_price))
-             / COALESCE(b.average_filled_price, b.order_price)
-        ELSE NULL
+        WHEN (
+          CASE
+            WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
+            WHEN b.status = 'DRY_RUN' THEN b.order_price
+            ELSE NULL
+          END
+        ) IS NULL THEN NULL
+        WHEN (
+          CASE
+            WHEN s.average_filled_price IS NOT NULL AND s.average_filled_price > 0 THEN s.average_filled_price
+            WHEN s.status = 'DRY_RUN' THEN s.order_price
+            ELSE NULL
+          END
+        ) IS NULL THEN NULL
+        ELSE (
+          (
+            CASE
+              WHEN s.average_filled_price IS NOT NULL AND s.average_filled_price > 0 THEN s.average_filled_price
+              WHEN s.status = 'DRY_RUN' THEN s.order_price
+            END
+          ) - (
+            CASE
+              WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
+              WHEN b.status = 'DRY_RUN' THEN b.order_price
+            END
+          )
+        ) / (
+          CASE
+            WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
+            WHEN b.status = 'DRY_RUN' THEN b.order_price
+          END
+        )
       END AS profit_rate
     FROM buy_orders b
     LEFT JOIN kr_rank_orders s
