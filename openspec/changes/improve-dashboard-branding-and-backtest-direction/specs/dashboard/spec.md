@@ -83,6 +83,23 @@ If data is insufficient for a profit/loss value, the dashboard MUST show a data-
 - **THEN** the dashboard clearly shows that auto-trading is running
 - **AND** it shows active strategy status by strategy type if available
 
+#### Scenario: Period returns are available from completed orders
+- **WHEN** 라오어, 한국 국장 랭킹, or 미국장 랭킹 strategies have matched buy/sell order history
+- **THEN** the dashboard shows period profit/loss amount and return rate before the strategy status section
+- **AND** the calculation is based on actual order history, using the order price to approximate when a confirmed fill price is unavailable
+- **AND** the dashboard separates 라오어, 한국 국장 랭킹, 미국장 랭킹, and overall totals
+- **AND** KRW and USD totals are not mixed into one currency value
+
+#### Scenario: Period returns exclude simulated and non-traded orders
+- **WHEN** order history includes DRY_RUN (live-order OFF) or FAILED/REJECTED/CANCELED orders
+- **THEN** those orders are excluded from the period profit/loss calculation
+- **AND** simulated DRY_RUN records are never presented as real profit/loss
+
+#### Scenario: Period returns cannot be calculated
+- **WHEN** no matched sell-side order history exists for a strategy type and period
+- **THEN** the period return area shows a data-insufficient state for that strategy type
+- **AND** it does not infer returns from open positions or unsupported currency conversion
+
 ### Requirement: Dashboard shall separate strategy type status
 The dashboard MUST distinguish 라오어 무한매수법, 한국 국장 상승률 랭킹, and 미국장 상승률 랭킹 strategy states when such strategies exist.
 
