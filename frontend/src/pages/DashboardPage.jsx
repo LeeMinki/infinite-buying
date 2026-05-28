@@ -118,6 +118,8 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
         <StatusCard label="미국장" value={marketLabel(operation.marketSessions?.US)} tone={operation.marketSessions?.US?.status === 'OPEN' ? 'ok' : 'muted'} />
       </section>
 
+      <PeriodReturnsPanel periods={dashboard.periodReturns || []} />
+
       <section className="dashboard-panel">
         <div className="panel-heading">
           <div>
@@ -252,6 +254,63 @@ function StrategyStatusCard({ group }) {
   );
 }
 
+function PeriodReturnsPanel({ periods }) {
+  return (
+    <section className="dashboard-panel period-return-panel">
+      <div className="panel-heading">
+        <div>
+          <h3>기간별 수익률</h3>
+          <p>매도까지 끝난 주문 이력으로 계산한 실현 손익입니다. KRW와 USD는 통화별로 따로 합산합니다.</p>
+        </div>
+      </div>
+      <div className="period-return-grid">
+        {(periods || []).map((period) => (
+          <article className="period-return-card" key={period.key}>
+            <div className="period-return-head">
+              <strong>{period.label}</strong>
+              <span>{period.overall?.status === 'available' ? '실현 기준' : '데이터 부족'}</span>
+            </div>
+            <ReturnCurrencyList summary={period.overall} compact={false} />
+            <div className="period-return-types">
+              {(period.strategyTypes || []).map((type) => (
+                <div className="period-return-type" key={type.key}>
+                  <span>{type.label}</span>
+                  <ReturnCurrencyList summary={type} compact />
+                </div>
+              ))}
+            </div>
+          </article>
+        ))}
+        {(!periods || periods.length === 0) && (
+          <div className="empty compact-empty">기간 수익률을 계산할 주문 이력이 없습니다.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ReturnCurrencyList({ summary, compact }) {
+  const values = Object.values(summary?.byCurrency || {});
+  if (values.length === 0) {
+    return <span className={compact ? 'period-return-muted compact' : 'period-return-muted'}>{summary?.reason || '매도 완료 기록 없음'}</span>;
+  }
+  return (
+    <div className={compact ? 'period-return-currencies compact' : 'period-return-currencies'}>
+      {values.map((item) => (
+        <span
+          key={item.currency}
+          className={`period-return-currency ${Number(item.profitAmount || 0) >= 0 ? 'positive' : 'negative'}`}
+        >
+          {formatMoney(item.profitAmount, item.currency)}
+          {' · '}
+          {formatSignedPercent(item.returnRate)}
+          {!compact && ` · ${item.tradeCount}건`}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function Badge({ tone = 'muted', children }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
@@ -321,6 +380,12 @@ function formatNumber(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '-';
   return n.toLocaleString('ko-KR', { maximumFractionDigits: 2 });
+}
+
+function formatSignedPercent(rate) {
+  const n = Number(rate || 0) * 100;
+  const sign = n > 0 ? '+' : '';
+  return `${sign}${n.toFixed(2)}%`;
 }
 
 function marketLabel(session) {

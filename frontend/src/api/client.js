@@ -123,8 +123,8 @@ export const deleteAutoTradingStrategy = (id) => request(`/api/auto-trading/stra
 export const startAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}/start`, { method: 'POST' });
 export const stopAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}/stop`, { method: 'POST' });
 export const evaluateAutoTradingStrategy = (id) => request(`/api/auto-trading/strategies/${id}/evaluate`, { method: 'POST' });
-export const listAutoTradingOrders = (id) => request(`/api/auto-trading/strategies/${id}/orders`);
-export const listAutoTradingDecisions = (id) => request(`/api/auto-trading/strategies/${id}/decisions`);
+export const listAutoTradingOrders = (id, paging) => request(`/api/auto-trading/strategies/${id}/orders${pageQuery(paging)}`);
+export const listAutoTradingDecisions = (id, paging) => request(`/api/auto-trading/strategies/${id}/decisions${pageQuery(paging)}`);
 export const listAutoTradingPositions = (id) => request(`/api/auto-trading/strategies/${id}/positions`);
 export const refreshAutoTradingOrder = (id) => request(`/api/auto-trading/orders/${id}/refresh`, { method: 'POST' });
 

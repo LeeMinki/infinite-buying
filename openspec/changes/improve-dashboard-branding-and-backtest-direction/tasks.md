@@ -49,3 +49,11 @@
 - [x] 8.2 Run `npm run build`.
 - [x] 8.3 Verify dashboard does not prominently show duplicate launcher cards after setup is complete.
 - [x] 8.4 Verify favicon appears in the browser tab in local build/dev.
+
+## 9. Auto-Trading History and Period Returns
+
+- [x] 9.1 Add pagination to 라오어 automatic trading order history and decision log APIs.
+- [x] 9.2 Update the 라오어 automatic trading detail screen to show only order history and decision logs as the primary record sections.
+- [x] 9.3 Confirm 한국 국장 and 미국장 ranking order history and decision logs use paged loading.
+- [x] 9.4 Add realized period return summaries for 라오어, 한국 국장 랭킹, 미국장 랭킹, and currency-separated overall totals.
+- [x] 9.5 Show period returns above the strategy status section on the dashboard.

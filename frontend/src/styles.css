@@ -2266,6 +2266,87 @@ td.neutral {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
+.period-return-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.period-return-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.period-return-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.period-return-head strong {
+  font-size: 15px;
+}
+
+.period-return-head span,
+.period-return-muted {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.period-return-currencies {
+  display: grid;
+  gap: 6px;
+}
+
+.period-return-currencies.compact {
+  gap: 3px;
+  justify-items: end;
+}
+
+.period-return-currency {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.period-return-currency.positive {
+  color: var(--success);
+}
+
+.period-return-currency.negative {
+  color: var(--danger);
+}
+
+.period-return-types {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.period-return-type {
+  align-items: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.period-return-type > span:first-child {
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.period-return-muted.compact {
+  text-align: right;
+}
+
 .currency-account-card,
 .strategy-status-card {
   background: var(--bg-soft);

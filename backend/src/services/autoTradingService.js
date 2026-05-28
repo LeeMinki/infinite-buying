@@ -11,6 +11,20 @@ import * as usRankService from './usRankService.js';
 const LOCK_KEY = 'evaluate';
 // 같은 (거래일·전략·슬롯) 주문이 실패로 누적되면 더 시도하지 않는 한도.
 const ORDER_RETRY_LIMIT = 5;
+const PAGE_SIZE_DEFAULT = 50;
+const PAGE_SIZE_MAX = 200;
+const PERIOD_RETURN_DEFS = [
+  { key: '1d', label: '1일', days: 1 },
+  { key: '7d', label: '7일', days: 7 },
+  { key: '30d', label: '30일', days: 30 }
+];
+const EXCLUDED_REALIZED_ORDER_STATUSES = new Set(['FAILED', 'REJECTED', 'CANCELED']);
+
+function normalizePaging({ limit, offset } = {}) {
+  const limitNum = Math.min(Math.max(Math.trunc(Number(limit)) || PAGE_SIZE_DEFAULT, 1), PAGE_SIZE_MAX);
+  const offsetNum = Math.max(Math.trunc(Number(offset)) || 0, 0);
+  return { limit: limitNum, offset: offsetNum };
+}
 
 export function getSettings(userId) {
   return {
@@ -389,9 +403,12 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
   }
 }
 
-export function listOrders(userId, strategyId = null) {
+export function listOrders(userId, strategyId = null, paging = {}) {
   if (strategyId) requireStrategy(userId, strategyId);
-  return repo.listOrders(userId, { strategyId });
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listOrders(userId, { strategyId, limit, offset });
+  const total = repo.countOrders(userId, { strategyId });
+  return { items, total, limit, offset };
 }
 
 export function getOrder(userId, id) {
@@ -417,9 +434,12 @@ export async function refreshOrder(userId, id) {
   });
 }
 
-export function listDecisionLogs(userId, strategyId) {
+export function listDecisionLogs(userId, strategyId, paging = {}) {
   requireStrategy(userId, strategyId);
-  return repo.listDecisionLogs(userId, strategyId);
+  const { limit, offset } = normalizePaging(paging);
+  const items = repo.listDecisionLogs(userId, strategyId, limit, offset);
+  const total = repo.countDecisionLogs(userId, strategyId);
+  return { items, total, limit, offset };
 }
 
 export function listPositionSnapshots(userId, strategyId) {
@@ -444,6 +464,11 @@ export async function getDashboard(userId) {
     buildStrategyGroup('us-rank', '미국장 상승률 랭킹', usOverview.strategies, usRecent.decision, usRecent.order)
   ];
   const account = await buildDashboardAccount(userId, kis);
+  const periodReturns = buildDashboardPeriodReturns(userId, {
+    laorStrategies,
+    krStrategies: krOverview.strategies,
+    usStrategies: usOverview.strategies
+  });
   // 전략 종류별 1건만 모으던 기존 방식 대신, 이미 조회한 판단 로그에서 ERROR·SKIP을
   // 모아 최근순으로 보여준다(헤딩이 "목록"을 기대하므로).
   const recentErrors = buildRecentIssues([
@@ -468,6 +493,7 @@ export async function getDashboard(userId) {
       accountLookupStatus: account.lookupStatus,
       marketSessions: getMarketSessionStatus()
     },
+    periodReturns,
     strategyGroups,
     strategies: laorStrategies.slice(0, 20),
     krRank: { liveOrderEnabled: krOverview.liveOrderEnabled, strategies: krOverview.strategies },
@@ -500,6 +526,160 @@ function collectRankRecent(userId, strategies, service) {
   orders.sort(sortCreatedDesc);
   decisions.sort(sortCreatedDesc);
   return { orders: orders.slice(0, 10), decisions: decisions.slice(0, 10), order: orders[0] || null, decision: decisions[0] || null };
+}
+
+function buildDashboardPeriodReturns(userId, { laorStrategies, krStrategies, usStrategies }) {
+  const laorRecords = buildLaorRealizedRecords(repo.listOrders(userId, { limit: 5000 }));
+  const krRecords = collectRankRealizedRecords(userId, krStrategies, krRankService);
+  const usRecords = collectRankRealizedRecords(userId, usStrategies, usRankService);
+  const now = Date.now();
+  return PERIOD_RETURN_DEFS.map((def) => {
+    const sinceMs = now - def.days * 24 * 60 * 60 * 1000;
+    const strategyTypes = [
+      summarizePeriodRecords('laor', '라오어 무한매수법', laorRecords, sinceMs),
+      summarizePeriodRecords('kr-rank', '한국 국장 상승률 랭킹', krRecords, sinceMs),
+      summarizePeriodRecords('us-rank', '미국장 상승률 랭킹', usRecords, sinceMs)
+    ];
+    const overall = combinePeriodSummaries(strategyTypes);
+    return { key: def.key, label: def.label, strategyTypes, overall };
+  });
+}
+
+function buildLaorRealizedRecords(orders) {
+  const positions = new Map();
+  const records = [];
+  const sorted = (orders || []).slice().sort((a, b) => (
+    parseTime(a.createdAt) - parseTime(b.createdAt) || Number(a.id || 0) - Number(b.id || 0)
+  ));
+  for (const order of sorted) {
+    if (!order || EXCLUDED_REALIZED_ORDER_STATUSES.has(order.status)) continue;
+    const quantity = orderQuantity(order);
+    const price = orderPrice(order);
+    if (quantity <= 0 || price <= 0) continue;
+    const key = `${order.strategyId || ''}:${order.market || ''}:${order.currency || ''}:${order.symbol || ''}`;
+    const position = positions.get(key) || { quantity: 0, cost: 0 };
+    if (order.side === 'BUY') {
+      position.quantity += quantity;
+      position.cost += quantity * price;
+      positions.set(key, position);
+      continue;
+    }
+    if (order.side !== 'SELL') continue;
+    if (position.quantity <= 0 || position.cost <= 0) continue;
+    const sellQuantity = Math.min(quantity, position.quantity);
+    const averageCost = position.cost / position.quantity;
+    const baseAmount = averageCost * sellQuantity;
+    const profitAmount = price * sellQuantity - baseAmount;
+    records.push({
+      strategyType: 'laor',
+      currency: order.currency || 'KRW',
+      occurredAt: order.createdAt,
+      occurredMs: parseTime(order.createdAt),
+      profitAmount,
+      baseAmount,
+      tradeCount: 1
+    });
+    position.quantity = Math.max(0, position.quantity - sellQuantity);
+    position.cost = Math.max(0, position.cost - baseAmount);
+    positions.set(key, position);
+  }
+  return records;
+}
+
+function collectRankRealizedRecords(userId, strategies, service) {
+  const records = [];
+  for (const strategy of strategies || []) {
+    try {
+      const response = service.listRoundTripOrders(userId, strategy.id, { limit: 200, offset: 0 });
+      for (const item of response.items || []) {
+        if (!item.sellTime || item.sellPrice == null || item.buyPrice == null) continue;
+        const quantity = Number(item.sellQuantity || item.buyQuantity || 0);
+        const buyPrice = Number(item.buyPrice || 0);
+        const sellPrice = Number(item.sellPrice || 0);
+        const baseAmount = buyPrice * quantity;
+        if (quantity <= 0 || baseAmount <= 0) continue;
+        records.push({
+          strategyType: 'rank',
+          currency: item.currency || strategy.currency || 'KRW',
+          occurredAt: item.sellTime,
+          occurredMs: parseTime(item.sellTime),
+          profitAmount: (sellPrice - buyPrice) * quantity,
+          baseAmount,
+          tradeCount: 1
+        });
+      }
+    } catch (_) {}
+  }
+  return records;
+}
+
+function summarizePeriodRecords(key, label, records, sinceMs) {
+  const byCurrency = summarizeByCurrency((records || []).filter((record) => record.occurredMs >= sinceMs));
+  return {
+    key,
+    label,
+    status: Object.keys(byCurrency).length > 0 ? 'available' : 'insufficient',
+    byCurrency,
+    reason: Object.keys(byCurrency).length > 0 ? '' : '기간 내 매도 완료 기록이 없습니다.'
+  };
+}
+
+function combinePeriodSummaries(strategyTypes) {
+  const records = [];
+  for (const summary of strategyTypes || []) {
+    for (const value of Object.values(summary.byCurrency || {})) {
+      records.push({
+        currency: value.currency,
+        profitAmount: value.profitAmount,
+        baseAmount: value.baseAmount,
+        tradeCount: value.tradeCount
+      });
+    }
+  }
+  const byCurrency = summarizeByCurrency(records);
+  return {
+    key: 'overall',
+    label: '전체',
+    status: Object.keys(byCurrency).length > 0 ? 'available' : 'insufficient',
+    byCurrency,
+    reason: Object.keys(byCurrency).length > 0 ? '' : '기간 내 매도 완료 기록이 없습니다.'
+  };
+}
+
+function summarizeByCurrency(records) {
+  const byCurrency = {};
+  for (const record of records || []) {
+    const currency = record.currency || 'KRW';
+    if (!byCurrency[currency]) {
+      byCurrency[currency] = { currency, profitAmount: 0, baseAmount: 0, returnRate: 0, tradeCount: 0 };
+    }
+    byCurrency[currency].profitAmount += Number(record.profitAmount || 0);
+    byCurrency[currency].baseAmount += Number(record.baseAmount || 0);
+    byCurrency[currency].tradeCount += Number(record.tradeCount || 1);
+  }
+  for (const value of Object.values(byCurrency)) {
+    value.returnRate = value.baseAmount > 0 ? value.profitAmount / value.baseAmount : 0;
+    value.status = value.baseAmount > 0 ? 'available' : 'insufficient';
+  }
+  return byCurrency;
+}
+
+function orderQuantity(order) {
+  return Number(order.filledQuantity || order.quantity || 0);
+}
+
+function orderPrice(order) {
+  return Number(order.averageFilledPrice || order.orderPrice || 0);
+}
+
+function parseTime(value) {
+  if (!value) return 0;
+  const raw = String(value).trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const ms = new Date(normalized).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
 }
 
 function buildStrategyGroup(key, label, strategies, recentDecision, recentOrder) {

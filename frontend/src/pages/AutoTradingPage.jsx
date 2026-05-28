@@ -10,7 +10,6 @@ import {
   getCurrentPrice,
   listAutoTradingDecisions,
   listAutoTradingOrders,
-  listAutoTradingPositions,
   listAutoTradingStrategies,
   refreshAutoTradingOrder,
   startAutoTradingStrategy,
@@ -18,7 +17,9 @@ import {
   updateAutoTradingLiveOrder
 } from '../api/client.js';
 import { LaorStrategyGuide } from '../components/LaorStrategyGuide.jsx';
+import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
 import { StockSearchField } from '../components/StockSearchField.jsx';
+import { usePagedList } from '../hooks/usePagedList.js';
 import { KrRankAutoTradingPanel } from './KrRankAutoTradingPanel.jsx';
 import { UsRankAutoTradingPanel } from './UsRankAutoTradingPanel.jsx';
 
@@ -28,9 +29,8 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
   const [dashboard, setDashboard] = useState(null);
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [orders, setOrders] = useState([]);
-  const [decisions, setDecisions] = useState([]);
-  const [positions, setPositions] = useState([]);
+  const ordersList = usePagedList(listAutoTradingOrders);
+  const decisionsList = usePagedList(listAutoTradingDecisions, 10);
   const [accountSummary, setAccountSummary] = useState(null);
   const [budgetPreview, setBudgetPreview] = useState(null);
   const [budgetPreviewLoading, setBudgetPreviewLoading] = useState(false);
@@ -57,23 +57,18 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
     const target = nextSelectedId || nextStrategies[0]?.id || null;
     setSelectedId(target);
     if (target) {
-      const [nextOrders, nextDecisions, nextPositions] = await Promise.all([
-        listAutoTradingOrders(target),
-        listAutoTradingDecisions(target),
-        listAutoTradingPositions(target)
+      await Promise.all([
+        ordersList.load(target),
+        decisionsList.load(target)
       ]);
-      setOrders(nextOrders);
-      setDecisions(nextDecisions);
-      setPositions(nextPositions);
       try {
         setAccountSummary(await getAutoTradingAccountSummary(target));
       } catch (err) {
         setAccountSummary({ error: err.message });
       }
     } else {
-      setOrders([]);
-      setDecisions([]);
-      setPositions([]);
+      ordersList.reset();
+      decisionsList.reset();
       setAccountSummary(null);
     }
   }
@@ -470,9 +465,17 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
             <p className="auto-log-note">
               시작 후 서버는 최대 10분 간격으로 가격, 계좌 잔액, 보유 수량, 미체결 주문, 현재 설정을 확인하고 판단 로그를 남깁니다.
             </p>
-            <LatestPosition positions={positions} currency={selected.currency} />
-            <OrdersTable orders={orders} onRefresh={refreshOrder} busy={busy} />
-            <DecisionLogTable decisions={decisions} currency={selected.currency} />
+            <OrdersTable
+              list={ordersList}
+              onLoadMore={() => ordersList.loadMore(selected.id)}
+              onRefresh={refreshOrder}
+              busy={busy}
+            />
+            <DecisionLogTable
+              list={decisionsList}
+              onLoadMore={() => decisionsList.loadMore(selected.id)}
+              currency={selected.currency}
+            />
           </>
         ) : (
           <div className="empty">자동매매 전략을 만들면 상세가 표시됩니다.</div>
@@ -658,36 +661,8 @@ function AccountSummaryPanel({ summary, fallbackCurrency, liveOrderEnabled, hasS
   );
 }
 
-function LatestPosition({ positions, currency }) {
-  const latest = positions[0];
-  return (
-    <section className="subsection">
-      <h4>
-        최근 포지션 스냅샷
-        {latest?.decision && (
-          <span className={`decision compact ${String(latest.decision).toLowerCase()}`} style={{ marginLeft: 8 }}>
-            그때 판단: {latest.decision}
-          </span>
-        )}
-      </h4>
-      <p className="helper">
-        자동매매가 평가를 한 번 돌릴 때마다 그 시점의 KIS 잔고를 사진처럼 저장한 기록입니다.
-        실시간 KIS 잔고가 아니라 마지막 평가 순간의 값이므로, 지금 KIS 화면과는 약간 다를 수 있습니다.
-        오른쪽 위 배지는 그 스냅샷이 찍히던 때 자동매매가 내린 판단(매수/매도/관망 등)입니다.
-      </p>
-      {latest ? (
-        <div className="metric-grid compact-grid">
-          <Metric label="현재가" value={formatMoney(latest.currentPrice, currency)} hint={`기록 시각 ${formatDate(latest.capturedAt)}`} />
-          <Metric label="보유 수량" value={formatQuantity(latest.quantity)} hint={`평단 ${formatMoney(latest.averagePrice, currency)}`} />
-          <Metric label="평가금액" value={formatMoney(latest.evaluationAmount, currency)} hint={`미실현 ${formatMoney(latest.unrealizedProfit, currency)}`} />
-          <Metric label="현금" value={formatMoney(latest.cashAvailable || 0, currency)} hint="평가 시점 KIS 매수가능금액" />
-        </div>
-      ) : <div className="empty">아직 평가가 한 번도 일어나지 않았습니다. 전략을 시작하거나 "지금 평가"를 눌러보세요.</div>}
-    </section>
-  );
-}
-
-function OrdersTable({ orders, onRefresh, busy }) {
+function OrdersTable({ list, onLoadMore, onRefresh, busy }) {
+  const orders = list.items || [];
   return (
     <section className="subsection">
       <h4>주문 이력</h4>
@@ -738,11 +713,19 @@ function OrdersTable({ orders, onRefresh, busy }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter
+        shown={orders.length}
+        total={list.total}
+        hasMore={list.hasMore}
+        loading={list.loading}
+        onLoadMore={onLoadMore}
+      />
     </section>
   );
 }
 
-function DecisionLogTable({ decisions, currency }) {
+function DecisionLogTable({ list, onLoadMore, currency }) {
+  const decisions = list.items || [];
   return (
     <section className="subsection">
       <h4>판단 로그</h4>
@@ -803,6 +786,13 @@ function DecisionLogTable({ decisions, currency }) {
           </tbody>
         </table>
       </div>
+      <LoadMoreFooter
+        shown={decisions.length}
+        total={list.total}
+        hasMore={list.hasMore}
+        loading={list.loading}
+        onLoadMore={onLoadMore}
+      />
     </section>
   );
 }
