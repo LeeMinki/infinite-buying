@@ -28,7 +28,7 @@ export function LoginPage({ onSwitch }) {
           <div className="brand-logo" aria-hidden="true">∞</div>
           <div className="brand-text">
             <h1>무한매수 해죠</h1>
-            <span>로그인</span>
+            <span>전략 운용 대시보드</span>
           </div>
         </div>
         <label>

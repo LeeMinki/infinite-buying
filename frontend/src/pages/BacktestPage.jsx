@@ -93,7 +93,7 @@ export function BacktestPage({ onBack, initialStrategy }) {
       <header className="page-header">
         <div>
           <h1>백테스트</h1>
-          <p>KIS에서 조회한 실제 일봉 데이터로 무한매수 전략 결과를 계산합니다.</p>
+          <p>KIS에서 조회한 실제 일봉 데이터로 라오어 무한매수법 결과를 계산합니다.</p>
         </div>
         <button type="button" className="ghost" onClick={onBack}>돌아가기</button>
       </header>
@@ -112,11 +112,23 @@ export function BacktestPage({ onBack, initialStrategy }) {
         <p className="helper">국내 종목은 KRW, 해외 종목은 USD로 표시합니다. 수수료, 세금, 환율, 슬리피지는 계산에서 제외합니다. 결과는 투자 수익을 보장하지 않습니다.</p>
       </section>
 
+      <section className="guide-panel">
+        <h3>랭킹 전략은 별도 시뮬레이션이 필요합니다</h3>
+        <p>
+          현재 백테스트는 라오어 무한매수법처럼 하루 단위 가격으로 계산할 수 있는 전략에 맞춰져 있습니다.
+          한국 국장 상승률 랭킹과 미국장 상승률 랭킹 전략은 특정 시각의 상승률 순위, 거래량, 장중 익절과 손절에 따라 움직이므로 일봉 종가만으로 정확히 되돌려 계산하기 어렵습니다.
+        </p>
+        <p className="helper">
+          과거 랭킹 스냅샷이 없는 상태에서 만든 결과는 정확한 백테스트가 아니라 근사 시뮬레이션으로 구분해야 합니다.
+          이번 화면에서는 랭킹 전략을 억지로 백테스트하지 않습니다.
+        </p>
+      </section>
+
       <section className="panel section">
         <div className="panel-heading">
           <div>
             <h3>백테스트 실행</h3>
-            <p>TQQQ 예시는 40분할, 목표 수익률 10%, USD 예산 기준입니다. 국내 종목을 선택하면 원화 기준으로 계산합니다.</p>
+            <p>라오어 무한매수법 기준입니다. TQQQ 예시는 40분할, 목표 수익률 10%, USD 예산으로 계산합니다.</p>
           </div>
         </div>
         <form className="mode-form" onSubmit={runBacktest}>

@@ -40,22 +40,17 @@ function AuthenticatedApp() {
   const [view, setViewState] = useState(getInitialView);
   const [strategySeed, setStrategySeed] = useState(null);
 
-  function setView(nextView) {
+  function setView(nextView, { replace = false } = {}) {
     if (nextView === view) return;
     if (typeof window === 'undefined') {
       setViewState(nextView);
       return;
     }
-    if (nextView === 'strategies') {
-      const onSubpage = window.history.state && window.history.state.ibView && window.history.state.ibView !== 'strategies';
-      if (onSubpage) {
-        window.history.back();
-        return;
-      }
-      setViewState(nextView);
-      return;
-    }
-    window.history.pushState({ ibView: nextView }, '', `#${nextView}`);
+    const url = nextView === 'strategies'
+      ? `${window.location.pathname}${window.location.search}`
+      : `#${nextView}`;
+    const method = replace ? 'replaceState' : 'pushState';
+    window.history[method]({ ibView: nextView }, '', url);
     setViewState(nextView);
   }
 
@@ -94,7 +89,7 @@ function AuthenticatedApp() {
       <main className="app-shell">
         <StrategiesPage
           activeView={view === 'strategies' ? 'dashboard' : view}
-          onOpenDashboard={() => setView('strategies')}
+          onOpenDashboard={() => setView('strategies', { replace: true })}
           onOpenKis={() => setView('kis')}
           onOpenBacktest={() => openBacktest()}
           onOpenAutoTrading={() => openAutoTrading()}

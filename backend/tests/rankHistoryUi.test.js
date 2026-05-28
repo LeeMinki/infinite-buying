@@ -245,8 +245,10 @@ test('왕복 주문 이력은 실패·미체결(관망) 건을 제외하고 실�
 test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문 이력, 판단 로그 10개 표시를 갖는다', () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const app = fs.readFileSync(path.join(root, 'frontend/src/pages/AutoTradingPage.jsx'), 'utf8');
+  const appShell = fs.readFileSync(path.join(root, 'frontend/src/App.jsx'), 'utf8');
   const home = fs.readFileSync(path.join(root, 'frontend/src/pages/StrategiesPage.jsx'), 'utf8');
   const dashboard = fs.readFileSync(path.join(root, 'frontend/src/pages/DashboardPage.jsx'), 'utf8');
+  const indexHtml = fs.readFileSync(path.join(root, 'frontend/index.html'), 'utf8');
   const krPanel = fs.readFileSync(path.join(root, 'frontend/src/pages/KrRankAutoTradingPanel.jsx'), 'utf8');
   const usPanel = fs.readFileSync(path.join(root, 'frontend/src/pages/UsRankAutoTradingPanel.jsx'), 'utf8');
 
@@ -254,9 +256,16 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.ok(app.indexOf('한국 국장 상승률 랭킹 전략') < app.indexOf('미국장 상승률 랭킹 전략'));
   assert.ok(app.indexOf('미국장 상승률 랭킹 전략') < app.indexOf('라오어 무한매수법'));
   assert.match(home, /top-nav/);
+  assert.match(home, /전략 운용 대시보드/);
   assert.doesNotMatch(home, /주문\/체결 로그/);
   assert.doesNotMatch(home, /key: 'strategies'/);
-  assert.match(dashboard, /className="home-actions"/);
+  assert.doesNotMatch(appShell, /history\.back/);
+  assert.match(appShell, /onOpenDashboard=\{\(\) => setView\('strategies', \{ replace: true \}\)\}/);
+  assert.match(dashboard, /운용 대시보드/);
+  assert.match(dashboard, /계좌 요약/);
+  assert.match(dashboard, /전략별 상태/);
+  assert.match(dashboard, /최근 주문\/체결/);
+  assert.doesNotMatch(dashboard, /className="home-actions"/);
   assert.match(dashboard, /백테스트/);
   assert.match(dashboard, /자동매매/);
   assert.match(dashboard, /KIS 설정/);
@@ -264,6 +273,15 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.doesNotMatch(dashboard, /시작 체크리스트/);
   assert.doesNotMatch(dashboard, /최근 활동/);
   assert.doesNotMatch(dashboard, /최근 백테스트/);
+  // 재설계: 히어로 KPI 스트립과 하단 조용한 바로가기를 쓰고, 상단 메뉴와 중복되는
+  // 헤더 액션 바·status-pill 혼용은 제거한다. metric 라벨은 metric-label 클래스로 통일.
+  assert.match(dashboard, /kpi-strip/);
+  assert.match(dashboard, /dashboard-quicklinks/);
+  assert.match(dashboard, /className="metric-label"/);
+  assert.doesNotMatch(dashboard, /dashboard-secondary-actions/);
+  assert.doesNotMatch(dashboard, /status-pill/);
+  assert.match(indexHtml, /favicon\.svg/);
+  assert.match(indexHtml, /전략 운용 대시보드/);
 
   for (const panel of [krPanel, usPanel]) {
     assert.match(panel, /매수 시각\(KST\)/);
