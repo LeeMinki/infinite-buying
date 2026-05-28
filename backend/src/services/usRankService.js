@@ -1060,8 +1060,8 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
 // 가져와 us_rank_orders.average_filled_price·filled_quantity·status를 채운다.
 //
 // 호출 원칙: 화면 렌더링이 아니라 "주문 이벤트" 시점에만 호출한다 — 평가 tick(30초), 주문 직후 3초 지연
-// 트리거. 종결 상태(FILLED/CANCELED/REJECTED/FAILED/DRY_RUN)는 listFillSyncCandidates가 제외하므로
-// 평소(거래 없음)에는 KIS 호출이 0이다.
+// 트리거, 사용자의 명시적 동기화 요청에서만 KIS 체결조회를 사용한다.
+// 종결 상태라도 실체결가가 비어 있는 FILLED 주문은 과거 이력 보정 대상이다.
 //
 // 매도 체결 확정은 reconcileWorkingSell이 따로 처리한다 — 그 흐름은 청산(trade CLOSED, holding clear,
 // day lock 등)을 함께 트리거하므로 여기서는 average_filled_price 등 "주문 행 자체" 갱신에만 집중한다.
@@ -1069,6 +1069,7 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
 //
 // 같은 (symbol, exchange) 조합의 여러 주문은 KIS 체결조회를 1회만 호출하고 주문번호로 매칭한다(호출 절감).
 export async function syncOrderFills(userId, { strategyId = null, limit = 20 } = {}) {
+  if (strategyId) requireStrategy(userId, strategyId, { includeDeleted: true });
   const candidates = repo.listFillSyncCandidates(userId, { strategyId, limit });
   if (candidates.length === 0) return [];
   let trading;

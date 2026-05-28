@@ -9,7 +9,8 @@ import {
   listKrRankStrategies,
   listKrRankTradeHistory,
   startKrRankStrategy,
-  stopKrRankStrategy
+  stopKrRankStrategy,
+  syncKrRankFills
 } from '../api/client.js';
 import { usePagedList } from '../hooks/usePagedList.js';
 import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
@@ -17,7 +18,7 @@ import { StrategyPeriodReturns } from '../components/StrategyPeriodReturns.jsx';
 
 const ENTRY_WINDOW_LABEL = { MORNING: '오전 진입', LUNCH: '점심 진입' };
 
-export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns }) {
+export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeriodReturnsRefresh }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const ordersList = usePagedList(listKrRankTradeHistory);
@@ -125,6 +126,27 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns }) {
       await refresh(selected.id);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function syncFills() {
+    if (!selected) return;
+    setBusy('sync-fills');
+    setError('');
+    setMessage('');
+    try {
+      const result = await syncKrRankFills(selected.id);
+      await refresh(selected.id);
+      await onPeriodReturnsRefresh?.();
+      setMessage(
+        result?.updatedCount > 0
+          ? `KIS 체결조회로 ${result.updatedCount}건의 실체결가를 반영했습니다.`
+          : '새로 반영할 KIS 실체결가가 없습니다.'
+      );
+    } catch (err) {
+      setError(err.message || 'KIS 체결가 동기화에 실패했습니다.');
     } finally {
       setBusy('');
     }
@@ -378,7 +400,12 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns }) {
               <button type="button" className="ghost" disabled={busy === 'evaluate'}
                 onClick={() => runAction(evaluateKrRankStrategy, 'evaluate')}>지금 평가</button>
             </div>
-            <OrdersTable list={ordersList} onLoadMore={() => ordersList.loadMore(selected.id)} />
+            <OrdersTable
+              list={ordersList}
+              onLoadMore={() => ordersList.loadMore(selected.id)}
+              onSync={syncFills}
+              syncing={busy === 'sync-fills'}
+            />
             <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
           </>
         ) : (
@@ -536,12 +563,19 @@ function DecisionLogTable({ list, onLoadMore }) {
   );
 }
 
-function OrdersTable({ list, onLoadMore }) {
+function OrdersTable({ list, onLoadMore, onSync, syncing }) {
   const orders = list.items;
   return (
     <section className="subsection">
-      <h4>주문 이력</h4>
-      <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 아직 보유 중이면 매도 정보는 진행 중으로 표시됩니다.</p>
+      <div className="subsection-heading-row">
+        <div>
+          <h4>주문 이력</h4>
+          <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 아직 보유 중이면 매도 정보는 진행 중으로 표시됩니다.</p>
+        </div>
+        <button type="button" className="ghost sm" disabled={syncing} onClick={onSync}>
+          {syncing ? '확인 중…' : 'KIS 체결가 새로 확인'}
+        </button>
+      </div>
       <div className="table-wrap">
         <table className="decision-log-table">
           <thead>

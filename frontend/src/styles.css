@@ -2095,6 +2095,22 @@ td.neutral {
   margin: 0 0 10px;
 }
 
+.subsection-heading-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.subsection-heading-row h4 {
+  margin-bottom: 6px;
+}
+
+.subsection-heading-row .helper {
+  margin: 0;
+}
+
 .load-more-footer {
   align-items: center;
   display: flex;

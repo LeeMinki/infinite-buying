@@ -109,7 +109,7 @@ function createAcceptedSellOrder(strategyId, { tradeId, symbol, exchange = 'NAS'
   });
 }
 
-test('syncOrderFills (US): 미체결 실주문만 후보로 잡고 DRY_RUN/FILLED/kis_order_no 미설정은 제외한다', () => {
+test('syncOrderFills (US): 미체결 실주문과 실체결가가 비어 있는 FILLED 주문은 후보로 잡힌다', () => {
   const strategy = createStrategy();
   const trade = createTrade(strategy.id, { symbol: 'CAND1' });
   const accepted = createAcceptedBuyOrder(strategy.id, { tradeId: trade.id, symbol: 'CAND1', kisOrderNo: 'A1' });
@@ -119,11 +119,22 @@ test('syncOrderFills (US): 미체결 실주문만 후보로 잡고 DRY_RUN/FILLE
     quantity: 1, orderPrice: 100, estimatedAmount: 100, exchange: 'NAS',
     status: 'DRY_RUN', idempotencyKey: 'US-DRY-1', decisionReason: 't', liveOrderEnabled: false
   });
-  // FILLED은 후보가 아니다.
-  repo.createOrder(user.id, {
+  // 이미 FILLED로 끝났더라도 실체결가가 비어 있으면 과거 이력 보정을 위해 후보다.
+  const filledMissingPrice = repo.createOrder(user.id, {
     strategyId: strategy.id, tradeId: trade.id, symbol: 'CAND3', side: 'BUY',
     quantity: 1, orderPrice: 100, estimatedAmount: 100, exchange: 'NAS', kisOrderNo: 'F1',
     status: 'FILLED', idempotencyKey: 'US-FIL-1', decisionReason: 't', liveOrderEnabled: true
+  });
+  const alreadySynced = repo.createOrder(user.id, {
+    strategyId: strategy.id, tradeId: trade.id, symbol: 'CAND5', side: 'BUY',
+    quantity: 1, orderPrice: 100, estimatedAmount: 100, exchange: 'NAS', kisOrderNo: 'F2',
+    status: 'FILLED', idempotencyKey: 'US-FIL-2', decisionReason: 't', liveOrderEnabled: true
+  });
+  repo.updateOrder(user.id, alreadySynced.id, {
+    status: 'FILLED',
+    filledQuantity: 1,
+    remainingQuantity: 0,
+    averageFilledPrice: 100.2
   });
   // kis_order_no가 없으면 매칭 불가라 후보가 아니다.
   repo.createOrder(user.id, {
@@ -132,8 +143,8 @@ test('syncOrderFills (US): 미체결 실주문만 후보로 잡고 DRY_RUN/FILLE
     status: 'ACCEPTED', idempotencyKey: 'US-NOKIS-1', decisionReason: 't', liveOrderEnabled: true
   });
   const candidates = repo.listFillSyncCandidates(user.id, { strategyId: strategy.id });
-  assert.equal(candidates.length, 1);
-  assert.equal(candidates[0].id, accepted.id);
+  assert.equal(candidates.length, 2);
+  assert.deepEqual(candidates.map((candidate) => candidate.id).sort((a, b) => a - b), [accepted.id, filledMissingPrice.id].sort((a, b) => a - b));
 });
 
 test('syncOrderFills (US): 매수 주문 실체결가·체결수량을 KIS inquire-ccnl 응답으로 DB에 반영한다', async () => {
@@ -228,10 +239,9 @@ test('listRoundTripOrders (US): 실주문 매수 체결가가 채워지면 trade
   assert.ok(Math.abs(Number(row.buyPrice) - 50.25) < 1e-9);
 });
 
-test('listRoundTripOrders (US): 실주문 매수가 미체결이고 trade에 entry_price도 없으면 buy_price는 NULL', () => {
+test('listRoundTripOrders (US): 실주문 매수가 미체결이면 trade.entry_price가 있어도 buy_price는 NULL', () => {
   const strategy = createStrategy();
-  // entry_price 미설정(아직 잔고 확인 전)인 BOUGHT trade — 실제로는 흔치 않지만 안전망 확인.
-  const trade = createTrade(strategy.id, { symbol: 'EMPTY', tradeSeq: 21 });
+  const trade = createTrade(strategy.id, { symbol: 'EMPTY', tradeSeq: 21, entryPrice: 31.5 });
   createAcceptedBuyOrder(strategy.id, { tradeId: trade.id, symbol: 'EMPTY', kisOrderNo: 'EMP1', quantity: 10, orderPrice: 30 });
   const list = repo.listRoundTripOrders(user.id, { strategyId: strategy.id });
   const row = list.find((r) => r.symbol === 'EMPTY');

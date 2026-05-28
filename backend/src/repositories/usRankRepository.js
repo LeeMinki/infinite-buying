@@ -376,9 +376,9 @@ export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 }
   `).all(...params).map(toOrder);
 }
 
-// 실주문 중 KIS 체결조회로 average_filled_price를 채워야 하는 후보(접수/부분체결/UNKNOWN).
-// kis_order_no가 비어 있으면 매칭할 수 없으므로 제외하고, DRY_RUN·FILLED·CANCELED 등은 자체적으로
-// 동기화 대상이 아니라 후보에서 빠진다. 평소(거래 없는 시간)에는 후보가 0건이라 KIS 호출이 발생하지 않는다.
+// 실주문 중 KIS 체결조회로 average_filled_price를 채워야 하는 후보.
+// kis_order_no가 비어 있으면 매칭할 수 없으므로 제외한다. 이미 FILLED로 끝난 과거 주문도
+// 실체결가/체결수량이 비어 있으면 한 번 더 조회해 화면 가격을 KIS 앱과 맞춘다.
 export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 } = {}) {
   const params = [userId];
   let where = `
@@ -386,7 +386,18 @@ export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 }
     AND live_order_enabled = 1
     AND kis_order_no IS NOT NULL
     AND kis_order_no <> ''
-    AND status IN ('ACCEPTED', 'REQUESTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+    AND (
+      status IN ('ACCEPTED', 'REQUESTED', 'PARTIALLY_FILLED', 'UNKNOWN')
+      OR (
+        status = 'FILLED'
+        AND (
+          average_filled_price IS NULL
+          OR average_filled_price <= 0
+          OR filled_quantity IS NULL
+          OR filled_quantity <= 0
+        )
+      )
+    )
   `;
   if (strategyId) {
     where += ' AND strategy_id = ?';
@@ -404,61 +415,71 @@ export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 }
 export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0 } = {}) {
   // 매수가·매도가는 "KIS가 알려준 실제 체결가"만 신뢰한다. order_price(주문 기준가)는 미국장 지정가
   // 슬리피지 때문에 실제 체결가와 다르고, t.entry_price/exit_price는 종목 전체 평단(다른 외부 매수 영향)이
-  // 섞일 수 있다 — 두 폴백 모두 KIS 앱 손익률과 어긋날 위험이 있다.
+  // 섞일 수 있다. 실주문 주문 행이 있는데 실체결가가 아직 없으면 추정가를 보여주지 않는다.
   // 단, DRY_RUN(실주문 OFF 시뮬레이션)은 실제 체결이 없어 order_price를 가짜 체결가로 쓴다.
   return getDb().prepare(`
+    WITH rows AS (
+      SELECT
+        t.id AS trade_id,
+        t.strategy_id,
+        t.trade_date,
+        t.trade_seq,
+        t.symbol,
+        t.symbol_name,
+        t.exchange,
+        'US' AS market,
+        'USD' AS currency,
+        CASE
+          WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
+          WHEN b.status = 'DRY_RUN' THEN b.order_price
+          WHEN b.id IS NULL THEN t.entry_price
+          ELSE NULL
+        END AS buy_price,
+        COALESCE(b.created_at, t.opened_at) AS buy_time,
+        COALESCE(b.filled_quantity, t.entry_quantity, b.quantity) AS buy_quantity,
+        b.status AS buy_status,
+        CASE
+          WHEN s.average_filled_price IS NOT NULL AND s.average_filled_price > 0 THEN s.average_filled_price
+          WHEN s.status = 'DRY_RUN' THEN s.order_price
+          WHEN s.id IS NULL THEN t.exit_price
+          ELSE NULL
+        END AS sell_price,
+        COALESCE(s.created_at, t.closed_at) AS sell_time,
+        COALESCE(s.filled_quantity, s.quantity) AS sell_quantity,
+        s.status AS sell_status,
+        COALESCE(t.exit_reason, s.sell_reason) AS sell_reason
+      FROM us_rank_trades t
+      LEFT JOIN us_rank_orders b
+        ON b.trade_id = t.id
+       AND b.side = 'BUY'
+       AND b.id = (
+         SELECT b2.id
+         FROM us_rank_orders b2
+         WHERE b2.trade_id = t.id AND b2.side = 'BUY'
+         ORDER BY b2.created_at ASC, b2.id ASC
+         LIMIT 1
+       )
+      LEFT JOIN us_rank_orders s
+        ON s.trade_id = t.id
+       AND s.side = 'SELL'
+       AND s.id = (
+         SELECT s2.id
+         FROM us_rank_orders s2
+         WHERE s2.trade_id = t.id AND s2.side = 'SELL'
+         ORDER BY s2.created_at DESC, s2.id DESC
+         LIMIT 1
+       )
+      WHERE t.user_id = ? AND t.strategy_id = ?
+        AND t.status IN ('BOUGHT', 'CLOSED')
+    )
     SELECT
-      t.id AS trade_id,
-      t.strategy_id,
-      t.trade_date,
-      t.trade_seq,
-      t.symbol,
-      t.symbol_name,
-      t.exchange,
-      'US' AS market,
-      'USD' AS currency,
+      rows.*,
       CASE
-        WHEN b.average_filled_price IS NOT NULL AND b.average_filled_price > 0 THEN b.average_filled_price
-        WHEN b.status = 'DRY_RUN' THEN b.order_price
-        ELSE t.entry_price
-      END AS buy_price,
-      COALESCE(b.created_at, t.opened_at) AS buy_time,
-      COALESCE(t.entry_quantity, b.filled_quantity, b.quantity) AS buy_quantity,
-      b.status AS buy_status,
-      CASE
-        WHEN s.average_filled_price IS NOT NULL AND s.average_filled_price > 0 THEN s.average_filled_price
-        WHEN s.status = 'DRY_RUN' THEN s.order_price
-        ELSE t.exit_price
-      END AS sell_price,
-      COALESCE(s.created_at, t.closed_at) AS sell_time,
-      COALESCE(s.filled_quantity, s.quantity) AS sell_quantity,
-      s.status AS sell_status,
-      COALESCE(t.exit_reason, s.sell_reason) AS sell_reason,
-      t.profit_rate
-    FROM us_rank_trades t
-    LEFT JOIN us_rank_orders b
-      ON b.trade_id = t.id
-     AND b.side = 'BUY'
-     AND b.id = (
-       SELECT b2.id
-       FROM us_rank_orders b2
-       WHERE b2.trade_id = t.id AND b2.side = 'BUY'
-       ORDER BY b2.created_at ASC, b2.id ASC
-       LIMIT 1
-     )
-    LEFT JOIN us_rank_orders s
-      ON s.trade_id = t.id
-     AND s.side = 'SELL'
-     AND s.id = (
-       SELECT s2.id
-       FROM us_rank_orders s2
-       WHERE s2.trade_id = t.id AND s2.side = 'SELL'
-       ORDER BY s2.created_at DESC, s2.id DESC
-       LIMIT 1
-     )
-    WHERE t.user_id = ? AND t.strategy_id = ?
-      AND t.status IN ('BOUGHT', 'CLOSED')
-    ORDER BY t.trade_date DESC, t.trade_seq DESC, t.id DESC
+        WHEN buy_price IS NULL OR sell_price IS NULL OR buy_price <= 0 THEN NULL
+        ELSE (sell_price - buy_price) / buy_price
+      END AS profit_rate
+    FROM rows
+    ORDER BY trade_date DESC, trade_seq DESC, trade_id DESC
     LIMIT ? OFFSET ?
   `).all(userId, strategyId, limit, offset).map(toRoundTripOrder);
 }

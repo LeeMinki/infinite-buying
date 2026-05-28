@@ -99,7 +99,9 @@ export const updateAutoTradingLiveOrder = (liveOrderEnabled) => request('/api/au
   method: 'PUT',
   body: JSON.stringify({ liveOrderEnabled })
 });
-export const getAutoTradingDashboard = () => request('/api/auto-trading/dashboard');
+export const getAutoTradingDashboard = ({ refreshPeriodReturns = false } = {}) => (
+  request(`/api/auto-trading/dashboard${refreshPeriodReturns ? '?refreshPeriodReturns=true' : ''}`)
+);
 export const getAutoTradingAccountSummary = (strategyId) => request(`/api/auto-trading/account-summary?strategyId=${encodeURIComponent(strategyId)}`);
 export const getAutoTradingBuyingPowerPreview = ({ market, symbol, exchange } = {}) => {
   const params = new URLSearchParams();
@@ -140,6 +142,7 @@ export const deleteKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${i
 export const startKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/start`, { method: 'POST' });
 export const stopKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/stop`, { method: 'POST' });
 export const evaluateKrRankStrategy = (id) => request(`/api/kr-rank/strategies/${id}/evaluate`, { method: 'POST' });
+export const syncKrRankFills = (id) => request(`/api/kr-rank/strategies/${id}/sync-fills`, { method: 'POST' });
 export const listKrRankOrders = (id, paging) => request(`/api/kr-rank/strategies/${id}/orders${pageQuery(paging)}`);
 export const listKrRankTradeHistory = (id, paging) => request(`/api/kr-rank/strategies/${id}/trade-history${pageQuery(paging)}`);
 export const listKrRankDecisions = (id, paging) => request(`/api/kr-rank/strategies/${id}/decisions${pageQuery(paging)}`);
@@ -157,6 +160,7 @@ export const deleteUsRankStrategy = (id) => request(`/api/us-rank/strategies/${i
 export const startUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/start`, { method: 'POST' });
 export const stopUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/stop`, { method: 'POST' });
 export const evaluateUsRankStrategy = (id) => request(`/api/us-rank/strategies/${id}/evaluate`, { method: 'POST' });
+export const syncUsRankFills = (id) => request(`/api/us-rank/strategies/${id}/sync-fills`, { method: 'POST' });
 export const listUsRankTrades = (id, paging) => request(`/api/us-rank/strategies/${id}/trades${pageQuery(paging)}`);
 export const listUsRankOrders = (id, paging) => request(`/api/us-rank/strategies/${id}/orders${pageQuery(paging)}`);
 export const listUsRankTradeHistory = (id, paging) => request(`/api/us-rank/strategies/${id}/trade-history${pageQuery(paging)}`);

@@ -534,12 +534,13 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
 // 미체결(접수/부분체결/UNKNOWN) 상태인 실주문의 실제 체결가를 KIS 체결조회로 가져와
 // kr_rank_orders.average_filled_price·filled_quantity·status를 갱신한다.
 //
-// 호출 원칙: 화면 렌더링이 아니라 "주문 이벤트"가 발생했을 때만 호출한다 — 평가 tick(30초),
-// 주문 직후 지연 트리거, 서버 시작 후 1회. 종결 상태(FILLED/CANCELED/REJECTED/FAILED/DRY_RUN)는
-// listFillSyncCandidates가 제외하므로 평소(거래 없음)에는 KIS 호출이 0이다.
+// 호출 원칙: 화면 렌더링이 아니라 "주문 이벤트"나 사용자의 명시적 동기화 요청 때만 호출한다.
+// 평가 tick(30초), 주문 직후 지연 트리거, 수동 동기화에서만 KIS 체결조회를 사용한다.
+// 종결 상태라도 실체결가가 비어 있는 FILLED 주문은 과거 이력 보정 대상이다.
 //
 // 같은 종목의 여러 주문은 KIS 체결조회를 1회만 호출하고 주문번호로 매칭한다(KIS 호출 절감).
 export async function syncOrderFills(userId, { strategyId = null, limit = 20 } = {}) {
+  if (strategyId) requireStrategy(userId, strategyId, { includeDeleted: true });
   const candidates = repo.listFillSyncCandidates(userId, { strategyId, limit });
   if (candidates.length === 0) return [];
   let trading;

@@ -23,7 +23,7 @@ router.put('/settings/live-order', (req, res, next) => {
 
 router.get('/dashboard', async (req, res, next) => {
   try {
-    res.json(await service.getDashboard(req.userId));
+    res.json(await service.getDashboard(req.userId, { refreshPeriodReturns: req.query.refreshPeriodReturns === 'true' }));
   } catch (error) {
     next(error);
   }
