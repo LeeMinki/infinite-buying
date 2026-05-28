@@ -33,6 +33,7 @@ function withMockedFetch(state, run) {
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-ccnl')) {
       state.historyCalls = (state.historyCalls || 0) + 1;
+      state.historyUrls = [...(state.historyUrls || []), text];
       return json({ rt_cd: '0', output: state.history || [] });
     }
     return json({ rt_cd: '0', output: {} });
@@ -198,6 +199,30 @@ test('syncOrderFills (US): 같은 (symbol, exchange) 여러 주문은 inquire-cc
       assert.equal(updated.length, 2);
       assert.equal(state.historyCalls, 1);
     });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('syncOrderFills (US): 과거 주문은 주문 생성일 기준 날짜 범위로 KIS 체결조회를 호출한다', async () => {
+  const strategy = createStrategy();
+  const trade = createTrade(strategy.id, { symbol: 'PAST' });
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const buy = createAcceptedBuyOrder(strategy.id, { tradeId: trade.id, symbol: 'PAST', kisOrderNo: 'USPAST1', quantity: 5, orderPrice: 3.59 });
+  db.prepare("UPDATE us_rank_orders SET created_at = '2026-05-22 14:00:28' WHERE id = ?").run(buy.id);
+  const state = {
+    history: [
+      { odno: 'USPAST1', ovrs_pdno: 'PAST', ord_qty: '5', tot_ccld_qty: '5', nccs_qty: '0', ft_ccld_unpr3: '3.5991', sll_buy_dvsn_cd: '02' }
+    ]
+  };
+  try {
+    await withMockedFetch(state, async () => {
+      const updated = await usRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+      assert.equal(updated.length, 1);
+    });
+    assert.equal(state.historyCalls, 1);
+    assert.match(state.historyUrls[0], /ORD_STRT_DT=20260521/);
+    assert.match(state.historyUrls[0], /ORD_END_DT=20260523/);
   } finally {
     autoTradingRepo.updateLiveOrderSetting(user.id, false);
   }
