@@ -13,6 +13,7 @@ import {
 } from '../api/client.js';
 import { usePagedList } from '../hooks/usePagedList.js';
 import { LoadMoreFooter } from '../components/LoadMoreFooter.jsx';
+import { StrategyPeriodReturns } from '../components/StrategyPeriodReturns.jsx';
 
 const EXCHANGE_LABELS = {
   ALL: '전체',
@@ -21,7 +22,7 @@ const EXCHANGE_LABELS = {
   AMS: 'AMEX'
 };
 
-export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
+export function UsRankAutoTradingPanel({ liveOrderEnabled, periodReturns }) {
   const [strategies, setStrategies] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const tradesList = usePagedList(listUsRankTrades);
@@ -176,6 +177,8 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled }) {
           />
         </div>
       </section>
+
+      <StrategyPeriodReturns periods={periodReturns} strategyType="us-rank" />
 
       <section className="panel section">
         <div className="panel-heading">
