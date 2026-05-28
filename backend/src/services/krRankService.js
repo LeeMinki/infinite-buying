@@ -557,15 +557,20 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
   const updated = [];
   for (const order of candidates) {
     try {
-      let history = historyCache.get(order.symbol);
+      const dateWindow = orderHistoryDateWindow(order);
+      const cacheKey = `${order.symbol}::${dateWindow.startDate}::${dateWindow.endDate}`;
+      let history = historyCache.get(cacheKey);
       if (history == null) {
         try {
-          history = await trading.getOrderHistory(order.symbol, { market: 'KR' });
+          history = await trading.getOrderHistory(order.symbol, {
+            market: 'KR',
+            ...dateWindow
+          });
         } catch {
           history = [];
         }
         if (!Array.isArray(history)) history = [];
-        historyCache.set(order.symbol, history);
+        historyCache.set(cacheKey, history);
       }
       const matched = history.find((row) => (
         (order.kisOrderNo && row.orderNo === order.kisOrderNo)
@@ -605,6 +610,37 @@ function scheduleFillSyncAfterPlacement(userId, strategyId) {
   setTimeout(() => {
     syncOrderFills(userId, { strategyId }).catch(() => {});
   }, 3000).unref?.();
+}
+
+function orderHistoryDateWindow(order) {
+  const raw = String(order?.createdAt || '').trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const base = normalized ? new Date(normalized) : new Date();
+  const date = Number.isNaN(base.getTime()) ? new Date() : base;
+  return {
+    startDate: compactDateInKst(addDays(date, -1)),
+    endDate: compactDateInKst(addDays(date, 1))
+  };
+}
+
+function addDays(date, days) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function compactDateInKst(date) {
+  const parts = {};
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+  }
+  return `${parts.year}${parts.month}${parts.day}`;
 }
 
 // ── 주문 실행 ─────────────────────────────────────────────────────────────

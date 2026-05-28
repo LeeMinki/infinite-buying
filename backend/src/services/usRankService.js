@@ -1085,12 +1085,17 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
   const historyCache = new Map();
   const updated = [];
   for (const order of candidates) {
-    const cacheKey = `${order.symbol}::${order.exchange || ''}`;
+    const dateWindow = orderHistoryDateWindow(order);
+    const cacheKey = `${order.symbol}::${order.exchange || ''}::${dateWindow.startDate}::${dateWindow.endDate}`;
     try {
       let history = historyCache.get(cacheKey);
       if (history == null) {
         try {
-          history = await trading.getOrderHistory(order.symbol, { market: 'US', exchange: order.exchange });
+          history = await trading.getOrderHistory(order.symbol, {
+            market: 'US',
+            exchange: order.exchange,
+            ...dateWindow
+          });
         } catch {
           history = [];
         }
@@ -1135,6 +1140,37 @@ function scheduleFillSyncAfterPlacement(userId, strategyId) {
   setTimeout(() => {
     syncOrderFills(userId, { strategyId }).catch(() => {});
   }, 3000).unref?.();
+}
+
+function orderHistoryDateWindow(order) {
+  const raw = String(order?.createdAt || '').trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const base = normalized ? new Date(normalized) : new Date();
+  const date = Number.isNaN(base.getTime()) ? new Date() : base;
+  return {
+    startDate: compactDateInKst(addDays(date, -1)),
+    endDate: compactDateInKst(addDays(date, 1))
+  };
+}
+
+function addDays(date, days) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function compactDateInKst(date) {
+  const parts = {};
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+  }
+  return `${parts.year}${parts.month}${parts.day}`;
 }
 
 function checkOrderSafety({

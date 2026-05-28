@@ -39,7 +39,7 @@ export class KisTradingService {
   async getOrderHistory(symbol, options = {}) {
     const context = await this.requireAccountContext();
     const market = normalizeMarket(options.market, symbol);
-    if (market === 'KR') return this.getDomesticOrderHistory(context, symbol);
+    if (market === 'KR') return this.getDomesticOrderHistory(context, symbol, options);
     return this.getOverseasOrderHistory(context, symbol, options);
   }
 
@@ -112,7 +112,8 @@ export class KisTradingService {
   async refreshOrder(order) {
     const rows = await this.getOrderHistory(order.symbol, {
       market: order.market,
-      exchange: order.exchange
+      exchange: order.exchange,
+      ...orderHistoryDateWindow(order)
     });
     const found = rows.find((row) => (
       (order.kisOrderNo && row.orderNo === order.kisOrderNo)
@@ -305,9 +306,11 @@ export class KisTradingService {
       .map((row) => normalizeOrderRow(row, 'US', 'USD'));
   }
 
-  async getDomesticOrderHistory(context, symbol) {
-    // KIS 주식일별주문체결조회(TTTC0081R). 3개월 이내 체결내역만 본다(오늘 체결 동기화 용도).
+  async getDomesticOrderHistory(context, symbol, options = {}) {
+    // KIS 주식일별주문체결조회(TTTC0081R). 주문일 범위를 지정해 과거 체결도 보정한다.
     // EXCG_ID_DVSN_CD는 신규 필수 파라미터로, 거래소 통합 조회 시 'KRX'를 사용한다(모의투자는 KRX만 제공).
+    const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
+    const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
     const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-daily-ccld', {
       method: 'GET',
       trId: 'TTTC0081R',
@@ -315,8 +318,8 @@ export class KisTradingService {
       query: {
         CANO: context.accountNumber,
         ACNT_PRDT_CD: context.accountProductCode,
-        INQR_STRT_DT: todayCompact(),
-        INQR_END_DT: todayCompact(),
+        INQR_STRT_DT: startDate,
+        INQR_END_DT: endDate,
         SLL_BUY_DVSN_CD: '00',
         INQR_DVSN: '00',
         PDNO: symbol,
@@ -334,6 +337,8 @@ export class KisTradingService {
   }
 
   async getOverseasOrderHistory(context, symbol, options = {}) {
+    const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
+    const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
     const data = await this.requestJson('/uapi/overseas-stock/v1/trading/inquire-ccnl', {
       method: 'GET',
       trId: 'TTTS3035R',
@@ -342,8 +347,8 @@ export class KisTradingService {
         CANO: context.accountNumber,
         ACNT_PRDT_CD: context.accountProductCode,
         PDNO: symbol,
-        ORD_STRT_DT: todayCompact(),
-        ORD_END_DT: todayCompact(),
+        ORD_STRT_DT: startDate,
+        ORD_END_DT: endDate,
         SLL_BUY_DVSN: '00',
         CCLD_NCCS_DVSN: '00',
         OVRS_EXCG_CD: normalizeExchange(options.exchange),
@@ -669,4 +674,40 @@ function normalizeRate(value) {
 
 function todayCompact() {
   return new Date().toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+function normalizeCompactDate(value) {
+  const text = String(value || '').trim().replaceAll('-', '');
+  return /^\d{8}$/.test(text) ? text : null;
+}
+
+function orderHistoryDateWindow(order) {
+  const raw = String(order?.createdAt || order?.created_at || '').trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const base = normalized ? new Date(normalized) : new Date();
+  const date = Number.isNaN(base.getTime()) ? new Date() : base;
+  return {
+    startDate: compactDateInTimeZone(addDays(date, -1), 'Asia/Seoul'),
+    endDate: compactDateInTimeZone(addDays(date, 1), 'Asia/Seoul')
+  };
+}
+
+function addDays(date, days) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function compactDateInTimeZone(date, timeZone) {
+  const parts = {};
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+  }
+  return `${parts.year}${parts.month}${parts.day}`;
 }

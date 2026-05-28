@@ -33,6 +33,7 @@ function withMockedFetch(state, run) {
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-daily-ccld')) {
       state.historyCalls = (state.historyCalls || 0) + 1;
+      state.historyUrls = [...(state.historyUrls || []), text];
       return json({ rt_cd: '0', output1: state.history || [] });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl')) {
@@ -185,6 +186,29 @@ test('syncOrderFills: 같은 종목의 여러 주문은 KIS 체결조회를 1회
       // 같은 종목 2건이라 KIS 체결조회는 1회만 호출되어야 한다.
       assert.equal(state.historyCalls, 1);
     });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('syncOrderFills: 과거 주문은 주문 생성일 기준 날짜 범위로 KIS 체결조회를 호출한다', async () => {
+  const strategy = createStrategyForUser();
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const buy = createAcceptedBuyOrder(strategy.id, { kisOrderNo: 'PAST-1', symbol: '043594', quantity: 4, orderPrice: 27300 });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-05-28 00:13:23' WHERE id = ?").run(buy.id);
+  const state = {
+    history: [
+      { odno: 'PAST-1', pdno: '043594', ord_qty: '4', tot_ccld_qty: '4', rmn_qty: '0', avg_prvs: '27300', sll_buy_dvsn_cd: '02' }
+    ]
+  };
+  try {
+    await withMockedFetch(state, async () => {
+      const updated = await krRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+      assert.equal(updated.length, 1);
+    });
+    assert.equal(state.historyCalls, 1);
+    assert.match(state.historyUrls[0], /INQR_STRT_DT=20260527/);
+    assert.match(state.historyUrls[0], /INQR_END_DT=20260529/);
   } finally {
     autoTradingRepo.updateLiveOrderSetting(user.id, false);
   }
