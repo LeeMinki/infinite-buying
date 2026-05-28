@@ -21,9 +21,9 @@ router.put('/settings/live-order', (req, res, next) => {
   }
 });
 
-router.get('/dashboard', (req, res, next) => {
+router.get('/dashboard', async (req, res, next) => {
   try {
-    res.json(service.getDashboard(req.userId));
+    res.json(await service.getDashboard(req.userId));
   } catch (error) {
     next(error);
   }

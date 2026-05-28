@@ -35,7 +35,7 @@ export function StrategiesPage({ activeView = 'dashboard', onOpenDashboard, onOp
         <div className="brand-logo" aria-hidden="true">∞</div>
         <div className="brand-text">
           <h1>무한매수 해죠</h1>
-          <span>백테스트와 자동매매</span>
+          <span>전략 운용 대시보드</span>
         </div>
       </div>
 

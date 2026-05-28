@@ -4,6 +4,9 @@ import { validateOrderSafety } from './autoTradingSafetyGuard.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
 import { resolveBigBuyPremiumRate } from './buyAlgorithm.js';
+import * as kisCredentialService from './kisCredentialService.js';
+import * as krRankService from './krRankService.js';
+import * as usRankService from './usRankService.js';
 
 const LOCK_KEY = 'evaluate';
 // 같은 (거래일·전략·슬롯) 주문이 실패로 누적되면 더 시도하지 않는 한도.
@@ -424,16 +427,283 @@ export function listPositionSnapshots(userId, strategyId) {
   return repo.listPositionSnapshots(userId, strategyId);
 }
 
-export function getDashboard(userId) {
+export async function getDashboard(userId) {
   const settings = repo.getSettings(userId);
+  const kis = kisCredentialService.getSettings(userId);
+  const laorStrategies = repo.listStrategies(userId);
+  const krOverview = krRankService.getOverview(userId);
+  const usOverview = usRankService.getOverview(userId);
+  const laorRecentDecisions = repo.recentDecisionLogs(userId, 20);
+  const laorRecentOrders = repo.listOrders(userId, { limit: 20 });
+  const laorRecentPositions = repo.latestPositionSnapshots(userId, 20);
+  const krRecent = collectRankRecent(userId, krOverview.strategies, krRankService);
+  const usRecent = collectRankRecent(userId, usOverview.strategies, usRankService);
+  const strategyGroups = [
+    buildStrategyGroup('laor', '라오어 무한매수법', laorStrategies, laorRecentDecisions[0], laorRecentOrders[0]),
+    buildStrategyGroup('kr-rank', '한국 국장 상승률 랭킹', krOverview.strategies, krRecent.decision, krRecent.order),
+    buildStrategyGroup('us-rank', '미국장 상승률 랭킹', usOverview.strategies, usRecent.decision, usRecent.order)
+  ];
+  const account = await buildDashboardAccount(userId, kis, laorRecentPositions);
+  const recentErrors = strategyGroups
+    .map((group) => group.recentIssue ? ({ strategyType: group.key, label: group.label, ...group.recentIssue }) : null)
+    .filter(Boolean);
+
   return {
+    kis,
     settings,
-    stats: repo.dashboardStats(userId),
-    strategies: repo.listStrategies(userId).slice(0, 20),
-    recentDecisions: repo.recentDecisionLogs(userId, 20),
-    recentOrders: repo.listOrders(userId, { limit: 20 }),
-    recentPositions: repo.latestPositionSnapshots(userId, 10)
+    stats: {
+      ...repo.dashboardStats(userId),
+      runningStrategyCount: strategyGroups.reduce((sum, group) => sum + group.runningCount, 0),
+      errorStrategyCount: strategyGroups.reduce((sum, group) => sum + group.errorCount, 0)
+    },
+    account,
+    operationStatus: {
+      kisConnected: Boolean(kis.configured),
+      accountConfigured: Boolean(kis.accountConfigured),
+      liveOrderEnabled: settings.liveOrderEnabled,
+      accountLookupStatus: account.lookupStatus,
+      marketSessions: getMarketSessionStatus()
+    },
+    strategyGroups,
+    strategies: laorStrategies.slice(0, 20),
+    krRank: { liveOrderEnabled: krOverview.liveOrderEnabled, strategies: krOverview.strategies },
+    usRank: { liveOrderEnabled: usOverview.liveOrderEnabled, strategies: usOverview.strategies },
+    recentDecisions: laorRecentDecisions,
+    recentOrders: mergeRecentOrders([laorRecentOrders, krRecent.orders, usRecent.orders], 20),
+    recentPositions: laorRecentPositions.slice(0, 10),
+    recentErrors
   };
+}
+
+function collectRankRecent(userId, strategies, service) {
+  const orders = [];
+  const decisions = [];
+  for (const strategy of (strategies || []).slice(0, 8)) {
+    try {
+      orders.push(...(service.listOrders(userId, strategy.id, { limit: 3, offset: 0 }).items || []).map((item) => ({
+        ...item,
+        strategyId: strategy.id,
+        strategyLabel: strategy.symbolName || strategy.holdingSymbolName || strategy.exchange || ''
+      })));
+    } catch (_) {}
+    try {
+      decisions.push(...(service.listDecisionLogs(userId, strategy.id, { limit: 3, offset: 0 }).items || []).map((item) => ({
+        ...item,
+        strategyId: strategy.id
+      })));
+    } catch (_) {}
+  }
+  orders.sort(sortCreatedDesc);
+  decisions.sort(sortCreatedDesc);
+  return { orders: orders.slice(0, 10), decisions: decisions.slice(0, 10), order: orders[0] || null, decision: decisions[0] || null };
+}
+
+function buildStrategyGroup(key, label, strategies, recentDecision, recentOrder) {
+  const sourceItems = strategies || [];
+  const items = sourceItems.slice(0, 10);
+  const runningCount = items.filter((strategy) => strategy.status === 'RUNNING').length;
+  const errorCount = items.filter((strategy) => strategy.status === 'ERROR' || strategy.lastErrorMessage).length;
+  const issueReason = recentDecision?.decision === 'ERROR'
+    ? recentDecision.reason
+    : recentDecision?.decision === 'SKIP'
+      ? recentDecision.reason
+      : items.find((strategy) => strategy.lastErrorMessage)?.lastErrorMessage;
+  return {
+    key,
+    label,
+    totalCount: sourceItems.length,
+    runningCount,
+    errorCount,
+    status: runningCount > 0 ? 'RUNNING' : errorCount > 0 ? 'ERROR' : items.length > 0 ? 'STOPPED' : 'EMPTY',
+    strategies: items.map((strategy) => ({
+      id: strategy.id,
+      symbol: strategy.symbol || strategy.holdingSymbol || null,
+      symbolName: strategy.symbolName || strategy.holdingSymbolName || null,
+      market: strategy.market || (key === 'us-rank' ? 'US' : key === 'kr-rank' ? 'KR' : null),
+      currency: strategy.currency || (key === 'us-rank' ? 'USD' : key === 'kr-rank' ? 'KRW' : null),
+      status: strategy.status,
+      lastDecision: strategy.lastDecision || null,
+      lastErrorMessage: strategy.lastErrorMessage || null,
+      lastEvaluatedAt: strategy.lastEvaluatedAt || null,
+      lastOrderAt: strategy.lastOrderAt || null
+    })),
+    recentDecision: recentDecision ? normalizeRecentDecision(recentDecision) : null,
+    recentOrder: recentOrder ? normalizeRecentOrder(recentOrder) : null,
+    recentIssue: issueReason ? {
+      type: recentDecision?.decision === 'ERROR' ? 'ERROR' : 'SKIP',
+      reason: issueReason,
+      createdAt: recentDecision?.createdAt || null
+    } : null
+  };
+}
+
+async function buildDashboardAccount(userId, kis, latestPositions = []) {
+  const byCurrency = {
+    KRW: emptyCurrencyAccount('KRW'),
+    USD: emptyCurrencyAccount('USD')
+  };
+  const latestByStrategy = new Map();
+  for (const snapshot of latestPositions || []) {
+    if (!latestByStrategy.has(snapshot.strategyId)) latestByStrategy.set(snapshot.strategyId, snapshot);
+  }
+  for (const snapshot of latestByStrategy.values()) {
+    const currency = snapshot.currency || 'KRW';
+    if (!byCurrency[currency]) byCurrency[currency] = emptyCurrencyAccount(currency);
+    byCurrency[currency].totalEvaluationAmount.value += Number(snapshot.evaluationAmount || 0);
+    byCurrency[currency].totalEvaluationAmount.status = 'available';
+  }
+  if (!kis.configured || !kis.accountConfigured) {
+    return {
+      lookupStatus: 'not_configured',
+      lookupMessage: 'KIS API와 계좌 설정이 필요합니다.',
+      byCurrency,
+      periods: buildInsufficientPeriods(),
+      checkedAt: null
+    };
+  }
+  try {
+    await getValidAccessToken(userId);
+    const trading = new KisTradingService(userId);
+    const kr = await safeBuyingPower(trading, '005930', { market: 'KR', price: 0 });
+    const us = await safeBuyingPower(trading, 'TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 });
+    if (kr.ok) {
+      byCurrency.KRW.buyableCash = availableMetric(Number(kr.value.cashAvailable || 0));
+      byCurrency.KRW.lookupStatus = 'ok';
+    } else {
+      byCurrency.KRW.lookupStatus = 'error';
+      byCurrency.KRW.lookupMessage = kr.error;
+    }
+    if (us.ok) {
+      byCurrency.USD.buyableCash = availableMetric(Number(us.value.cashAvailable || 0));
+      byCurrency.USD.cashAvailableAfterFx = availableMetric(Number(us.value.cashAvailableAfterFx || 0));
+      byCurrency.USD.exchangeRate = Number(us.value.exchangeRate || 0) || null;
+      byCurrency.USD.lookupStatus = 'ok';
+    } else {
+      byCurrency.USD.lookupStatus = 'error';
+      byCurrency.USD.lookupMessage = us.error;
+    }
+    return {
+      lookupStatus: Object.values(byCurrency).some((item) => item.lookupStatus === 'ok') ? 'ok' : 'error',
+      lookupMessage: Object.values(byCurrency).some((item) => item.lookupStatus === 'ok')
+        ? '계좌 조회 완료'
+        : '계좌 조회에 실패했습니다.',
+      byCurrency,
+      periods: buildInsufficientPeriods(),
+      checkedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      lookupStatus: 'error',
+      lookupMessage: error.message || 'KIS 계좌 조회에 실패했습니다.',
+      byCurrency,
+      periods: buildInsufficientPeriods(),
+      checkedAt: new Date().toISOString()
+    };
+  }
+}
+
+async function safeBuyingPower(trading, symbol, options) {
+  try {
+    return { ok: true, value: await trading.getBuyingPower(symbol, options) };
+  } catch (error) {
+    return { ok: false, error: error.message || '조회 실패' };
+  }
+}
+
+function emptyCurrencyAccount(currency) {
+  return {
+    currency,
+    lookupStatus: 'insufficient',
+    buyableCash: insufficientMetric('KIS 매수가능금액 조회가 필요합니다.'),
+    cashAvailableAfterFx: insufficientMetric('환전 후 매수가능금액 조회가 필요합니다.'),
+    totalEvaluationAmount: insufficientMetric('전체 계좌 평가금액은 장기 계좌 스냅샷 없이 계산하지 않습니다.'),
+    todayProfitLossAmount: insufficientMetric('당일 시작 평가금액 기준 데이터가 없습니다.'),
+    todayProfitLossRate: insufficientMetric('당일 시작 평가금액 기준 데이터가 없습니다.'),
+    exchangeRate: null,
+    lookupMessage: ''
+  };
+}
+
+function availableMetric(value) {
+  return { status: 'available', value };
+}
+
+function insufficientMetric(reason) {
+  return { status: 'insufficient', value: null, reason };
+}
+
+function buildInsufficientPeriods() {
+  return [
+    { label: '7일', amount: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.'), rate: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.') },
+    { label: '30일', amount: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.'), rate: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.') }
+  ];
+}
+
+function normalizeRecentDecision(decision) {
+  return {
+    id: decision.id,
+    strategyId: decision.strategyId,
+    decision: decision.decision,
+    reason: decision.reason,
+    symbol: decision.symbol || decision.selectedSymbol || null,
+    symbolName: decision.symbolName || decision.selectedSymbolName || null,
+    currentPrice: decision.currentPrice ?? null,
+    cashAvailable: decision.cashAvailable ?? null,
+    createdAt: decision.createdAt
+  };
+}
+
+function normalizeRecentOrder(order) {
+  return {
+    id: order.id,
+    strategyId: order.strategyId,
+    symbol: order.symbol,
+    symbolName: order.symbolName || null,
+    side: order.side,
+    status: order.status,
+    quantity: order.quantity,
+    orderPrice: order.orderPrice,
+    estimatedAmount: order.estimatedAmount,
+    currency: order.currency,
+    createdAt: order.createdAt,
+    errorMessage: order.errorMessage || null
+  };
+}
+
+function mergeRecentOrders(groups, limit) {
+  return groups.flat().filter(Boolean).sort(sortCreatedDesc).slice(0, limit).map(normalizeRecentOrder);
+}
+
+function sortCreatedDesc(a, b) {
+  return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+}
+
+function getMarketSessionStatus() {
+  return {
+    KR: marketStatus('Asia/Seoul', 9 * 60, 15 * 60 + 30),
+    US: marketStatus('America/New_York', 10 * 60, 16 * 60)
+  };
+}
+
+function marketStatus(timeZone, openMinutes, closeMinutes) {
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+    const weekday = parts.weekday;
+    const minutes = Number(parts.hour) * 60 + Number(parts.minute);
+    const weekdayOpen = !['Sat', 'Sun'].includes(weekday);
+    return {
+      status: weekdayOpen && minutes >= openMinutes && minutes < closeMinutes ? 'OPEN' : 'CLOSED',
+      checkedAt: new Date().toISOString()
+    };
+  } catch (_) {
+    return { status: 'UNKNOWN', checkedAt: new Date().toISOString() };
+  }
 }
 
 export async function getAccountSummary(userId, strategyId) {

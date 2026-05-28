@@ -802,6 +802,21 @@ tbody tr:last-child td {
   color: var(--success);
 }
 
+.status-pill.on {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-pill.off {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.status-pill.danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 .decision.buy,
 .side.buy {
   background: #eff6ff;
@@ -2279,6 +2294,161 @@ td.neutral {
   font-size: 13px;
 }
 
+.dashboard-header-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.dashboard-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dashboard-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 18px;
+}
+
+.account-currency-grid,
+.strategy-status-grid,
+.dashboard-two-column {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.currency-account-card,
+.strategy-status-card,
+.period-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.currency-title,
+.strategy-status-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.strategy-status-head h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.strategy-status-head p {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.metric-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 8px;
+}
+
+.metric-grid.compact .metric {
+  padding: 10px 12px;
+}
+
+.metric-grid.compact .metric strong {
+  font-size: 15px;
+}
+
+.period-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-top: 12px;
+}
+
+.period-card {
+  display: grid;
+  gap: 4px;
+}
+
+.period-card span,
+.period-card small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.period-card strong {
+  font-size: 16px;
+}
+
+.status-detail-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.status-detail-list div {
+  display: grid;
+  gap: 3px;
+}
+
+.status-detail-list dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.status-detail-list dd {
+  color: var(--text-soft);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+.compact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.compact-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+}
+
+.compact-row span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.compact-row strong {
+  font-size: 13px;
+}
+
+.compact-row small {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.compact-empty {
+  min-height: 72px;
+}
+
+.dashboard-checklist.warning {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
 .dashboard-status {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -2336,6 +2506,14 @@ td.neutral {
 @media (max-width: 900px) {
   .dashboard-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-header-row {
+    display: grid;
+  }
+
+  .dashboard-secondary-actions {
+    justify-content: flex-start;
   }
 }
 
