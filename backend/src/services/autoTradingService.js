@@ -16,9 +16,17 @@ const PAGE_SIZE_MAX = 200;
 const PERIOD_RETURN_DEFS = [
   { key: '1d', label: '1일', days: 1 },
   { key: '7d', label: '7일', days: 7 },
-  { key: '30d', label: '30일', days: 30 }
+  { key: '30d', label: '30일', days: 30 },
+  { key: '90d', label: '90일', days: 90 },
+  { key: '1y', label: '1년', days: 365 }
 ];
-const EXCLUDED_REALIZED_ORDER_STATUSES = new Set(['FAILED', 'REJECTED', 'CANCELED']);
+// 손익 집계에서 제외할 주문 상태.
+// - 실패/거부/취소: 애초에 거래가 아님.
+// - DRY_RUN: 실주문 OFF(모의) 기록이므로 실거래 손익에 섞으면 안 된다.
+const EXCLUDED_REALIZED_ORDER_STATUSES = new Set(['FAILED', 'REJECTED', 'CANCELED', 'DRY_RUN']);
+// 기간 수익률은 주문 이력(로컬 DB)만으로 계산되므로 랜딩 반복 진입 시 재계산을 줄이도록 짧게 캐시한다.
+const PERIOD_RETURNS_CACHE_TTL_MS = 30 * 1000;
+const periodReturnsCache = new Map();
 
 function normalizePaging({ limit, offset } = {}) {
   const limitNum = Math.min(Math.max(Math.trunc(Number(limit)) || PAGE_SIZE_DEFAULT, 1), PAGE_SIZE_MAX);
@@ -529,11 +537,17 @@ function collectRankRecent(userId, strategies, service) {
 }
 
 function buildDashboardPeriodReturns(userId, { laorStrategies, krStrategies, usStrategies }) {
-  const laorRecords = buildLaorRealizedRecords(repo.listOrders(userId, { limit: 5000 }));
+  const cached = periodReturnsCache.get(userId);
+  if (cached && Date.now() - cached.at < PERIOD_RETURNS_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  // 1년 구간까지 매도의 짝(매수)을 찾으려면 과거 매수 이력 전체가 필요하다.
+  // 날짜로 잘라내면 cost basis 재구성이 깨지므로 limit만 충분히 크게 둔다.
+  const laorRecords = buildLaorRealizedRecords(repo.listOrders(userId, { limit: 50000 }));
   const krRecords = collectRankRealizedRecords(userId, krStrategies, krRankService);
   const usRecords = collectRankRealizedRecords(userId, usStrategies, usRankService);
   const now = Date.now();
-  return PERIOD_RETURN_DEFS.map((def) => {
+  const value = PERIOD_RETURN_DEFS.map((def) => {
     const sinceMs = now - def.days * 24 * 60 * 60 * 1000;
     const strategyTypes = [
       summarizePeriodRecords('laor', '라오어 무한매수법', laorRecords, sinceMs),
@@ -543,9 +557,11 @@ function buildDashboardPeriodReturns(userId, { laorStrategies, krStrategies, usS
     const overall = combinePeriodSummaries(strategyTypes);
     return { key: def.key, label: def.label, strategyTypes, overall };
   });
+  periodReturnsCache.set(userId, { at: Date.now(), value });
+  return value;
 }
 
-function buildLaorRealizedRecords(orders) {
+export function buildLaorRealizedRecords(orders) {
   const positions = new Map();
   const records = [];
   const sorted = (orders || []).slice().sort((a, b) => (
@@ -590,10 +606,15 @@ function collectRankRealizedRecords(userId, strategies, service) {
   const records = [];
   for (const strategy of strategies || []) {
     try {
-      const response = service.listRoundTripOrders(userId, strategy.id, { limit: 200, offset: 0 });
+      const response = service.listRoundTripOrders(userId, strategy.id, { limit: 2000, offset: 0 });
       for (const item of response.items || []) {
         if (!item.sellTime || item.sellPrice == null || item.buyPrice == null) continue;
-        const quantity = Number(item.sellQuantity || item.buyQuantity || 0);
+        // 모의(DRY_RUN)·미거래 상태는 손익에서 제외한다. round-trip 쿼리는 이미
+        // FAILED/REJECTED/CANCELED를 거르지만 DRY_RUN은 포함하므로 여기서 한 번 더 막는다.
+        if (EXCLUDED_REALIZED_ORDER_STATUSES.has(item.buyStatus) || EXCLUDED_REALIZED_ORDER_STATUSES.has(item.sellStatus)) continue;
+        // 한 매도가 여러 매수에 매칭될 때 매도수량을 매수별로 곱하면 중복 집계되므로,
+        // 각 매수 lot의 수량(buyQuantity)을 기준으로 그 lot의 실현 손익을 계산한다.
+        const quantity = Number(item.buyQuantity || item.sellQuantity || 0);
         const buyPrice = Number(item.buyPrice || 0);
         const sellPrice = Number(item.sellPrice || 0);
         const baseAmount = buyPrice * quantity;
@@ -646,7 +667,7 @@ function combinePeriodSummaries(strategyTypes) {
   };
 }
 
-function summarizeByCurrency(records) {
+export function summarizeByCurrency(records) {
   const byCurrency = {};
   for (const record of records || []) {
     const currency = record.currency || 'KRW';
