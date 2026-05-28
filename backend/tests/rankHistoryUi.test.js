@@ -273,6 +273,13 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.doesNotMatch(dashboard, /시작 체크리스트/);
   assert.doesNotMatch(dashboard, /최근 활동/);
   assert.doesNotMatch(dashboard, /최근 백테스트/);
+  // 재설계: 히어로 KPI 스트립과 하단 조용한 바로가기를 쓰고, 상단 메뉴와 중복되는
+  // 헤더 액션 바·status-pill 혼용은 제거한다. metric 라벨은 metric-label 클래스로 통일.
+  assert.match(dashboard, /kpi-strip/);
+  assert.match(dashboard, /dashboard-quicklinks/);
+  assert.match(dashboard, /className="metric-label"/);
+  assert.doesNotMatch(dashboard, /dashboard-secondary-actions/);
+  assert.doesNotMatch(dashboard, /status-pill/);
   assert.match(indexHtml, /favicon\.svg/);
   assert.match(indexHtml, /전략 운용 대시보드/);
 

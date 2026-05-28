@@ -443,10 +443,14 @@ export async function getDashboard(userId) {
     buildStrategyGroup('kr-rank', '한국 국장 상승률 랭킹', krOverview.strategies, krRecent.decision, krRecent.order),
     buildStrategyGroup('us-rank', '미국장 상승률 랭킹', usOverview.strategies, usRecent.decision, usRecent.order)
   ];
-  const account = await buildDashboardAccount(userId, kis, laorRecentPositions);
-  const recentErrors = strategyGroups
-    .map((group) => group.recentIssue ? ({ strategyType: group.key, label: group.label, ...group.recentIssue }) : null)
-    .filter(Boolean);
+  const account = await buildDashboardAccount(userId, kis);
+  // 전략 종류별 1건만 모으던 기존 방식 대신, 이미 조회한 판단 로그에서 ERROR·SKIP을
+  // 모아 최근순으로 보여준다(헤딩이 "목록"을 기대하므로).
+  const recentErrors = buildRecentIssues([
+    { label: '라오어 무한매수법', items: laorRecentDecisions },
+    { label: '한국 국장 상승률 랭킹', items: krRecent.decisions },
+    { label: '미국장 상승률 랭킹', items: usRecent.decisions }
+  ], 8);
 
   return {
     kis,
@@ -537,35 +541,38 @@ function buildStrategyGroup(key, label, strategies, recentDecision, recentOrder)
   };
 }
 
-async function buildDashboardAccount(userId, kis, latestPositions = []) {
-  const byCurrency = {
-    KRW: emptyCurrencyAccount('KRW'),
-    USD: emptyCurrencyAccount('USD')
-  };
-  const latestByStrategy = new Map();
-  for (const snapshot of latestPositions || []) {
-    if (!latestByStrategy.has(snapshot.strategyId)) latestByStrategy.set(snapshot.strategyId, snapshot);
-  }
-  for (const snapshot of latestByStrategy.values()) {
-    const currency = snapshot.currency || 'KRW';
-    if (!byCurrency[currency]) byCurrency[currency] = emptyCurrencyAccount(currency);
-    byCurrency[currency].totalEvaluationAmount.value += Number(snapshot.evaluationAmount || 0);
-    byCurrency[currency].totalEvaluationAmount.status = 'available';
-  }
+// 대시보드는 로그인 직후 첫 화면이라 진입·새로고침마다 KIS 매수가능금액을 조회한다.
+// 짧은 TTL 캐시로 반복 진입 시 KIS 호출(및 rate limit·토큰 부담)을 줄인다.
+const ACCOUNT_CACHE_TTL_MS = 30 * 1000;
+const dashboardAccountCache = new Map();
+
+async function buildDashboardAccount(userId, kis) {
   if (!kis.configured || !kis.accountConfigured) {
     return {
       lookupStatus: 'not_configured',
       lookupMessage: 'KIS API와 계좌 설정이 필요합니다.',
-      byCurrency,
+      byCurrency: { KRW: emptyCurrencyAccount('KRW'), USD: emptyCurrencyAccount('USD') },
       periods: buildInsufficientPeriods(),
       checkedAt: null
     };
   }
+  const cached = dashboardAccountCache.get(userId);
+  if (cached && Date.now() - cached.at < ACCOUNT_CACHE_TTL_MS) {
+    return cached.account;
+  }
+  const byCurrency = {
+    KRW: emptyCurrencyAccount('KRW'),
+    USD: emptyCurrencyAccount('USD')
+  };
+  let account;
   try {
     await getValidAccessToken(userId);
     const trading = new KisTradingService(userId);
-    const kr = await safeBuyingPower(trading, '005930', { market: 'KR', price: 0 });
-    const us = await safeBuyingPower(trading, 'TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 });
+    // KR·US 매수가능금액 조회는 서로 독립이라 병렬로 호출해 랜딩 지연을 줄인다.
+    const [kr, us] = await Promise.all([
+      safeBuyingPower(trading, '005930', { market: 'KR', price: 0 }),
+      safeBuyingPower(trading, 'TQQQ', { market: 'US', currency: 'USD', exchange: 'NAS', price: 0 })
+    ]);
     if (kr.ok) {
       byCurrency.KRW.buyableCash = availableMetric(Number(kr.value.cashAvailable || 0));
       byCurrency.KRW.lookupStatus = 'ok';
@@ -582,17 +589,16 @@ async function buildDashboardAccount(userId, kis, latestPositions = []) {
       byCurrency.USD.lookupStatus = 'error';
       byCurrency.USD.lookupMessage = us.error;
     }
-    return {
-      lookupStatus: Object.values(byCurrency).some((item) => item.lookupStatus === 'ok') ? 'ok' : 'error',
-      lookupMessage: Object.values(byCurrency).some((item) => item.lookupStatus === 'ok')
-        ? '계좌 조회 완료'
-        : '계좌 조회에 실패했습니다.',
+    const anyOk = Object.values(byCurrency).some((item) => item.lookupStatus === 'ok');
+    account = {
+      lookupStatus: anyOk ? 'ok' : 'error',
+      lookupMessage: anyOk ? '계좌 조회 완료' : '계좌 조회에 실패했습니다.',
       byCurrency,
       periods: buildInsufficientPeriods(),
       checkedAt: new Date().toISOString()
     };
   } catch (error) {
-    return {
+    account = {
       lookupStatus: 'error',
       lookupMessage: error.message || 'KIS 계좌 조회에 실패했습니다.',
       byCurrency,
@@ -600,6 +606,8 @@ async function buildDashboardAccount(userId, kis, latestPositions = []) {
       checkedAt: new Date().toISOString()
     };
   }
+  dashboardAccountCache.set(userId, { at: Date.now(), account });
+  return account;
 }
 
 async function safeBuyingPower(trading, symbol, options) {
@@ -616,9 +624,9 @@ function emptyCurrencyAccount(currency) {
     lookupStatus: 'insufficient',
     buyableCash: insufficientMetric('KIS 매수가능금액 조회가 필요합니다.'),
     cashAvailableAfterFx: insufficientMetric('환전 후 매수가능금액 조회가 필요합니다.'),
-    totalEvaluationAmount: insufficientMetric('전체 계좌 평가금액은 장기 계좌 스냅샷 없이 계산하지 않습니다.'),
-    todayProfitLossAmount: insufficientMetric('당일 시작 평가금액 기준 데이터가 없습니다.'),
-    todayProfitLossRate: insufficientMetric('당일 시작 평가금액 기준 데이터가 없습니다.'),
+    totalEvaluationAmount: insufficientMetric('보유 평가금액은 전략별 화면에서 확인할 수 있습니다.'),
+    todayProfitLossAmount: insufficientMetric('당일 손익은 계좌 스냅샷 적재 후 표시됩니다.'),
+    todayProfitLossRate: insufficientMetric('당일 손익은 계좌 스냅샷 적재 후 표시됩니다.'),
     exchangeRate: null,
     lookupMessage: ''
   };
@@ -633,10 +641,30 @@ function insufficientMetric(reason) {
 }
 
 function buildInsufficientPeriods() {
+  const reason = '기간 손익은 계좌 스냅샷 적재 후 제공됩니다.';
   return [
-    { label: '7일', amount: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.'), rate: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.') },
-    { label: '30일', amount: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.'), rate: insufficientMetric('기간별 계좌 스냅샷이 없어 계산하지 않습니다.') }
+    { label: '7일', amount: insufficientMetric(reason), rate: insufficientMetric(reason) },
+    { label: '30일', amount: insufficientMetric(reason), rate: insufficientMetric(reason) }
   ];
+}
+
+// 라오어·한국·미국 판단 로그를 합쳐 ERROR·SKIP만 최근순으로 모은다.
+function buildRecentIssues(groups, limit) {
+  const issues = [];
+  for (const { label, items } of groups) {
+    for (const log of (items || [])) {
+      if (log.decision !== 'ERROR' && log.decision !== 'SKIP') continue;
+      issues.push({
+        strategyType: label,
+        label,
+        type: log.decision === 'ERROR' ? 'ERROR' : 'SKIP',
+        reason: log.reason || '',
+        createdAt: log.createdAt || null,
+        id: log.id ?? null
+      });
+    }
+  }
+  return issues.sort(sortCreatedDesc).slice(0, limit);
 }
 
 function normalizeRecentDecision(decision) {
@@ -681,7 +709,8 @@ function sortCreatedDesc(a, b) {
 function getMarketSessionStatus() {
   return {
     KR: marketStatus('Asia/Seoul', 9 * 60, 15 * 60 + 30),
-    US: marketStatus('America/New_York', 10 * 60, 16 * 60)
+    // 미국 정규장은 09:30~16:00 ET.
+    US: marketStatus('America/New_York', 9 * 60 + 30, 16 * 60)
   };
 }
 

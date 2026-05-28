@@ -343,61 +343,6 @@ tbody tr:last-child td {
   padding: 7px 9px;
 }
 
-.home-actions {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-.home-action-card {
-  appearance: none;
-  background: #ffffff;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  cursor: pointer;
-  display: grid;
-  gap: 5px;
-  padding: 14px;
-  text-align: left;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
-}
-
-.home-action-card:hover {
-  border-color: var(--primary);
-  box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
-}
-
-.home-action-card span {
-  color: var(--primary);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-
-.home-action-card strong {
-  font-size: 14px;
-  line-height: 1.35;
-}
-
-.home-action-card small {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.home-action-card.primary-card {
-  background: #111827;
-  border-color: #111827;
-  color: #ffffff;
-}
-
-.home-action-card.primary-card span,
-.home-action-card.primary-card small {
-  color: #cbd5e1;
-}
-
 /* Onboarding card */
 .onboard {
   background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #818cf8 100%);
@@ -802,19 +747,30 @@ tbody tr:last-child td {
   color: var(--success);
 }
 
-.status-pill.on {
+/* 대시보드 공통 상태 뱃지 톤 (토큰 기반, 한 가지 어휘로 통일) */
+.badge-ok {
   background: var(--success-soft);
   color: var(--success);
 }
 
-.status-pill.off {
-  background: #f1f5f9;
-  color: #64748b;
+.badge-warn {
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
-.status-pill.danger {
-  background: #fee2e2;
-  color: #b91c1c;
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.badge-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.badge-muted {
+  background: var(--bg-soft);
+  color: var(--text-soft);
 }
 
 .decision.buy,
@@ -2294,20 +2250,6 @@ td.neutral {
   font-size: 13px;
 }
 
-.dashboard-header-row {
-  align-items: flex-start;
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-}
-
-.dashboard-secondary-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
 .dashboard-panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -2325,8 +2267,7 @@ td.neutral {
 }
 
 .currency-account-card,
-.strategy-status-card,
-.period-card {
+.strategy-status-card {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2363,28 +2304,6 @@ td.neutral {
 }
 
 .metric-grid.compact .metric strong {
-  font-size: 15px;
-}
-
-.period-grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  margin-top: 12px;
-}
-
-.period-card {
-  display: grid;
-  gap: 4px;
-}
-
-.period-card span,
-.period-card small {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.period-card strong {
   font-size: 16px;
 }
 
@@ -2420,18 +2339,27 @@ td.neutral {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   display: grid;
-  gap: 3px;
+  gap: 4px;
   padding: 10px 12px;
 }
 
-.compact-row span {
-  color: var(--text-muted);
-  font-size: 11px;
+.compact-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compact-symbol {
+  color: var(--text);
+  font-size: 13px;
   font-weight: 700;
 }
 
-.compact-row strong {
-  font-size: 13px;
+.compact-status {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin-left: auto;
 }
 
 .compact-row small {
@@ -2445,10 +2373,11 @@ td.neutral {
 }
 
 .dashboard-checklist.warning {
-  background: #fff7ed;
-  border-color: #fed7aa;
+  background: var(--warning-soft);
+  border-color: var(--warning-soft);
 }
 
+.ops-strip,
 .dashboard-status {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -2492,28 +2421,144 @@ td.neutral {
   color: var(--text-muted);
 }
 
-.dashboard .home-actions {
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  margin-bottom: 0;
+/* 히어로 KPI 스트립: 진입 즉시 보이는 핵심 지표 */
+.kpi-strip {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
-.dashboard-grid {
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  position: relative;
+  overflow: hidden;
+}
+
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--border-strong);
+}
+
+.kpi-ok::before { background: var(--success); }
+.kpi-warn::before { background: var(--warning); }
+.kpi-danger::before { background: var(--danger); }
+.kpi-muted::before { background: var(--border-strong); }
+
+.kpi-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.kpi-value {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.kpi-value-muted {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.kpi-sub {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.currency-title strong {
+  font-size: 15px;
+}
+
+.currency-fx {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.metric-progress {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 10px 0 0;
+}
+
+/* 전략 상태 도트(미세 시각화) */
+.strategy-status-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.status-dot-viz {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  margin-top: 5px;
+  flex: none;
+  background: var(--text-muted);
+}
+
+.status-dot-viz.dot-running {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.status-dot-viz.dot-error {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.status-dot-viz.dot-stopped {
+  background: var(--text-muted);
+}
+
+.status-dot-viz.dot-empty {
+  background: var(--border-strong);
+}
+
+/* 하단 조용한 바로가기 (상단 메뉴와 중복 노출하지 않기 위함) */
+.dashboard-quicklinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 14px;
+  padding-top: 4px;
+}
+
+.quicklinks-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 900px) {
-  .dashboard-grid {
+  .dashboard-two-column {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .dashboard-header-row {
-    display: grid;
-  }
-
-  .dashboard-secondary-actions {
-    justify-content: flex-start;
   }
 }
 
