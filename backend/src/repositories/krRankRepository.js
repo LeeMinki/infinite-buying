@@ -218,6 +218,21 @@ export function updateEntrySelection(id, input) {
   return getEntryById(id);
 }
 
+export function clearEntrySelection(id, { rankingSnapshot = null } = {}) {
+  getDb().prepare(`
+    UPDATE kr_rank_entries
+    SET status = 'SELECTED',
+        selected_symbol = NULL,
+        selected_symbol_name = NULL,
+        selected_price = NULL,
+        selected_fluctuation_rate = NULL,
+        ranking_snapshot = COALESCE(?, ranking_snapshot),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(rankingSnapshot ? JSON.stringify(rankingSnapshot) : null, id);
+  return getEntryById(id);
+}
+
 export function getEntry(strategyId, tradeDate, entryWindow) {
   return toEntry(getDb().prepare(`
     SELECT * FROM kr_rank_entries

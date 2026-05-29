@@ -52,6 +52,9 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', access_token: 'tok-us-rank', expires_in: 3600 });
     }
     if (text.includes('/uapi/overseas-stock/v1/ranking/updown-rate')) {
+      if (state.rankingRows) {
+        return json({ rt_cd: '0', output2: state.rankingRows });
+      }
       // 정렬은 등락률 내림차순이라 top 종목에 가장 큰 rate를 줘서 selectRankingCandidate가 top을 픽하게 한다.
       const top = state.rankingTopSymbol || 'HOT1';
       // rate는 %값 — 30.0 → 등락률 0.30. 진입 유니버스 등락률 상한(+50%) 아래라 후보로 통과한다.
@@ -68,10 +71,14 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', output2: state.minuteCandles || passingMinuteCandles() });
     }
     if (text.includes('/uapi/overseas-price/v1/quotations/price')) {
-      return json({ rt_cd: '0', output: { last: String(state.price ?? 50) } });
+      const symbol = new URL(text).searchParams.get('SYMB') || new URL(text).searchParams.get('PDNO') || state.symbol || state.rankingTopSymbol;
+      const price = state.prices?.[symbol] ?? state.price ?? 50;
+      return json({ rt_cd: '0', output: { last: String(price) } });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-psamount')) {
-      return json({ rt_cd: '0', output: { frcr_ord_psbl_amt1: String(state.cash ?? 1000), max_ord_psbl_qty: '999' } });
+      const symbol = new URL(text).searchParams.get('ITEM_CD') || state.symbol || state.rankingTopSymbol;
+      const cash = state.cashBySymbol?.[symbol] ?? state.cash ?? 1000;
+      return json({ rt_cd: '0', output: { frcr_ord_psbl_amt1: String(cash), max_ord_psbl_qty: '999' } });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-nccs')) {
       return json({ rt_cd: '0', output: state.openOrders || [] });
@@ -307,6 +314,31 @@ test('단기 흐름 필터를 통과하지 못하면 매수하지 않고 SKIP �
       assert.equal(result.decision.decision, 'SKIP');
       assert.equal(result.order, null);
       assert.equal(repo.listTrades(user.id, { strategyId: strategy.id }).length, 0);
+    });
+  });
+});
+
+test('미국장 랭킹은 매수가능금액으로 1주도 못 사는 후보를 건너뛰고 다음 후보를 산다', async () => {
+  const state = {
+    cash: 100,
+    prices: { EXPENSIVE: 300, BUYABLE: 50 },
+    symbol: 'BUYABLE',
+    rankingRows: [
+      { symb: 'EXPENSIVE', name: 'Expensive', last: '300', rate: '30.0', rank: '1', tvol: '20000000' },
+      { symb: 'BUYABLE', name: 'Buyable', last: '50', rate: '20.0', rank: '2', tvol: '20000000' }
+    ]
+  };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      autoBudgetEnabled: true, fixedBuyUsdAmount: 0, targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    await service.startStrategy(user.id, strategy.id);
+    await withMockedDate('2026-05-21T14:00:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(result.decision.decision, 'BUY');
+      assert.equal(result.decision.selectedSymbol, 'BUYABLE');
+      assert.equal(result.decision.expectedQuantity, 2);
+      assert.equal(result.order.symbol, 'BUYABLE');
     });
   });
 });
