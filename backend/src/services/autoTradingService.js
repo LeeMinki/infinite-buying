@@ -246,6 +246,18 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         openOrderCount: openOrders.length
       })
     };
+    const suppressUnbuyableScheduledLog = evaluationSource === 'SCHEDULED'
+      && decisionWithContext.decision === 'HOLD'
+      && /1주도 매수할 수 없습니다/.test(decision.reason || '');
+    if (suppressUnbuyableScheduledLog) {
+      repo.markStrategyEvaluation(userId, strategy.id, { decision: 'HOLD', errorMessage: null });
+      return {
+        strategy: repo.getStrategy(userId, strategy.id),
+        decision: { ...decisionWithContext, id: null, skippedLog: true },
+        snapshot,
+        order: null
+      };
+    }
     const log = createDecisionLog(userId, strategy, {
       ...decisionWithContext,
       liveOrderEnabled: settings.liveOrderEnabled,

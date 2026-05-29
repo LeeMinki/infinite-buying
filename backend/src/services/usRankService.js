@@ -706,7 +706,7 @@ function finalizeSellClose(userId, strategy, ctx) {
 
 // 상위 후보들에 단기 흐름 필터를 순서대로 적용해 첫 통과 종목을 고른다.
 // 분봉 조회 실패는 그 후보만 건너뛰고 다음 후보로 넘어간다. 모두 탈락하면 picked=null과 마지막 사유를 돌려준다.
-async function pickFilteredCandidate(userId, ranking) {
+async function pickFilteredCandidate(userId, ranking, { trading = null } = {}) {
   const candidates = selectRankingCandidates(ranking, { limit: US_RANK_CANDIDATE_LIMIT });
   if (candidates.length === 0) {
     return { picked: null, reason: '미국 상승률 랭킹에서 유효한 매수 후보가 없어 이번 tick은 건너뜁니다.' };
@@ -721,10 +721,43 @@ async function pickFilteredCandidate(userId, ranking) {
       continue;
     }
     const check = checkUsBuyCandidate(candles);
-    if (check.ok) return { picked: candidate, reason: null };
-    lastReason = `${candidate.symbol}(등락률 ${pct(candidate.fluctuationRate)}) 제외 — ${check.reason}`;
+    if (!check.ok) {
+      lastReason = `${candidate.symbol}(등락률 ${pct(candidate.fluctuationRate)}) 제외 — ${check.reason}`;
+      continue;
+    }
+    if (trading) {
+      let buyPlan;
+      try {
+        buyPlan = await buildUsBuyPlan(trading, candidate);
+      } catch (error) {
+        lastReason = `${candidate.symbol} 매수가능금액 확인 실패로 건너뜁니다: ${error.message || '계좌 조회 오류'}`;
+        continue;
+      }
+      if (buyPlan.quantity <= 0) {
+        lastReason = `${candidate.symbol} 제외 — 매수가능금액 ${fmt(buyPlan.cashAvailable)} USD로 현재가 ${fmt(buyPlan.currentPrice)} USD 1주를 살 수 없습니다.`;
+        continue;
+      }
+      return { picked: candidate, buyPlan, reason: null };
+    }
+    return { picked: candidate, reason: null };
   }
   return { picked: null, reason: lastReason };
+}
+
+async function buildUsBuyPlan(trading, candidate) {
+  const symbol = candidate.symbol;
+  const exchange = candidate.exchange;
+  const priceQuote = await trading.getCurrentPrice(symbol, { market: 'US', exchange });
+  const currentPrice = Number(priceQuote.price || candidate.price || 0);
+  const buyingPower = await trading.getBuyingPower(symbol, { market: 'US', currency: 'USD', exchange, price: currentPrice });
+  const cashAvailable = Number(buyingPower.cashAvailable || 0);
+  const quantity = computeBuyQuantity(cashAvailable, currentPrice);
+  return {
+    currentPrice,
+    cashAvailable,
+    quantity,
+    estimatedAmount: quantity * currentPrice
+  };
 }
 
 async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrderEnabled, evaluationSource }) {
@@ -770,7 +803,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
     const ranking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
     // 가격·거래량 1차 필터 통과 후보들에 단기 흐름 필터(분봉 기반)를 순서대로 적용해 첫 통과 종목을 고른다.
-    const { picked, reason: candidateReason } = await pickFilteredCandidate(userId, ranking);
+    const { picked, buyPlan, reason: candidateReason } = await pickFilteredCandidate(userId, ranking, { trading });
     if (!picked) {
       // 후보 없음/필터 탈락은 trade 행을 만들지 않고 decision log만 남긴다. 30초 폴링이라
       // 스케줄러 SCHEDULED는 noLog로 노이즈를 줄이고 MANUAL은 사유를 응답에 보여주기 위해 기록.
@@ -796,6 +829,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
       selectedFluctuationRate: picked.fluctuationRate,
       rankingSnapshot
     });
+    trade._preparedBuyPlan = buyPlan || null;
   }
 
   const symbol = trade.symbol;
@@ -906,13 +940,14 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
     });
   }
 
-  const priceQuote = await trading.getCurrentPrice(symbol, { market: 'US', exchange });
-  const currentPrice = Number(priceQuote.price || trade.selectedPrice || 0);
-  const buyingPower = await trading.getBuyingPower(symbol, { market: 'US', currency: 'USD', exchange, price: currentPrice });
-  const cashAvailable = Number(buyingPower.cashAvailable || 0);
-  const budget = cashAvailable;
-  const quantity = computeBuyQuantity(budget, currentPrice);
+  const buyPlan = trade._preparedBuyPlan || await buildUsBuyPlan(trading, { symbol, exchange, price: trade.selectedPrice });
+  const { currentPrice, cashAvailable, quantity, estimatedAmount } = buyPlan;
   if (quantity <= 0) {
+    repo.updateTradeOutcome(trade.id, {
+      status: 'FAILED',
+      errorMessage: '매수가능금액으로 1주도 살 수 없어 다음 후보로 넘어갑니다.',
+      close: true
+    });
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
       tradeId: trade.id,
@@ -926,11 +961,11 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
       rankingSnapshot,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 매수 대상이나 매수가능금액 ${fmt(cashAvailable)} USD로 1주도 매수할 수 없습니다.`
+      reason: `${symbol} 매수 대상이나 매수가능금액 ${fmt(cashAvailable)} USD로 1주도 살 수 없어 후보에서 제외했습니다. 다음 평가에서 새 후보를 찾습니다.`,
+      noLog: evaluationSource !== 'MANUAL'
     });
   }
 
-  const estimatedAmount = quantity * currentPrice;
   const openOrders = await safeOpenOrders(trading, symbol, exchange);
   const guard = checkOrderSafety({ side: 'BUY', quantity, openOrders, idempotencyKey, cashAvailable, estimatedAmount });
   if (!guard.ok) {

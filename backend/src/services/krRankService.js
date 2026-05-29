@@ -384,15 +384,16 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     // 등락률 상한(기본 20%) 미만 후보를 위에서부터 모은 뒤, 매수 필터(분봉 단기 흐름)로 한 번 더 거른다.
     const candidates = selectRankingCandidates(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE })
       .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
-    const filterResult = await pickFirstFilteredCandidate(userId, candidates);
+    const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
     const picked = filterResult.picked;
+    let preparedBuyPlan = filterResult.buyPlan || null;
 
     if (!picked) {
       // 후보 없음/전원 거절: 진입 기록을 만들지 않고(또는 레거시 기록을 SELECTED로 굳히지 않고) SKIP만 한다.
       // 다음 tick에 랭킹을 다시 본다. 스케줄러 SKIP은 매분 폴링 노이즈를 막기 위해 로그를 남기지 않는다.
       const reason = candidates.length === 0
         ? `${label} 진입: 등락률 ${MAX_FLUCTUATION_RATE * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
-        : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
+        : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
         noLog: evaluationSource !== 'MANUAL'
@@ -421,11 +422,12 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         });
       }
     }
+    entry._preparedBuyPlan = preparedBuyPlan;
   }
 
   // 여기서부터 entry는 종목이 정해진 SELECTED 상태다. 매수(또는 재시도)를 진행한다.
-  const symbol = entry.selectedSymbol;
-  const symbolName = entry.selectedSymbolName;
+  let symbol = entry.selectedSymbol;
+  let symbolName = entry.selectedSymbolName;
   const idempotencyKey = makeKrRankIdempotencyKey({ tradeDate, strategyId: strategy.id, entryWindow, side: 'BUY' });
 
   if (repo.hasNonFailedOrder(idempotencyKey)) {
@@ -465,36 +467,59 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     });
   }
 
-  // 시장가 매수 수량 — KIS는 시장가 매수 증거금을 상한가 기준으로 잡으므로 상한가로 산정한다.
-  // autoBudgetEnabled면 평가 시점의 KIS 매수가능금액을 그대로 매수 한도로 쓴다(사용자 개입 없이 매일 잔액 변동을 따라간다).
-  const [priceQuote, buyingPower] = await Promise.all([
-    trading.getCurrentPrice(symbol, { market: 'KR' }),
-    trading.getBuyingPower(symbol, { market: 'KR', currency: 'KRW', price: entry.selectedPrice })
-  ]);
-  const currentPrice = Number(priceQuote.price) || Number(entry.selectedPrice) || 0;
-  const marginPrice = Number(priceQuote.upperLimitPrice) > 0
-    ? Number(priceQuote.upperLimitPrice)
-    : currentPrice * PRICE_LIMIT_MULTIPLIER;
-  const cashAvailable = Number(buyingPower.cashAvailable || 0);
-  const entryBudget = strategy.autoBudgetEnabled
-    ? cashAvailable
-    : (entryWindow === 'LUNCH' ? strategy.lunchBudget : strategy.morningBudget);
-  const quantity = computeBuyQuantity(Math.min(entryBudget, cashAvailable), marginPrice);
+  let buyPlan = entry._preparedBuyPlan || await buildKrBuyPlan(trading, strategy, entryWindow, {
+    symbol,
+    price: entry.selectedPrice
+  });
+
+  if (buyPlan.quantity <= 0) {
+    // 예전 배포에서 이미 고가 종목이 SELECTED로 고정된 경우를 풀고, 같은 tick에서 다음 후보를 찾는다.
+    const ranking = await getDomesticFluctuationRanking(userId);
+    rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE })
+      .filter((candidate) => candidate.symbol !== symbol)
+      .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
+    const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
+    if (filterResult.picked) {
+      entry = repo.updateEntrySelection(entry.id, {
+        selectedSymbol: filterResult.picked.symbol,
+        selectedSymbolName: filterResult.picked.name,
+        selectedPrice: filterResult.picked.price,
+        selectedFluctuationRate: filterResult.picked.fluctuationRate,
+        rankingSnapshot
+      });
+      symbol = entry.selectedSymbol;
+      symbolName = entry.selectedSymbolName;
+      buyPlan = filterResult.buyPlan;
+    } else {
+      repo.clearEntrySelection(entry.id, { rankingSnapshot });
+      const budgetNote = strategy.autoBudgetEnabled
+        ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원(자동 예산 모드)`
+        : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
+      const rejectionNote = filterResult.rejections.length > 0
+        ? ` 다음 후보도 조건을 통과하지 못했습니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`
+        : ' 다음 후보가 없습니다.';
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없어 후보에서 제외했습니다.${rejectionNote}`,
+        noLog: evaluationSource !== 'MANUAL'
+      });
+    }
+  }
+
+  const { currentPrice, cashAvailable, quantity, estimatedAmount } = buyPlan;
 
   if (quantity <= 0) {
-    // 1주도 못 산다 → 진입 기록은 SELECTED 그대로 두고 다음 tick에 다시 본다.
-    const budgetNote = strategy.autoBudgetEnabled
-      ? `매수가능금액 ${fmt(cashAvailable)}원(자동 예산 모드)`
-      : `매수 금액 한도 ${fmt(entryBudget)}원·매수가능금액 ${fmt(cashAvailable)}원`;
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
       currentPrice, cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없습니다.`
+      reason: `${label} 진입: ${symbol} 매수가능금액으로 1주도 매수할 수 없습니다.`,
+      noLog: evaluationSource !== 'MANUAL'
     });
   }
 
   const openOrders = await safeOpenOrders(trading, symbol);
-  const estimatedAmount = quantity * currentPrice;
   const guard = checkOrderSafety({ side: 'BUY', quantity, openOrders, idempotencyKey, cashAvailable, estimatedAmount });
   if (!guard.ok) {
     // 안전 검증 미통과 = "지금은 못 함". 주문 행을 만들지 않고 진입 기록은 SELECTED 유지 → 다음 tick 재시도.
@@ -735,7 +760,8 @@ function saveDecision(userId, strategy, input) {
   const log = input.noLog
     ? null
     : repo.createDecisionLog(userId, { strategyId: strategy.id, ...input });
-  return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order: null };
+  const order = input.orderId ? repo.getOrder(userId, input.orderId) : null;
+  return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order };
 }
 
 function saveSkip(userId, strategy, reason, evaluationSource, { noLog = false } = {}) {
@@ -754,7 +780,7 @@ async function safeOpenOrders(trading, symbol) {
 // 상위 후보를 순서대로 보면서 매수 필터(시가·VWAP·거래량·장대 음봉·고점 돌파)를 적용.
 // 첫 통과 후보를 picked로 반환. 모두 거절되면 picked=null과 거절 사유 목록을 함께 돌려준다.
 // 분봉 조회가 실패한 후보는 단기 흐름 확인 불가로 보수적으로 건너뛴다.
-async function pickFirstFilteredCandidate(userId, candidates) {
+async function pickFirstFilteredCandidate(userId, candidates, { trading = null, strategy = null, entryWindow = null } = {}) {
   const rejections = [];
   for (const candidate of candidates) {
     let candles = [];
@@ -765,12 +791,57 @@ async function pickFirstFilteredCandidate(userId, candidates) {
       continue;
     }
     const check = checkBuyCandidate(candles);
-    if (check.ok) {
-      return { picked: candidate, rejections };
+    if (!check.ok) {
+      rejections.push({ symbol: candidate.symbol, reason: check.reason });
+      continue;
     }
-    rejections.push({ symbol: candidate.symbol, reason: check.reason });
+    if (trading && strategy && entryWindow) {
+      let buyPlan;
+      try {
+        buyPlan = await buildKrBuyPlan(trading, strategy, entryWindow, candidate);
+      } catch (error) {
+        rejections.push({ symbol: candidate.symbol, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
+        continue;
+      }
+      if (buyPlan.quantity <= 0) {
+        const budgetNote = strategy.autoBudgetEnabled
+          ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원`
+          : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
+        rejections.push({
+          symbol: candidate.symbol,
+          reason: `${budgetNote}으로 ${fmt(buyPlan.marginPrice)}원 기준 1주도 살 수 없음`
+        });
+        continue;
+      }
+      return { picked: candidate, buyPlan, rejections };
+    }
+    return { picked: candidate, rejections };
   }
   return { picked: null, rejections };
+}
+
+async function buildKrBuyPlan(trading, strategy, entryWindow, candidate) {
+  const [priceQuote, buyingPower] = await Promise.all([
+    trading.getCurrentPrice(candidate.symbol, { market: 'KR' }),
+    trading.getBuyingPower(candidate.symbol, { market: 'KR', currency: 'KRW', price: candidate.price })
+  ]);
+  const currentPrice = Number(priceQuote.price) || Number(candidate.price) || 0;
+  const marginPrice = Number(priceQuote.upperLimitPrice) > 0
+    ? Number(priceQuote.upperLimitPrice)
+    : currentPrice * PRICE_LIMIT_MULTIPLIER;
+  const cashAvailable = Number(buyingPower.cashAvailable || 0);
+  const entryBudget = strategy.autoBudgetEnabled
+    ? cashAvailable
+    : (entryWindow === 'LUNCH' ? strategy.lunchBudget : strategy.morningBudget);
+  const quantity = computeBuyQuantity(Math.min(entryBudget, cashAvailable), marginPrice);
+  return {
+    currentPrice,
+    marginPrice,
+    cashAvailable,
+    entryBudget,
+    quantity,
+    estimatedAmount: quantity * currentPrice
+  };
 }
 
 // 보유 종목 때문에 신규 진입이 차단되는 상황을 사유에 명시한다.
