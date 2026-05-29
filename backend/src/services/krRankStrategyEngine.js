@@ -178,6 +178,49 @@ export function checkBuyCandidate(candles, opts = {}) {
   return { ok: true, reason: null };
 }
 
+export function evaluateEntryFailure(candles, opts = {}) {
+  const minCandles = opts.minimumCandles ?? BUY_FILTER_DEFAULTS.minimumCandles;
+  if (!Array.isArray(candles) || candles.length < minCandles) {
+    return { failed: false, reason: null };
+  }
+  const last = candles[candles.length - 1];
+  const opening = Number(candles[0]?.open) || 0;
+  const current = Number(last?.close) || 0;
+  if (opening <= 0 || current <= 0) return { failed: false, reason: null };
+
+  const vwap = computeVwap(candles);
+  const priorSlice = candles.slice(0, -1);
+  const recentHigh = Math.max(...priorSlice.map((c) => Number(c?.high) || 0), Number(last?.high) || 0);
+  const highPullbackRate = recentHigh > 0 ? (recentHigh - current) / recentHigh : 0;
+  const highPullbackThreshold = opts.highPullbackRate ?? 0.018;
+  const openBreakRate = opts.openBreakRate ?? 0.003;
+  const vwapBroken = vwap > 0 && current < vwap;
+  const openBroken = current < opening * (1 - openBreakRate);
+  const highPulledBack = highPullbackRate >= highPullbackThreshold;
+  const volumeWeak = isVolumeDecreasing(candles, opts.trendWindow, opts.volumeShrinkRatio);
+  const bearish = findLargeBearishCandle(candles, opts);
+
+  if (vwapBroken && highPulledBack) {
+    return {
+      failed: true,
+      reason: `현재가가 VWAP 아래로 내려갔고 최근 고점 대비 ${(highPullbackRate * 100).toFixed(1)}% 밀렸습니다.`
+    };
+  }
+  if (openBroken && (volumeWeak || bearish)) {
+    return {
+      failed: true,
+      reason: `현재가가 장 초반 기준가 아래로 내려갔고 ${volumeWeak ? '거래량이 줄었습니다' : '거래량을 동반한 음봉이 나왔습니다'}.`
+    };
+  }
+  if (bearish && highPulledBack) {
+    return {
+      failed: true,
+      reason: `거래량을 동반한 음봉 이후 최근 고점 대비 ${(highPullbackRate * 100).toFixed(1)}% 밀렸습니다.`
+    };
+  }
+  return { failed: false, reason: null };
+}
+
 function fmtPrice(value) {
   return Math.round(Number(value) || 0).toLocaleString('ko-KR');
 }

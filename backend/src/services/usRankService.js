@@ -13,6 +13,7 @@ import {
   computeBuyQuantity,
   computeCycleProfitRate,
   etTradeDate,
+  evaluateEntryFailure,
   evaluateSell,
   isUsForceCloseTime,
   isUsRegularSession,
@@ -303,13 +304,22 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   if (liveOrderEnabled && openTrade && openTrade.status === 'BOUGHT') {
     const working = repo.getActiveSellOrder(openTrade.id);
     if (working) {
-      const settled = await reconcileWorkingSell(userId, strategy, {
-        trading, tradeDate, openTrade, working, symbol, exchange,
-        currentPrice, averagePrice, holdingQuantity, cashAvailable,
-        liveOrderEnabled, evaluationSource
-      });
-      // settled != null → 체결 확정 또는 체결 대기로 처리됨. null → stale 취소 완료, 아래에서 재호가.
-      if (settled) return settled;
+      if (working.sellReason === 'TARGET') {
+        const settled = await reconcileTargetSell(userId, strategy, {
+          trading, tradeDate, openTrade, working, symbol, exchange,
+          currentPrice, averagePrice, holdingQuantity, cashAvailable,
+          liveOrderEnabled, evaluationSource
+        });
+        if (settled) return settled;
+      } else {
+        const settled = await reconcileWorkingSell(userId, strategy, {
+          trading, tradeDate, openTrade, working, symbol, exchange,
+          currentPrice, averagePrice, holdingQuantity, cashAvailable,
+          liveOrderEnabled, evaluationSource
+        });
+        // settled != null → 체결 확정 또는 체결 대기로 처리됨. null → stale 취소 완료, 아래에서 재호가.
+        if (settled) return settled;
+      }
     }
   }
 
@@ -405,7 +415,7 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   // 이미 청산을 시작한 사이클이면(trade.exitReason 새겨짐) 그 사유로 계속 빠져나간다.
   // 청산 도중 가격이 손절선 위로 잠깐 돌아와도 중도 포기하지 않고 끝까지 체결시키는 게 안전하다.
   const committedReason = trade.exitReason || null;
-  const sell = committedReason
+  let sell = committedReason
     ? { decision: 'SELL', sellReason: committedReason, profitRate: averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0 }
     : evaluateSell({
         currentPrice,
@@ -415,9 +425,27 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
         forceCloseTriggered,
         cycleTargetReached
       });
+  let entryFailureReason = null;
+  if (!committedReason && sell.decision === 'HOLD') {
+    try {
+      const candles = await getOverseasTodayMinuteCandles(userId, symbol, exchange, { minutes: 1, count: 120 });
+      const failure = evaluateEntryFailure(candles, { highPullbackRate: 0.025, openBreakRate: 0.005 });
+      if (failure.failed) {
+        entryFailureReason = failure.reason;
+        sell = {
+          decision: 'SELL',
+          sellReason: 'ENTRY_FAILED',
+          profitRate: averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0
+        };
+      }
+    } catch {
+      // 분봉 확인 실패는 기존 목표/손절 판단에 맡긴다.
+    }
+  }
 
   if (sell.decision === 'HOLD') {
     const profitPct = (sell.profitRate * 100).toFixed(2);
+    const targetOrder = openTrade ? repo.getActiveTargetSellOrder(openTrade.id) : null;
     return saveDecision(userId, strategy, {
       decision: 'HOLD',
       tradeId: trade.id,
@@ -433,11 +461,81 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
       profitRate: sell.profitRate,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). 익절 +${pct(strategy.targetProfitRate)} / 손절 -${pct(strategy.stopLossRate)} / 청산 ${strategy.forceCloseKst} KST 모두 미도달.`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). 익절 +${pct(strategy.targetProfitRate)} / 손절 -${pct(strategy.stopLossRate)} / 청산 ${strategy.forceCloseKst} KST 모두 미도달.${targetOrder ? ' 목표 수익 지정가 주문은 체결을 기다리는 중입니다.' : ''}`
     });
   }
 
-  // 첫 청산 결정이면 trade에 exitReason을 새겨, 다음 tick부터 "청산 진행 중"으로 인식하게 한다.
+  const activeTargetOrder = repo.getActiveTargetSellOrder(trade.id);
+  if (activeTargetOrder) {
+    if (sell.sellReason === 'TARGET') {
+      if (!activeTargetOrder.liveOrderEnabled || activeTargetOrder.status === 'DECIDED' || activeTargetOrder.status === 'DRY_RUN') {
+        repo.updateOrder(userId, activeTargetOrder.id, {
+          status: 'FILLED',
+          filledQuantity: holdingQuantity,
+          remainingQuantity: 0,
+          averageFilledPrice: currentPrice
+        });
+        return finalizeSellClose(userId, strategy, {
+          trading,
+          working: activeTargetOrder,
+          openTrade: trade,
+          symbol,
+          exchange,
+          tradeDate,
+          averagePrice,
+          exitFillPrice: currentPrice,
+          filledQty: holdingQuantity,
+          cashAvailable,
+          liveOrderEnabled,
+          evaluationSource
+        });
+      }
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP',
+        sellReason: 'TARGET',
+        tradeId: trade.id,
+        tradeDate,
+        tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol,
+        selectedSymbolName: strategy.holdingSymbolName,
+        selectedExchange: exchange,
+        currentPrice,
+        averagePrice,
+        holdingQuantity,
+        cashAvailable,
+        profitRate: sell.profitRate,
+        liveOrderEnabled,
+        evaluationSource,
+        orderId: activeTargetOrder.id,
+        reason: `${symbol} 목표 수익 조건입니다. 이미 걸어 둔 목표가 주문의 체결을 확인합니다.`
+      });
+    }
+    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
+    if (!cancelResult.ok) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP',
+        sellReason: sell.sellReason,
+        tradeId: trade.id,
+        tradeDate,
+        tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol,
+        selectedSymbolName: strategy.holdingSymbolName,
+        selectedExchange: exchange,
+        currentPrice,
+        averagePrice,
+        holdingQuantity,
+        cashAvailable,
+        profitRate: sell.profitRate,
+        liveOrderEnabled,
+        evaluationSource,
+        orderId: activeTargetOrder.id,
+      reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 조건이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
+      });
+    }
+  }
+
+  // 첫 방어 청산 결정이면 trade에 exitReason을 새겨, 다음 tick부터 "청산 진행 중"으로 인식하게 한다.
+  // 목표가 주문은 이미 별도 주문으로 걸려 있으므로, 접수 상태만으로 TARGET 청산 진행 중으로 고정하지 않는다.
   if (!committedReason) {
     trade = repo.updateTradeOutcome(trade.id, { exitReason: sell.sellReason }) || trade;
   }
@@ -507,7 +605,7 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
     liveOrderEnabled
   }, {
     liveOrderEnabled,
-    decisionReason: `${symbol} ${sellReasonLabel(sell.sellReason)} 전량 매도 주문 (수익률 ${(sell.profitRate * 100).toFixed(2)}%).`
+    decisionReason: `${symbol} ${sellReasonLabel(sell.sellReason)} 전량 매도 주문 (수익률 ${(sell.profitRate * 100).toFixed(2)}%).${entryFailureReason ? ` ${entryFailureReason}` : ''}`
   });
 
   // DRY_RUN(실주문 OFF)은 확인할 잔고가 없으므로 즉시 청산을 시뮬레이션한다.
@@ -546,7 +644,7 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
       liveOrderEnabled,
       evaluationSource,
       orderId: order.id,
-      reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 전량 매도 (수익률 ${(sell.profitRate * 100).toFixed(2)}%). ${orderStatusNote(order, liveOrderEnabled)}`
+      reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 전량 매도 (수익률 ${(sell.profitRate * 100).toFixed(2)}%).${entryFailureReason ? ` ${entryFailureReason}` : ''} ${orderStatusNote(order, liveOrderEnabled)}`
     });
     repo.attachOrderIdToDecisionLog(log.decision?.id, order.id);
     return { ...log, order };
@@ -577,7 +675,7 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
     liveOrderEnabled,
     evaluationSource,
     orderId: order.id,
-    reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 전량 매도 주문${attempt > 0 ? ` 재호가(${attempt + 1}회차)` : ''} (수익률 ${(sell.profitRate * 100).toFixed(2)}%). ${note}`
+    reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 전량 매도 주문${attempt > 0 ? ` 재호가(${attempt + 1}회차)` : ''} (수익률 ${(sell.profitRate * 100).toFixed(2)}%).${entryFailureReason ? ` ${entryFailureReason}` : ''} ${note}`
   });
   repo.attachOrderIdToDecisionLog(log.decision?.id, order.id);
   return { ...log, order };
@@ -702,6 +800,110 @@ function finalizeSellClose(userId, strategy, ctx) {
   });
   if (working) repo.attachOrderIdToDecisionLog(log.decision?.id, working.id);
   return { ...log, order: null };
+}
+
+async function reconcileTargetSell(userId, strategy, ctx) {
+  const {
+    trading, working, symbol, exchange, currentPrice, averagePrice, holdingQuantity
+  } = ctx;
+  let refreshed = null;
+  try {
+    refreshed = await trading.refreshOrder({
+      symbol,
+      market: 'US',
+      exchange,
+      kisOrderNo: working.kisOrderNo,
+      kisOriginalOrderNo: working.kisOriginalOrderNo
+    });
+  } catch {
+    refreshed = null;
+  }
+  const filledQty = Math.floor(Number(refreshed?.filledQuantity || 0));
+  const remaining = refreshed && refreshed.remainingQuantity != null ? Number(refreshed.remainingQuantity) : null;
+  const exitFillPrice = Number(refreshed?.averageFilledPrice || 0) || Number(working.orderPrice || currentPrice || 0);
+  const fullyFilled = refreshed?.status === 'FILLED'
+    || (remaining != null && remaining <= 0 && filledQty > 0)
+    || holdingQuantity <= 0;
+  if (fullyFilled) {
+    return finalizeSellClose(userId, strategy, {
+      ...ctx,
+      exitFillPrice,
+      filledQty: filledQty > 0 ? filledQty : working.quantity
+    });
+  }
+  return null;
+}
+
+async function cancelTargetBeforeDefensiveSell(userId, trading, order) {
+  if (!order) return { ok: true, reason: '' };
+  if (!order.liveOrderEnabled || order.status === 'DECIDED' || order.status === 'DRY_RUN') {
+    repo.updateOrder(userId, order.id, { status: 'CANCELED' });
+    return { ok: true, reason: '기존 목표가 예정 기록을 취소했습니다.' };
+  }
+  if (!order.kisOrderNo) {
+    return { ok: false, reason: 'KIS 주문번호가 없어 목표가 주문 취소를 확인할 수 없습니다.' };
+  }
+  try {
+    await trading.cancelOpenOrder({
+      market: 'US',
+      symbol: order.symbol,
+      exchange: order.exchange,
+      kisOrderNo: order.kisOrderNo,
+      kisOriginalOrderNo: order.kisOriginalOrderNo,
+      quantity: order.quantity,
+      remainingQuantity: order.remainingQuantity ?? order.quantity
+    });
+    repo.updateOrder(userId, order.id, { status: 'CANCELED' });
+    return { ok: true, reason: '기존 목표가 주문을 취소했습니다.' };
+  } catch (error) {
+    return { ok: false, reason: error.message || '취소 요청 실패' };
+  }
+}
+
+async function ensureUsTargetSellOrder(userId, trading, strategy, trade, buyOrder) {
+  if (!trade || !buyOrder || buyOrder.side !== 'BUY') return null;
+  const existing = repo.getActiveTargetSellOrder(trade.id);
+  if (existing) return existing;
+  const quantity = Math.floor(Number(buyOrder.filledQuantity || trade.entryQuantity || buyOrder.quantity || 0));
+  const averageFilledPrice = Number(buyOrder.averageFilledPrice || trade.entryPrice || buyOrder.orderPrice || 0);
+  if (quantity <= 0 || averageFilledPrice <= 0) return null;
+  const targetPrice = averageFilledPrice * (1 + Number(strategy.targetProfitRate || DEFAULT_TARGET_PROFIT_RATE));
+  const idempotencyKey = `${makeUsRankIdempotencyKey({
+    tradeDate: trade.tradeDate || etTradeDate(),
+    strategyId: strategy.id,
+    tradeSeq: trade.tradeSeq,
+    side: 'SELL'
+  })}-TARGET`;
+  if (repo.hasNonFailedOrder(idempotencyKey)) return null;
+
+  const baseOrder = {
+    strategyId: strategy.id,
+    tradeId: trade.id,
+    symbol: trade.symbol || buyOrder.symbol,
+    symbolName: trade.symbolName || buyOrder.symbolName,
+    exchange: trade.exchange || buyOrder.exchange || strategy.exchange,
+    side: 'SELL',
+    sellReason: 'TARGET',
+    quantity,
+    orderPrice: targetPrice,
+    estimatedAmount: quantity * targetPrice,
+    idempotencyKey,
+    liveOrderEnabled: buyOrder.liveOrderEnabled,
+    orderType: 'LIMIT'
+  };
+  const decisionReason = `${baseOrder.symbol} 매수 체결 확인 후 목표 수익 지정가 매도 예약 (${fmt(targetPrice)} USD).`;
+  if (!buyOrder.liveOrderEnabled) {
+    return repo.createOrder(userId, {
+      ...baseOrder,
+      status: 'DECIDED',
+      requestPayloadMasked: maskPayload({ ...baseOrder, market: 'US', currency: 'USD', decisionReason }),
+      decisionReason
+    });
+  }
+  return placeOrder(userId, trading, baseOrder, {
+    liveOrderEnabled: true,
+    decisionReason
+  });
 }
 
 // 상위 후보들에 단기 흐름 필터를 순서대로 적용해 첫 통과 종목을 고른다.
@@ -851,6 +1053,20 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
         quantity: filledQuantity,
         averagePrice: filledAvg
       });
+      const buyOrder = repo.getActiveOrderByIdempotencyKey(idempotencyKey);
+      if (buyOrder) {
+        await ensureUsTargetSellOrder(userId, trading, strategy, {
+          ...trade,
+          status: 'BOUGHT',
+          entryPrice: filledAvg,
+          entryQuantity: filledQuantity
+        }, {
+          ...buyOrder,
+          status: 'FILLED',
+          filledQuantity,
+          averageFilledPrice: filledAvg
+        });
+      }
       return saveDecision(userId, strategy, {
         decision: 'SKIP',
         tradeId: trade.id,
@@ -1018,6 +1234,12 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
       quantity,
       averagePrice: currentPrice
     });
+    await ensureUsTargetSellOrder(userId, trading, strategy, {
+      ...trade,
+      status: 'BOUGHT',
+      entryPrice: currentPrice,
+      entryQuantity: quantity
+    }, order);
   }
 
   const log = saveDecision(userId, strategy, {
@@ -1162,6 +1384,13 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
         averageFilledPrice: avgFilledPrice > 0 ? avgFilledPrice : (order.averageFilledPrice ?? null)
       });
       if (result) updated.push(result);
+      if (result?.side === 'BUY' && result.status === 'FILLED' && result.tradeId) {
+        const strategy = repo.getStrategy(userId, result.strategyId, { includeDeleted: true });
+        const trade = repo.getTradeById(result.tradeId);
+        if (strategy && trade) {
+          await ensureUsTargetSellOrder(userId, trading, strategy, trade, result);
+        }
+      }
     } catch {
       // 한 주문의 동기화 실패는 다른 주문 처리를 막지 않는다.
     }
@@ -1340,6 +1569,7 @@ function sellReasonLabel(reason) {
   if (reason === 'STOP_LOSS') return '손절';
   if (reason === 'FORCE_CLOSE') return '강제 청산';
   if (reason === 'CYCLE_COMPLETE') return '누적 목표 달성';
+  if (reason === 'ENTRY_FAILED') return '진입 실패';
   return reason || '-';
 }
 

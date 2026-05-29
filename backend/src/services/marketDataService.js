@@ -65,6 +65,11 @@ export async function getDomesticTodayMinuteCandles(userId, symbol, options = {}
   return provider.getDomesticTodayMinuteCandles(normalizeSymbol(symbol), options);
 }
 
+export async function getDomesticHistoricalMinuteCandles(userId, symbol, options = {}) {
+  const provider = new KisMarketDataProvider(userId);
+  return provider.getDomesticHistoricalMinuteCandles(normalizeSymbol(symbol), options);
+}
+
 // 국내 증시 휴장일 조회 — 자동매매가 공휴일에 매수를 시도하지 않도록 개장일 여부를 확인한다.
 export async function getDomesticHolidays(userId, baseDate) {
   const provider = new KisMarketDataProvider(userId);
@@ -75,6 +80,11 @@ export async function getDomesticHolidays(userId, baseDate) {
 export async function getOverseasTodayMinuteCandles(userId, symbol, exchange, options = {}) {
   const provider = new KisMarketDataProvider(userId);
   return provider.getOverseasTodayMinuteCandles(normalizeSymbol(symbol), exchange, options);
+}
+
+export async function getOverseasHistoricalMinuteCandles(userId, symbol, exchange, options = {}) {
+  const provider = new KisMarketDataProvider(userId);
+  return provider.getOverseasHistoricalMinuteCandles(normalizeSymbol(symbol), exchange, options);
 }
 
 function normalizeSymbol(symbol) {

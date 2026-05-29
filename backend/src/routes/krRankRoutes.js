@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth/authMiddleware.js';
 import * as service from '../services/krRankService.js';
+import { replayKrRankTrade } from '../services/rankReplayService.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -101,6 +102,20 @@ router.get('/strategies/:id/orders', (req, res, next) => {
 router.get('/strategies/:id/trade-history', (req, res, next) => {
   try {
     res.json(service.listRoundTripOrders(req.userId, Number(req.params.id), req.query));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/strategies/:id/trade-history/:buyOrderId/replay', async (req, res, next) => {
+  try {
+    service.getStrategy(req.userId, Number(req.params.id));
+    res.json(await replayKrRankTrade(
+      req.userId,
+      Number(req.params.id),
+      Number(req.params.buyOrderId),
+      req.body || {}
+    ));
   } catch (error) {
     next(error);
   }

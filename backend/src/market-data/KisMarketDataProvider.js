@@ -118,6 +118,28 @@ export class KisMarketDataProvider {
     return normalized;
   }
 
+  async getDomesticHistoricalMinuteCandles(symbol, options = {}) {
+    const date = compactDate(options.date || currentDate());
+    const hour = String(options.hour || '153000').padStart(6, '0');
+    const data = await this.requestJson('/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice', {
+      trId: 'FHKST03010230',
+      query: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: symbol,
+        FID_INPUT_DATE_1: date,
+        FID_INPUT_HOUR_1: hour,
+        FID_PW_DATA_INCU_YN: 'Y',
+        FID_FAKE_TICK_INCU_YN: 'N'
+      }
+    });
+    const rows = Array.isArray(data?.output2) ? data.output2 : pickCandleArray(data);
+    return rows
+      .map((row) => normalizeMinuteCandle(row))
+      .filter(Boolean)
+      .map((row) => ({ ...row, date: normalizeDate(date) }))
+      .sort((a, b) => a.time.localeCompare(b.time));
+  }
+
   // 해외주식 당일 분봉 (해외주식-030). TR HHDFS76950200, GET /uapi/overseas-price/v1/quotations/inquire-time-itemchartprice.
   // 미국장 랭킹 전략의 매수 후보 단기 흐름(VWAP·거래량·장대 음봉) 검사용. 한 번에 최근 120건까지 조회된다.
   async getOverseasTodayMinuteCandles(symbol, exchange = 'NAS', options = {}) {
@@ -140,6 +162,31 @@ export class KisMarketDataProvider {
       .map((row) => normalizeOverseasMinuteCandle(row))
       .filter(Boolean)
       // KIS 응답은 최신 봉이 앞에 오므로 시간 오름차순으로 재정렬.
+      .sort((a, b) => a.time.localeCompare(b.time));
+  }
+
+  async getOverseasHistoricalMinuteCandles(symbol, exchange = 'NAS', options = {}) {
+    const keyDate = compactDate(options.date || currentDate());
+    const keyTime = String(options.hour || '160000').padStart(6, '0');
+    const data = await this.requestJson('/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice', {
+      trId: 'HHDFS76950200',
+      query: {
+        AUTH: '',
+        EXCD: exchange,
+        SYMB: symbol,
+        NMIN: String(options.minutes || 1),
+        PINC: '1',
+        NEXT: '',
+        NREC: String(options.count || 120),
+        FILL: '',
+        KEYB: `${keyDate}${keyTime}`
+      }
+    });
+    const rows = Array.isArray(data?.output2) ? data.output2 : pickCandleArray(data);
+    return rows
+      .map((row) => normalizeOverseasMinuteCandle(row))
+      .filter(Boolean)
+      .map((row) => ({ ...row, date: normalizeDate(keyDate) }))
       .sort((a, b) => a.time.localeCompare(b.time));
   }
 
