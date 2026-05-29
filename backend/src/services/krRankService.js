@@ -8,6 +8,7 @@ import {
   resolveEntryWindow,
   selectRankingCandidates,
   computeBuyQuantity,
+  evaluateEntryFailure,
   evaluateSell,
   kstNowMinutes,
   parseHhmmMinutes,
@@ -254,10 +255,27 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   const targetProfitRate = isLunch ? strategy.lunchTargetProfitRate : strategy.morningTargetProfitRate;
   const stopLossRate = isLunch ? strategy.lunchStopLossRate : strategy.morningStopLossRate;
   const liquidateTime = isLunch ? strategy.lunchLiquidateTime : strategy.morningLiquidateTime;
-  const sell = evaluateSell({
+  let sell = evaluateSell({
     currentPrice, averagePrice, targetProfitRate, stopLossRate,
     liquidateTime, nowMinutes: kstNowMinutes()
   });
+  let entryFailureReason = null;
+  if (sell.decision === 'HOLD') {
+    try {
+      const candles = await getDomesticTodayMinuteCandles(userId, symbol);
+      const failure = evaluateEntryFailure(candles);
+      if (failure.failed) {
+        entryFailureReason = failure.reason;
+        sell = {
+          decision: 'SELL',
+          sellReason: 'ENTRY_FAILED',
+          profitRate: averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0
+        };
+      }
+    } catch {
+      // 분봉 확인 실패는 기존 목표/손절 판단에 맡긴다.
+    }
+  }
   const profitPct = (sell.profitRate * 100).toFixed(2);
 
   if (sell.decision === 'HOLD') {
@@ -282,7 +300,54 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     ? '목표 수익 도달'
     : sell.sellReason === 'STOP_LOSS'
       ? '손절 기준 도달'
+      : sell.sellReason === 'ENTRY_FAILED'
+        ? `진입 실패${entryFailureReason ? ` (${entryFailureReason})` : ''}`
       : `청산 시각 도달 (${liquidateTime} KST)`;
+  const activeTargetOrder = repo.getActiveSellOrder({
+    strategyId: strategy.id,
+    entryWindow,
+    symbol,
+    sellReason: 'TARGET'
+  });
+  if (activeTargetOrder) {
+    if (sell.sellReason === 'TARGET') {
+      if (!activeTargetOrder.liveOrderEnabled || activeTargetOrder.status === 'DECIDED' || activeTargetOrder.status === 'DRY_RUN') {
+        const filled = repo.updateOrder(userId, activeTargetOrder.id, {
+          status: 'FILLED',
+          filledQuantity: holdingQuantity,
+          remainingQuantity: 0,
+          averageFilledPrice: currentPrice
+        });
+        repo.clearHolding(userId, strategy.id);
+        return saveDecision(userId, strategy, {
+          decision: 'SELL', entryWindow, sellReason: 'TARGET',
+          selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+          currentPrice, averagePrice, holdingQuantity,
+          expectedQuantity: holdingQuantity, expectedPrice: currentPrice,
+          expectedAmount: holdingQuantity * currentPrice,
+          liveOrderEnabled, evaluationSource, orderId: filled.id,
+          reason: `${symbol} 목표 수익 도달 전량 매도 (수익률 ${profitPct}%). 실주문 실행 설정이 꺼져 있어 기록으로 체결 처리했습니다.`
+        });
+      }
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, sellReason: 'TARGET',
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity, liveOrderEnabled, evaluationSource,
+        orderId: activeTargetOrder.id,
+        reason: `${symbol} 목표 수익 조건입니다. 이미 걸어 둔 목표가 주문의 체결을 기다립니다.`
+      });
+    }
+    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
+    if (!cancelResult.ok) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, sellReason: sell.sellReason,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity, liveOrderEnabled, evaluationSource,
+        orderId: activeTargetOrder.id,
+        reason: `${symbol} ${reasonLabel}(수익률 ${profitPct}%)이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
+      });
+    }
+  }
   const idempotencyKey = makeKrRankIdempotencyKey({
     tradeDate: kstToday(), strategyId: strategy.id, entryWindow, side: 'SELL'
   });
@@ -437,6 +502,8 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     if (!liveOrderEnabled) {
       repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
       repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+      const buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+      if (buyOrder) await ensureKrTargetSellOrder(userId, trading, buyOrder);
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         liveOrderEnabled, evaluationSource, reason: `${label} 진입: ${symbol} 매수 기록이 이미 있어 보유로 둡니다(기록 모드).`
@@ -447,6 +514,15 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     if (filledQuantity > 0) {
       repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
       repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+      const buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+      if (buyOrder) {
+        await ensureKrTargetSellOrder(userId, trading, {
+          ...buyOrder,
+          status: 'FILLED',
+          filledQuantity,
+          averageFilledPrice: Number(balance.averagePrice || buyOrder.averageFilledPrice || buyOrder.orderPrice || 0)
+        });
+      }
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         liveOrderEnabled, evaluationSource,
@@ -543,6 +619,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   if (order.status === 'DRY_RUN') {
     repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
     repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+    await ensureKrTargetSellOrder(userId, trading, order);
   }
   // 실패면 진입 기록은 SELECTED 그대로 — 다음 tick에 재시도(한도 안에서).
   return saveDecision(userId, strategy, {
@@ -622,6 +699,9 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
         averageFilledPrice: avgFilledPrice > 0 ? avgFilledPrice : (order.averageFilledPrice ?? null)
       });
       if (result) updated.push(result);
+      if (result?.side === 'BUY' && result.status === 'FILLED') {
+        await ensureKrTargetSellOrder(userId, trading, result);
+      }
     } catch {
       // 한 주문의 동기화 실패는 다른 주문 처리를 막지 않는다.
     }
@@ -676,8 +756,8 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     ...baseOrder,
     market: 'KR',
     currency: 'KRW',
-    // 국장 랭킹 전략은 시장가 — 빠른 모멘텀 종목의 매수 미체결, 하락장 손절 매도 미체결을 막는다.
-    orderType: 'MARKET',
+    // 기본은 시장가다. 목표 수익 선주문만 지정가로 넘긴다.
+    orderType: baseOrder.orderType || 'MARKET',
     decisionReason
   };
   if (!liveOrderEnabled) {
@@ -713,6 +793,89 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
       responsePayloadMasked: error.safePayload || null,
       errorMessage: error.message || 'KIS 주문 요청에 실패했습니다.'
     });
+  }
+}
+
+async function ensureKrTargetSellOrder(userId, trading, buyOrder) {
+  if (!buyOrder || buyOrder.side !== 'BUY') return null;
+  const strategy = repo.getStrategy(userId, buyOrder.strategyId, { includeDeleted: true });
+  if (!strategy) return null;
+  const entryWindow = buyOrder.entryWindow || strategy.holdingEntryWindow || 'MORNING';
+  const existing = repo.getActiveSellOrder({
+    strategyId: strategy.id,
+    entryWindow,
+    symbol: buyOrder.symbol,
+    sellReason: 'TARGET'
+  });
+  if (existing) return existing;
+
+  const quantity = Math.floor(Number(buyOrder.filledQuantity || buyOrder.quantity || 0));
+  const averageFilledPrice = Number(buyOrder.averageFilledPrice || buyOrder.orderPrice || 0);
+  if (quantity <= 0 || averageFilledPrice <= 0) return null;
+  const targetProfitRate = entryWindow === 'LUNCH'
+    ? strategy.lunchTargetProfitRate
+    : strategy.morningTargetProfitRate;
+  const targetPrice = Math.ceil(averageFilledPrice * (1 + Number(targetProfitRate || 0)));
+  const idempotencyKey = `${makeKrRankIdempotencyKey({
+    tradeDate: kstToday(),
+    strategyId: strategy.id,
+    entryWindow,
+    side: 'SELL'
+  })}-TARGET`;
+  if (repo.hasNonFailedOrder(idempotencyKey)) return null;
+
+  const baseOrder = {
+    strategyId: strategy.id,
+    entryId: buyOrder.entryId,
+    symbol: buyOrder.symbol,
+    symbolName: buyOrder.symbolName || strategy.holdingSymbolName,
+    side: 'SELL',
+    entryWindow,
+    sellReason: 'TARGET',
+    quantity,
+    orderPrice: targetPrice,
+    estimatedAmount: quantity * targetPrice,
+    idempotencyKey,
+    liveOrderEnabled: buyOrder.liveOrderEnabled,
+    orderType: 'LIMIT'
+  };
+  const decisionReason = `${buyOrder.symbol} 매수 체결 확인 후 목표 수익 지정가 매도 예약 (${fmt(targetPrice)}원).`;
+  if (!buyOrder.liveOrderEnabled) {
+    return repo.createOrder(userId, {
+      ...baseOrder,
+      status: 'DECIDED',
+      decisionReason,
+      requestPayloadMasked: maskPayload({ ...baseOrder, market: 'KR', currency: 'KRW', decisionReason })
+    });
+  }
+  return placeOrder(userId, trading, baseOrder, {
+    liveOrderEnabled: true,
+    decisionReason
+  });
+}
+
+async function cancelTargetBeforeDefensiveSell(userId, trading, order) {
+  if (!order) return { ok: true, reason: '' };
+  if (!order.liveOrderEnabled || order.status === 'DECIDED' || order.status === 'DRY_RUN') {
+    repo.updateOrder(userId, order.id, { status: 'CANCELED' });
+    return { ok: true, reason: '기존 목표가 예정 기록을 취소했습니다.' };
+  }
+  if (!order.kisOrderNo) {
+    return { ok: false, reason: 'KIS 주문번호가 없어 목표가 주문 취소를 확인할 수 없습니다.' };
+  }
+  try {
+    await trading.cancelOpenOrder({
+      market: 'KR',
+      symbol: order.symbol,
+      kisOrderNo: order.kisOrderNo,
+      kisOriginalOrderNo: order.kisOriginalOrderNo,
+      quantity: order.quantity,
+      remainingQuantity: order.remainingQuantity ?? order.quantity
+    });
+    repo.updateOrder(userId, order.id, { status: 'CANCELED' });
+    return { ok: true, reason: '기존 목표가 주문을 취소했습니다.' };
+  } catch (error) {
+    return { ok: false, reason: error.message || '취소 요청 실패' };
   }
 }
 

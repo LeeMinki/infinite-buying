@@ -507,6 +507,15 @@ export function hasNonFailedOrder(idempotencyKey) {
   ).get(idempotencyKey));
 }
 
+export function getActiveOrderByIdempotencyKey(idempotencyKey) {
+  return toOrder(getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE idempotency_key = ? AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(idempotencyKey));
+}
+
 // 같은 키로 누적된 실패 주문 수 — 재시도 한도 판정에 쓴다.
 export function countFailedOrders(idempotencyKey) {
   return getDb().prepare(
@@ -521,6 +530,40 @@ export function hasBlockingOpenOrder(userId, strategyId) {
       AND status IN ('REQUESTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'UNKNOWN')
     LIMIT 1
   `).get(userId, strategyId));
+}
+
+export function getActiveSellOrder({ strategyId, entryWindow, symbol = null, sellReason = null } = {}) {
+  const params = [strategyId, entryWindow];
+  let where = `
+    strategy_id = ?
+    AND entry_window = ?
+    AND side = 'SELL'
+    AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED', 'FILLED')
+  `;
+  if (symbol) {
+    where += ' AND symbol = ?';
+    params.push(symbol);
+  }
+  if (sellReason) {
+    where += ' AND sell_reason = ?';
+    params.push(sellReason);
+  }
+  return toOrder(getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE ${where}
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(...params));
+}
+
+export function countSellOrders({ strategyId, entryWindow, symbol = null } = {}) {
+  const params = [strategyId, entryWindow];
+  let where = "strategy_id = ? AND entry_window = ? AND side = 'SELL'";
+  if (symbol) {
+    where += ' AND symbol = ?';
+    params.push(symbol);
+  }
+  return getDb().prepare(`SELECT COUNT(*) AS c FROM kr_rank_orders WHERE ${where}`).get(...params).c;
 }
 
 // ── 판단 로그 ─────────────────────────────────────────────────────────────

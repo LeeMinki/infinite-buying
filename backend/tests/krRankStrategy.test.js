@@ -15,6 +15,7 @@ import {
   findLargeBearishCandle,
   isFailingHighBreakout,
   checkBuyCandidate,
+  evaluateEntryFailure,
   MAX_FLUCTUATION_RATE
 } from '../src/services/krRankStrategyEngine.js';
 
@@ -435,6 +436,17 @@ test('checkBuyCandidate: 현재가가 시가 아래면 거절', () => {
 test('checkBuyCandidate: 데이터 부족이면 보수적으로 거절', () => {
   assert.equal(checkBuyCandidate([]).ok, false);
   assert.equal(checkBuyCandidate([candle('090100', 100, 101, 99, 100, 1000)]).ok, false);
+});
+
+test('evaluateEntryFailure: VWAP 이탈과 고점 이탈이 겹치면 진입 실패로 본다', () => {
+  const candles = [
+    candle('091000', 100, 103, 99, 102, 1000),
+    candle('091100', 102, 105, 101, 104, 1200),
+    candle('091200', 104, 104, 99, 100, 1400)
+  ];
+  const result = evaluateEntryFailure(candles, { highPullbackRate: 0.02 });
+  assert.equal(result.failed, true);
+  assert.match(result.reason, /VWAP|고점/);
 });
 
 // ── 진입 기록 승격: 레거시 NO_CANDIDATE → SELECTED ──────────────────────

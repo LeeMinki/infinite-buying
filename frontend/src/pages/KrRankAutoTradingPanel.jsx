@@ -8,6 +8,7 @@ import {
   listKrRankEntries,
   listKrRankStrategies,
   listKrRankTradeHistory,
+  replayKrRankTrade,
   startKrRankStrategy,
   stopKrRankStrategy,
   syncKrRankFills
@@ -32,6 +33,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
   const [budgetPreviewLoading, setBudgetPreviewLoading] = useState(false);
   const [accountSummary, setAccountSummary] = useState(null);
   const [accountSummaryLoading, setAccountSummaryLoading] = useState(false);
+  const [replay, setReplay] = useState(null);
 
   async function loadAccountSummary() {
     setAccountSummaryLoading(true);
@@ -147,6 +149,20 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
       );
     } catch (err) {
       setError(err.message || 'KIS 체결가 동기화에 실패했습니다.');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function runReplay(order) {
+    if (!selected || !order?.buyOrderId) return;
+    setBusy(`replay-${order.buyOrderId}`);
+    setError('');
+    setReplay(null);
+    try {
+      setReplay(await replayKrRankTrade(selected.id, order.buyOrderId));
+    } catch (err) {
+      setError(err.message || '거래 복기에 실패했습니다.');
     } finally {
       setBusy('');
     }
@@ -405,6 +421,9 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
               onLoadMore={() => ordersList.loadMore(selected.id)}
               onSync={syncFills}
               syncing={busy === 'sync-fills'}
+              onReplay={runReplay}
+              replayBusyId={String(busy).startsWith('replay-') ? busy.replace('replay-', '') : null}
+              replay={replay}
             />
             <DecisionLogTable list={decisionsList} onLoadMore={() => decisionsList.loadMore(selected.id)} />
           </>
@@ -563,7 +582,7 @@ function DecisionLogTable({ list, onLoadMore }) {
   );
 }
 
-function OrdersTable({ list, onLoadMore, onSync, syncing }) {
+function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId, replay }) {
   const orders = list.items;
   return (
     <section className="subsection">
@@ -587,6 +606,7 @@ function OrdersTable({ list, onLoadMore, onSync, syncing }) {
               <th>매도가</th>
               <th>사유</th>
               <th>손익</th>
+              <th>복기</th>
             </tr>
           </thead>
           <tbody>
@@ -600,19 +620,46 @@ function OrdersTable({ list, onLoadMore, onSync, syncing }) {
                   <td>{formatFillPrice(order.buyPrice)}</td>
                   <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
                   <td>{order.sellTime ? formatFillPrice(order.sellPrice) : '-'}</td>
-                  <td>{order.sellReason ? sellReasonLabel(order.sellReason) : '보유 중'}</td>
+                  <td>{rankOrderReasonText(order)}</td>
                   <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
                     {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : (order.sellTime ? '체결 확인 중' : '-')}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      disabled={!order.buyPrice || replayBusyId === String(order.buyOrderId)}
+                      onClick={() => onReplay?.(order)}
+                    >
+                      {replayBusyId === String(order.buyOrderId) ? '복기 중…' : '거래 복기'}
+                    </button>
                   </td>
                 </tr>
               );
             })}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="7">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="8">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>
+      <p className="helper">목표 수익 주문이 접수된 상태에서 손절, 진입 실패, 청산 시각 조건이 나오면 기존 목표가 주문을 먼저 취소한 뒤 새 매도 주문을 시도합니다.</p>
+      {replay && <ReplayPanel replay={replay} />}
       <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
+  );
+}
+
+function ReplayPanel({ replay }) {
+  return (
+    <div className="info-panel compact">
+      <h4>거래 복기</h4>
+      <p className="helper">{replay.symbol} 매수 이후 분봉 기준 흐름입니다. 백테스트가 아니라 실제 거래 한 건을 되짚어 보는 분석입니다.</p>
+      <div className="metric-grid compact-grid">
+        <Metric label="최대 상승" value={formatPercent(replay.mfeRate)} hint="매수 후 고가 기준" />
+        <Metric label="최대 하락" value={formatPercent(replay.maeRate)} hint="매수 후 저가 기준" />
+        <Metric label="진입 실패" value={replay.entryFailure?.hit ? replay.entryFailure.time : '없음'} hint={replay.entryFailure?.reason || '조건 미도달'} />
+        <Metric label="분봉 수" value={`${replay.candleCount || 0}개`} hint={replay.ambiguity?.length ? '일부 1분봉은 선후 관계 불확실' : '분봉 기준 근사'} />
+      </div>
+    </div>
   );
 }
 
@@ -645,7 +692,16 @@ function sellReasonLabel(reason) {
   if (reason === 'TARGET') return '목표 수익';
   if (reason === 'STOP_LOSS') return '손절';
   if (reason === 'TIME_LIQUIDATE') return '청산 시각';
+  if (reason === 'ENTRY_FAILED') return '진입 실패';
   return reason;
+}
+
+function rankOrderReasonText(order) {
+  if (!order.sellReason) return '보유 중';
+  if (order.sellReason === 'TARGET' && !order.sellPrice && order.sellStatus && order.sellStatus !== 'FILLED') {
+    return `목표 수익 주문 ${orderStatusLabel(order.sellStatus)}`;
+  }
+  return sellReasonLabel(order.sellReason);
 }
 
 function entryStatusText(status) {
@@ -687,6 +743,12 @@ function orderStatusLabel(status) {
 
 function pct(rate) {
   return `${(Number(rate || 0) * 100).toFixed(1)}%`;
+}
+
+function formatPercent(rate) {
+  const value = Number(rate);
+  if (!Number.isFinite(value)) return '-';
+  return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)}%`;
 }
 
 function formatKrw(value) {

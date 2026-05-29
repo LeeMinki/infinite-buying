@@ -145,6 +145,10 @@ export const evaluateKrRankStrategy = (id) => request(`/api/kr-rank/strategies/$
 export const syncKrRankFills = (id) => request(`/api/kr-rank/strategies/${id}/sync-fills`, { method: 'POST' });
 export const listKrRankOrders = (id, paging) => request(`/api/kr-rank/strategies/${id}/orders${pageQuery(paging)}`);
 export const listKrRankTradeHistory = (id, paging) => request(`/api/kr-rank/strategies/${id}/trade-history${pageQuery(paging)}`);
+export const replayKrRankTrade = (strategyId, buyOrderId, payload = {}) => request(`/api/kr-rank/strategies/${strategyId}/trade-history/${buyOrderId}/replay`, {
+  method: 'POST',
+  body: JSON.stringify(payload)
+});
 export const listKrRankDecisions = (id, paging) => request(`/api/kr-rank/strategies/${id}/decisions${pageQuery(paging)}`);
 export const listKrRankEntries = (id, paging) => request(`/api/kr-rank/strategies/${id}/entries${pageQuery(paging)}`);
 
@@ -164,6 +168,10 @@ export const syncUsRankFills = (id) => request(`/api/us-rank/strategies/${id}/sy
 export const listUsRankTrades = (id, paging) => request(`/api/us-rank/strategies/${id}/trades${pageQuery(paging)}`);
 export const listUsRankOrders = (id, paging) => request(`/api/us-rank/strategies/${id}/orders${pageQuery(paging)}`);
 export const listUsRankTradeHistory = (id, paging) => request(`/api/us-rank/strategies/${id}/trade-history${pageQuery(paging)}`);
+export const replayUsRankTrade = (strategyId, tradeId, payload = {}) => request(`/api/us-rank/strategies/${strategyId}/trade-history/${tradeId}/replay`, {
+  method: 'POST',
+  body: JSON.stringify(payload)
+});
 export const listUsRankDecisions = (id, paging) => request(`/api/us-rank/strategies/${id}/decisions${pageQuery(paging)}`);
 
 // 페이징 쿼리스트링 생성. limit/offset 둘 다 없으면 빈 문자열.

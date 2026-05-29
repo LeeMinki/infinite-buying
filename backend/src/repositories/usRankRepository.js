@@ -540,6 +540,18 @@ export function getActiveSellOrder(tradeId) {
   `).get(tradeId));
 }
 
+export function getActiveTargetSellOrder(tradeId) {
+  return toOrder(getDb().prepare(`
+    SELECT * FROM us_rank_orders
+    WHERE trade_id = ?
+      AND side = 'SELL'
+      AND sell_reason = 'TARGET'
+      AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED', 'FILLED')
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(tradeId));
+}
+
 // 한 매매에 지금까지 낸 매도 주문 수(모든 상태). 재호가 시 멱등키 접미사(-R{n})를 만든다.
 export function countSellOrders(tradeId) {
   return getDb().prepare(

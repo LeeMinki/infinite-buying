@@ -197,6 +197,10 @@ test('실주문 OFF에서 정규장 진입, 익절 후 재매수, 손절 잠금,
       assert.equal(firstBuy.decision.decision, 'BUY');
       assert.equal(firstBuy.order.status, 'DRY_RUN');
       assert.equal(state.orderCalls || 0, 0);
+      const target = repo.listOrders(user.id, { strategyId: strategy.id })
+        .find((order) => order.side === 'SELL' && order.sellReason === 'TARGET');
+      assert.equal(target.status, 'DECIDED');
+      assert.equal(target.liveOrderEnabled, false);
     });
 
     state.price = 52;

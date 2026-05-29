@@ -136,6 +136,10 @@ test('한국 랭킹은 매수가능금액으로 1주도 못 사는 후보를 건
       assert.equal(result.decision.selectedSymbol, '005930');
       assert.equal(result.decision.expectedQuantity, 2);
       assert.equal(result.order.symbol, '005930');
+      const target = repo.listOrders(user.id, { strategyId: strategy.id })
+        .find((order) => order.side === 'SELL' && order.sellReason === 'TARGET');
+      assert.equal(target.status, 'DECIDED');
+      assert.equal(target.liveOrderEnabled, false);
     });
   });
 });
