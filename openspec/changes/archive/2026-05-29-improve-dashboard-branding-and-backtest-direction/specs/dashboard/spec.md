@@ -13,6 +13,20 @@ The app MUST navigate directly to the dashboard when the user selects the dashbo
 - **THEN** the app shows the dashboard screen
 - **AND** normal KIS settings, backtest, and auto-trading menu navigation still works
 
+### Requirement: Dashboard shall separate strategy type status
+The dashboard MUST distinguish 라오어 무한매수법, 한국 국장 상승률 랭킹, and 미국장 상승률 랭킹 strategy states when such strategies exist.
+
+For each strategy type, the dashboard MUST show available execution status, recent decision, recent order/execution status, and recent error or skipped-order reason.
+
+#### Scenario: Multiple strategy types exist
+- **WHEN** the user has strategies in more than one strategy type
+- **THEN** the dashboard groups or labels status by strategy type
+- **AND** the user can tell which strategy type is running, stopped, or in error
+
+#### Scenario: Recent skip reason exists
+- **WHEN** a strategy recently skipped an order
+- **THEN** the dashboard shows the skip reason in the matching strategy type status
+
 ## MODIFIED Requirements
 
 ### Requirement: Dashboard shall present primary actions in the main workspace
@@ -99,20 +113,6 @@ If data is insufficient for a profit/loss value, the dashboard MUST show a data-
 - **WHEN** no matched sell-side order history exists for a strategy type and period
 - **THEN** the period return area shows a data-insufficient state for that strategy type
 - **AND** it does not infer returns from open positions or unsupported currency conversion
-
-### Requirement: Dashboard shall separate strategy type status
-The dashboard MUST distinguish 라오어 무한매수법, 한국 국장 상승률 랭킹, and 미국장 상승률 랭킹 strategy states when such strategies exist.
-
-For each strategy type, the dashboard MUST show available execution status, recent decision, recent order/execution status, and recent error or skipped-order reason.
-
-#### Scenario: Multiple strategy types exist
-- **WHEN** the user has strategies in more than one strategy type
-- **THEN** the dashboard groups or labels status by strategy type
-- **AND** the user can tell which strategy type is running, stopped, or in error
-
-#### Scenario: Recent skip reason exists
-- **WHEN** a strategy recently skipped an order
-- **THEN** the dashboard shows the skip reason in the matching strategy type status
 
 ### Requirement: Legacy draft area shall be removed
 The dashboard MUST NOT show the legacy "라오어 초안" area.
