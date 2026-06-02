@@ -1,6 +1,6 @@
 # Argo CD 운영 메모
 
-현재 production은 AWS EC2 단일 노드 k3s 위에서 동작한다. Oracle Cloud Ampere A1로 이전하는 작업은 `openspec/changes/migrate-aws-ec2-to-oracle-k3s`에서 진행 중이며, A1 VM 생성과 smoke test가 끝나기 전까지 이 문서는 EC2 운영 기준으로 유지한다.
+현재 production은 Oracle Cloud Ampere A1 단일 노드 k3s 위에서 동작한다. 운영 노드는 OCI 홈 리전 춘천(`ap-chuncheon-1`)의 Always Free A1(`4 OCPU / 24GB RAM`)이며, 2026-06-02에 AWS EC2에서 이전했다.
 
 이 클러스터는 `argocd-server`와 GitHub webhook 없이 Argo CD core 컴포넌트로 애플리케이션을 동기화한다.
 따라서 GitHub Actions가 GitOps image tag 커밋을 push한 직후에는 Argo CD가 아직 이전 Git revision을 보고 있을 수 있다.
@@ -14,22 +14,16 @@
 
 설정 변경 후에는 `argocd-application-controller`와 `argocd-repo-server`를 재시작해야 한다.
 
-## EC2/k3s DNS Loop Guard
+## Oracle A1/k3s 운영 메모
 
-현재 EC2는 AWS VPC 대역이 `10.42.0.0/16`이고, k3s 기본 Pod CIDR도 `10.42.0.0/16`이라 충돌할 수 있다. AWS VPC DNS는 VPC base+2 주소인 `10.42.0.2`인데, CoreDNS pod도 같은 대역의 IP를 받을 수 있어 CoreDNS가 자기 자신에게 forward하는 loop가 발생한다.
+- backend는 SQLite 단일 writer와 scheduler를 포함하므로 production replica를 1개로 유지한다.
+- 이미지 registry는 GHCR이다. 운영 매니페스트에는 AWS ECR pull secret이나 ECR token refresh CronJob이 없어야 한다.
+- TLS는 cert-manager `letsencrypt-prod` ClusterIssuer와 Traefik ingress로 처리한다.
+- `SECRET_ENCRYPTION_KEY`와 `SESSION_SECRET`은 `infinite-buying-secrets` Kubernetes Secret으로 주입한다. 노드를 옮길 때 같은 값을 보존해야 기존 KIS credential을 복호화할 수 있다.
+- Route53은 DNS authority로 유지하지만, 런타임은 OCI A1 클러스터다.
 
-운영 EC2에는 다음 방어 설정을 적용한다.
+## 과거 EC2 DNS Loop Guard 기록
 
-- systemd-resolved가 DHCP로 받은 `10.42.0.2`를 사용하지 않도록 netplan에서 DHCP DNS 수용을 끈다.
-- 노드 DNS는 AWS link-local resolver `169.254.169.253`을 우선 사용한다.
-- CoreDNS `forward` upstream은 `/etc/resolv.conf`가 아니라 `169.254.169.253 1.1.1.1 8.8.8.8`로 고정한다.
-- `infinite-buying-dns-guard.timer`가 5분마다 CoreDNS와 노드 DNS 설정이 되돌아가지 않았는지 확인한다.
-- swap 2GB를 켜서 t3.small에서 k3s/Argo CD가 메모리 압박으로 멈추지 않게 한다.
+AWS EC2 운영 당시에는 AWS VPC 대역과 k3s 기본 Pod CIDR이 겹쳐 CoreDNS loop가 발생할 수 있었다. `infra/operations/install-ec2-runtime-guards.sh`는 그 시절의 복구/기록용 스크립트로 남겨 둔다.
 
-운영 EC2에서 재적용이 필요하면 다음 스크립트를 실행한다.
-
-```bash
-sudo infra/operations/install-ec2-runtime-guards.sh
-```
-
-장기적으로 클러스터를 새로 만들 때는 k3s `--cluster-cidr`를 VPC와 겹치지 않는 대역, 예를 들어 `10.244.0.0/16`, 으로 지정하는 것이 더 근본적인 해결책이다.
+현재 OCI A1 운영 노드에는 이 EC2 guard를 적용하지 않는다. 새 k3s 클러스터를 만들 때는 VCN/VPC 대역과 겹치지 않는 `--cluster-cidr`를 지정한다.

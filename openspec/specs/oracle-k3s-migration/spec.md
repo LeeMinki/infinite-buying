@@ -1,7 +1,7 @@
 # oracle-k3s-migration Specification
 
 ## Purpose
-TBD - created by archiving change migrate-aws-ec2-to-oracle-k3s. Update Purpose after archive.
+AWS EC2 기반 production 런타임을 Oracle Cloud Ampere A1 단일 노드 k3s로 이전한 현재 운영 기준을 기록한다. 운영 이미지는 GHCR에서 pull하고, GitHub Actions와 Argo CD를 통한 GitOps 배포 흐름을 유지한다.
 ## Requirements
 ### Requirement: Oracle A1 single-node k3s shall replace AWS EC2 k3s runtime
 
@@ -136,13 +136,13 @@ AWS runtime resources SHALL be deleted only after Oracle production verification
 #### Scenario: Oracle verification is complete
 
 - **WHEN** the A1 cluster serves production traffic successfully and data integrity is verified
-- **THEN** the AWS EC2 instance can be stopped and later terminated
-- **AND** the AWS EBS volume, Elastic IP, ECR repositories, and unused VPC resources can be removed
+- **THEN** the AWS EC2 instance is stopped and terminated
+- **AND** the AWS EBS volume, Elastic IP, ECR repositories, and unused VPC resources are removed
 - **AND** the Route53 hosted zone remains active
 
-#### Scenario: Oracle verification fails
+#### Scenario: Post-cleanup rollback is needed
 
-- **WHEN** Oracle production verification fails before AWS cleanup
-- **THEN** Route53 can be pointed back to the AWS EC2 public IP and the EC2 backend restarted
-- **AND** AWS EC2 remains available as the rollback runtime
-
+- **WHEN** a runtime rollback is needed after AWS cleanup
+- **THEN** operators provision a new runtime and restore the preserved application data/secrets
+- **AND** Route53 is updated to the replacement runtime after smoke testing
+- **AND** the removed AWS EC2 runtime is not assumed to be immediately available

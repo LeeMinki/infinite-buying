@@ -25,13 +25,13 @@ KIS/        KIS Open API 공식 엑셀 문서 (REST 구현의 1차 기준)
 
 ## 배포/인프라 현황
 
-현재 production은 AWS EC2 단일 노드 k3s + Argo CD + ECR 이미지 배포 구조다. Oracle Cloud Ampere A1로 이전하는 change는 `openspec/changes/migrate-aws-ec2-to-oracle-k3s`에서 진행 중이며, 실제 cutover는 A1 VM 생성과 smoke test가 끝난 뒤에만 한다.
+현재 production은 **Oracle Cloud Ampere A1 단일 노드 k3s + Argo CD + GHCR 이미지 배포 구조**다. 2026-06-02에 AWS EC2에서 이전했고, 운영 노드는 OCI 홈 리전인 춘천(`ap-chuncheon-1`)의 Always Free A1(`4 OCPU / 24GB RAM`)이다.
 
-- 목표 Oracle shape은 Always Free 최대치인 `4 OCPU / 24GB RAM`이다.
-- A1 capacity 확보 전까지 AWS EC2/DNS/ECR 운영 경로를 임의로 삭제하거나 전환하지 않는다.
-- `infra/operations/ensure-oci-a1-region-envs.sh`, `try-create-oci-a1-all-regions.sh`, `try-create-oci-a1.sh`는 A1 capacity 확보용 재시도 스크립트다. 리전별 env가 생기면 서울·도쿄·춘천 순서로 A1 생성을 시도한다.
+- GitHub Actions는 backend/frontend 이미지를 GHCR에 push하고, GitOps image tag 커밋 후 Argo CD가 운영 클러스터에 동기화한다.
+- Route53 hosted zone은 계속 AWS에 남아 있으며, production A record는 OCI A1 public IP를 가리킨다.
+- AWS EC2/ECR/VPC 런타임 리소스는 이전 완료 후 정리되었다. 예전 EC2로 즉시 롤백하는 경로는 더 이상 운영 전제로 두지 않는다.
+- `infra/operations/ensure-oci-a1-region-envs.sh`, `try-create-oci-a1-all-regions.sh`, `try-create-oci-a1.sh`는 A1 capacity 확보용 재시도 스크립트였으며 현재는 비활성 보존 파일이다.
 - OCI resource env, Telegram token, API key, retry env 같은 실행 값은 git에 커밋하지 않는다.
-- Oracle 전환 후에도 GitOps 구조는 유지하되, 이미지 registry는 GHCR로 바꾸는 것이 목표다.
 
 ## 자동매매 전략 3종 (서로 독립)
 
