@@ -4,7 +4,7 @@
 
 ## OCI A1 Retry Scripts
 
-Oracle Cloud Ampere A1 capacity가 생길 때까지 VM 생성을 반복 시도하는 스크립트 묶음이다. AWS EC2에서 Oracle 이전 준비용으로 실행 중이며, A1 VM이 성공적으로 생성되면 이후 k3s/Argo CD/GHCR/DB 이전 작업을 이어간다.
+Oracle Cloud Ampere A1 capacity가 생길 때까지 VM 생성을 반복 시도하는 스크립트 묶음이다. **2026-06-02 홈 리전(춘천)에서 A1을 확보해 이전이 완료**됐으므로 현재는 비활성이며, 향후 홈 리전 A1 capacity가 다시 필요할 때 재사용할 수 있도록 보존한다. 운영 노드의 cron에서 `try-create-oci-a1.sh`를 돌려 성공 시 `~/.oci-a1-created` 플래그로 정지하고, `NOTIFY_EVERY_ATTEMPT=1`이면 매 시도마다(기본은 30분마다) Telegram으로 결과를 보낸다. **Always Free A1은 홈 리전에서만 무료**이므로 비-홈 리전 생성은 과금된다.
 
 현재 목표 shape:
 

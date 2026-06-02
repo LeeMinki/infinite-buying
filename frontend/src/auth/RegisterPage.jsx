@@ -33,7 +33,7 @@ export function RegisterPage({ onSwitch }) {
           <div className="brand-logo" aria-hidden="true">∞</div>
           <div className="brand-text">
             <h1>무한매수 해죠</h1>
-            <span>전략 운용 대시보드</span>
+            <span>티끌모아 태산</span>
           </div>
         </div>
         <label>
