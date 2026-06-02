@@ -18,8 +18,6 @@ spec:
       labels:
         app: infinite-buying-frontend
     spec:
-      imagePullSecrets:
-        - name: ecr-registry
       containers:
         - name: frontend
           image: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend:latest

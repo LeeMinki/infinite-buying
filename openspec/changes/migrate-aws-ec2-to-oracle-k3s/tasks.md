@@ -11,24 +11,24 @@
 - [x] 2.2 Create OCI VCN, public subnet, internet gateway, route table, and security list or NSG because no reusable VCN is available.
 - [x] 2.3 Configure OCI network rules for SSH (22, restricted source), HTTP (80), and HTTPS (443); do not expose the k3s API (6443) publicly unless required.
 - [x] 2.4 Provision one Ampere A1 (ARM64) Ubuntu instance with 4 OCPU / 24GB RAM (Always Free max) and record its public/private IPs; run the OCI region env bootstrap and multi-region retry scripts on a cron to retry subscribed regions until host capacity is available.
-- [ ] 2.5 Configure swap and verify memory headroom for k3s, Argo CD, cert-manager, Traefik, backend, and frontend.
+- [x] 2.5 Configure swap and verify memory headroom for k3s, Argo CD, cert-manager, Traefik, backend, and frontend.
 
 ## 3. k3s Cluster Bring-up
 
-- [ ] 3.1 Install single-server k3s on the A1 node (bundled Traefik and ServiceLB).
-- [ ] 3.2 Create the hostPath data directory `/var/lib/infinite-buying/backend` with correct ownership.
+- [x] 3.1 Install single-server k3s on the A1 node (bundled Traefik and ServiceLB).
+- [x] 3.2 Create the hostPath data directory `/var/lib/infinite-buying/backend` with correct ownership.
 - [ ] 3.3 Install Argo CD and register the `infra/kubernetes/argocd/applications/infinite-buying-mvp.yaml` Application against this repo.
-- [ ] 3.4 Install cert-manager and create the `letsencrypt-prod` ClusterIssuer.
+- [x] 3.4 Install cert-manager and create the `letsencrypt-prod` ClusterIssuer.
 
 ## 4. GHCR, ARM64 Build, and Manifest Migration
 
-- [ ] 4.1 Update GitHub Actions to remove AWS credential configuration, ECR login, ECR repository creation, and ECR push; remove the AWS OIDC `id-token` permission.
+- [x] 4.1 Update GitHub Actions to remove AWS credential configuration, ECR login, ECR repository creation, and ECR push; remove the AWS OIDC `id-token` permission.
 - [ ] 4.2 Add GHCR login and the `packages: write` permission; push backend/frontend images to GHCR.
-- [ ] 4.3 Add `linux/arm64` (or multi-arch) build via buildx + QEMU or an ARM runner for backend and frontend.
-- [ ] 4.4 Update the GitOps tag-commit step to write GHCR `newName` values into `overlays/mvp/kustomization.yaml`.
-- [ ] 4.5 Update `overlays/mvp/kustomization.yaml` image `name`/`newName` to the GHCR coordinates.
-- [ ] 4.6 Remove ECR `imagePullSecrets` from backend/frontend Deployments (public package) or replace with a GHCR pull secret (private package).
-- [ ] 4.7 Remove `ecr-refresh-cronjob.yaml` and `ecr-refresh-rbac.yaml` from the base kustomization.
+- [x] 4.3 Add `linux/arm64` (or multi-arch) build via buildx + QEMU or an ARM runner for backend and frontend.
+- [x] 4.4 Update the GitOps tag-commit step to write GHCR `newName` values into `overlays/mvp/kustomization.yaml`.
+- [x] 4.5 Update `overlays/mvp/kustomization.yaml` image `name`/`newName` to the GHCR coordinates.
+- [x] 4.6 Remove ECR `imagePullSecrets` from backend/frontend Deployments (public package) or replace with a GHCR pull secret (private package).
+- [x] 4.7 Remove `ecr-refresh-cronjob.yaml` and `ecr-refresh-rbac.yaml` from the base kustomization.
 
 ## 5. Secrets, Data Restore, and Smoke Test
 
