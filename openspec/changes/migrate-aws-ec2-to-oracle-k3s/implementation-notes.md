@@ -338,3 +338,5 @@ TLS note:
 - During cert-manager HTTP-01 validation, the hostless `infinite-buying-ip-fallback` ingress routed ACME challenge paths to the frontend.
 - The fallback ingress is no longer needed after DNS cutover and was removed from the base kustomization.
 - The fallback ingress was also deleted from the A1 cluster so cert-manager can route challenge paths to the solver pods.
+- After the certificate became Ready, Traefik returned 404 because the ingress annotations referenced redirect middleware names without the namespace-qualified Traefik CRD reference format.
+- To restore production routing first, the redirect middleware annotations were removed from the public ingress manifests. HTTPS still terminates with the issued certificate, but HTTP and `www` canonical redirects are not enforced by these annotations in this migration step.
