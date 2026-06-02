@@ -4,6 +4,9 @@ node_modules/
 dist/
 build/
 *.log
+oci-resources*.env
+retry.env
+.oci-a1-*
 backend/data/*.db
 backend/data/*.db-*
 backend/**/data/*.db

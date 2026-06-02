@@ -378,4 +378,18 @@ npm run dev      # backend(:4000)·frontend dev 서버 동시 실행
 
 ## 배포
 
-GitHub Actions, ECR, k3s, Argo CD 기반 배포 자동화를 사용합니다. `main`에 머지되면 Deploy 워크플로가 ECR 이미지를 빌드·푸시하고 GitOps 매니페스트의 이미지 태그를 갱신하면, Argo CD가 이를 동기화합니다. 배포 매니페스트와 상세 구성은 [infra/](infra/)와 [infra/kubernetes/argocd/README.md](infra/kubernetes/argocd/README.md)를 참고하세요.
+현재 운영 환경은 AWS EC2 단일 노드 k3s + Argo CD + cert-manager + Traefik 구성입니다. `main`에 머지되면 GitHub Actions가 backend/frontend 이미지를 빌드해 ECR에 push하고, GitOps 매니페스트의 이미지 태그를 갱신하면 Argo CD가 운영 클러스터에 동기화합니다.
+
+비용 절감을 위해 Oracle Cloud Ampere A1(ARM64) 단일 노드 k3s로 이전하는 OpenSpec change가 진행 중입니다. 목표 구조는 기존 Argo CD GitOps를 유지하되 이미지 레지스트리를 ECR에서 GHCR로 바꾸고, ARM64 이미지를 빌드해 Oracle k3s에 배포하는 방식입니다.
+
+현재 이전은 Oracle A1 capacity 확보 전 단계입니다.
+
+- 대상 shape은 Always Free 최대치인 `4 OCPU / 24GB RAM`입니다.
+- 기본 OCI 네트워크는 준비됐지만, A1 VM 생성은 `Out of host capacity`로 대기 중입니다.
+- 현재 구독된 OCI 리전을 더 활용하기 위해 `infra/operations/ensure-oci-a1-region-envs.sh`가 리전별 VCN/subnet/security rule env를 준비하고, `infra/operations/try-create-oci-a1-all-regions.sh`가 서울·도쿄·춘천 순서로 A1 생성을 시도합니다.
+- 현재 AWS EC2에서 해당 스크립트들을 cron으로 실행해 A1 capacity가 생길 때까지 1분마다 시도합니다.
+- 이전 요청이 아직 끝나지 않았으면 lock으로 다음 실행을 건너뜁니다.
+- Telegram heartbeat는 30분마다 최근 시도 횟수와 마지막 실패 사유를 요약합니다.
+- A1 VM이 생성되고 k3s/Argo CD/GHCR/DB/secret 이전 smoke test가 끝나기 전까지 DNS와 AWS 런타임은 전환하지 않습니다.
+
+마이그레이션 계획과 현재 적용 기록은 [openspec/changes/migrate-aws-ec2-to-oracle-k3s](openspec/changes/migrate-aws-ec2-to-oracle-k3s)를 참고하세요. 배포 매니페스트와 Argo CD 운영 메모는 [infra/](infra/)와 [infra/kubernetes/argocd/README.md](infra/kubernetes/argocd/README.md)를 참고하세요.
