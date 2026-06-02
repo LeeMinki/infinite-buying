@@ -1,5 +1,7 @@
 # Argo CD 운영 메모
 
+현재 production은 AWS EC2 단일 노드 k3s 위에서 동작한다. Oracle Cloud Ampere A1로 이전하는 작업은 `openspec/changes/migrate-aws-ec2-to-oracle-k3s`에서 진행 중이며, A1 VM 생성과 smoke test가 끝나기 전까지 이 문서는 EC2 운영 기준으로 유지한다.
+
 이 클러스터는 `argocd-server`와 GitHub webhook 없이 Argo CD core 컴포넌트로 애플리케이션을 동기화한다.
 따라서 GitHub Actions가 GitOps image tag 커밋을 push한 직후에는 Argo CD가 아직 이전 Git revision을 보고 있을 수 있다.
 
