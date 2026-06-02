@@ -316,3 +316,25 @@ Validation:
 - Confirmed no rendered `imagePullSecrets` or ECR image references remain in the application manifests.
 
 GHCR image push is still pending the merge/build workflow run. The A1 Argo CD Application, production secrets, SQLite restore, and DNS cutover remain intentionally pending until that workflow succeeds.
+
+### 2026-06-02 A1 Application Sync and DNS Cutover
+
+After GHCR image publishing succeeded, the A1 cluster was promoted toward production.
+
+Completed steps:
+
+- Recreated `infinite-buying-secrets` on the A1 cluster from the EC2 cluster without printing secret values.
+- Scaled the EC2 backend deployment to zero before the final DB backup to prevent scheduler duplication and data divergence.
+- Created a SQLite `.backup` file from the EC2 hostPath DB.
+- Restored the backup to the A1 hostPath DB and verified the restored file checksum.
+- Registered the Argo CD `infinite-buying-mvp` Application on the A1 cluster.
+- Confirmed the Application reached `Synced/Healthy` and backend/frontend pods were Running.
+- Verified HTTP `/api/health` through the A1 public IP with the production Host header.
+- Updated Route53 `infinite-buying.yuna-pa.com` A record from the AWS EC2 public IP to the A1 public IP.
+- Confirmed `www.infinite-buying.yuna-pa.com` still resolves through the existing CNAME.
+
+TLS note:
+
+- During cert-manager HTTP-01 validation, the hostless `infinite-buying-ip-fallback` ingress routed ACME challenge paths to the frontend.
+- The fallback ingress is no longer needed after DNS cutover and was removed from the base kustomization.
+- The fallback ingress was also deleted from the A1 cluster so cert-manager can route challenge paths to the solver pods.
