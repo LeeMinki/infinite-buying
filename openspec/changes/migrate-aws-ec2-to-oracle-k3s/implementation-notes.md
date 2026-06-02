@@ -264,3 +264,55 @@ Follow-up:
 - Corrected the EC2 resource env file because OCI CLI wait output was mixed into the stored instance ID.
 - Updated `try-create-oci-a1.sh` to extract only the `ocid1.instance...` value from OCI CLI output before writing runtime env state.
 - Do not switch DNS or stop AWS yet. The next migration step is k3s/swap/bootstrap on the new A1 node, then GHCR/Argo CD/data/secret migration and smoke testing.
+
+### 2026-06-02 A1 k3s Bootstrap
+
+Bootstrapped the Tokyo A1 instance as the target single-node runtime.
+
+Observed node state:
+
+- Host: `infinite-buying-a1-k3s`
+- Shape: 4 OCPU / 24GB RAM
+- OS: Ubuntu 22.04 ARM64
+- Runtime architecture: `aarch64`
+- k3s: `v1.35.5+k3s1`
+- Public IP: recorded in the private OCI resource env
+- Private IP: recorded in the private OCI resource env
+
+Node preparation:
+
+- Configured a 4GB swap file and `vm.swappiness=10`.
+- Created `/var/lib/infinite-buying/backend` for the backend hostPath SQLite directory.
+- Verified memory headroom after k3s, Argo CD, cert-manager, Traefik, and system pods were running: roughly 21GB available, swap unused.
+
+Cluster bootstrap:
+
+- Installed single-server k3s with bundled Traefik and ServiceLB.
+- Installed Argo CD in the `argocd` namespace.
+- Installed cert-manager in the `cert-manager` namespace.
+- Created `letsencrypt-staging` and `letsencrypt-prod` ClusterIssuers using the existing maintainer email.
+- Verified k3s node Ready and cluster add-on pods Running.
+
+The Argo CD Application is intentionally not registered yet because current committed manifests still point at the pre-migration image state until the GHCR/ARM64 workflow change is merged and GHCR images are available.
+
+### 2026-06-02 GHCR Manifest and Workflow Preparation
+
+Prepared the repository for GHCR and ARM-compatible deployment.
+
+Code changes:
+
+- GitHub Actions no longer configures AWS credentials, ECR login, ECR repository creation, or ECR push.
+- GitHub Actions now has `packages: write`, logs in to GHCR, and uses buildx/QEMU.
+- Backend and frontend images are configured as multi-arch `linux/amd64,linux/arm64` images.
+- The GitOps image tag commit step now writes GHCR image coordinates.
+- The mvp overlay points at `ghcr.io/leeminki/infinite-buying-backend` and `ghcr.io/leeminki/infinite-buying-frontend`.
+- Backend/frontend Deployments no longer reference the ECR pull secret.
+- The base kustomization no longer includes the ECR refresh CronJob/RBAC.
+
+Validation:
+
+- Rendered the local mvp overlay through the A1 node's k3s kubectl.
+- Confirmed rendered images are GHCR images.
+- Confirmed no rendered `imagePullSecrets` or ECR image references remain in the application manifests.
+
+GHCR image push is still pending the merge/build workflow run. The A1 Argo CD Application, production secrets, SQLite restore, and DNS cutover remain intentionally pending until that workflow succeeds.

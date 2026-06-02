@@ -12,5 +12,3 @@ resources:
   - ingress-www.yaml
   - middleware-https-redirect.yaml
   - middleware-www-redirect.yaml
-  - ecr-refresh-rbac.yaml
-  - ecr-refresh-cronjob.yaml
