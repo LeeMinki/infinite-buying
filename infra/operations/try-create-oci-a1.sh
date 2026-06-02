@@ -32,6 +32,11 @@ HEARTBEAT_FILE="${HEARTBEAT_FILE:-$HOME/.oci-a1-heartbeat}"
 ATTEMPT_COUNT_FILE="${ATTEMPT_COUNT_FILE:-$HOME/.oci-a1-attempts}"
 LAST_ERROR_FILE="${LAST_ERROR_FILE:-$HOME/.oci-a1-last-error}"
 
+# If 1, send a Telegram message on EVERY attempt (each failure with its reason) instead of
+# only the periodic heartbeat. Noisy (cron runs every minute) but gives per-attempt visibility.
+# When 0 (default), the HEARTBEAT_INTERVAL summary is used instead.
+NOTIFY_EVERY_ATTEMPT="${NOTIFY_EVERY_ATTEMPT:-0}"
+
 log() {
   printf '%s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$LOG_FILE"
 }
@@ -56,7 +61,11 @@ record_failure() {
   count=$((count + 1))
   printf '%s\n' "$count" > "$ATTEMPT_COUNT_FILE"
   printf '%s\n' "$reason" > "$LAST_ERROR_FILE"
-  maybe_heartbeat
+  if [ "$NOTIFY_EVERY_ATTEMPT" = "1" ]; then
+    notify "[infinite-buying A1] ❌ ${OCI_REGION:-?} A1 시도 실패 (#${count}): ${reason:-unknown} (${OCPUS}OCPU/${MEMORY_GB}GB, $(date '+%H:%M %Z'))"
+  else
+    maybe_heartbeat
+  fi
 }
 
 # If HEARTBEAT_INTERVAL has elapsed since the last heartbeat, send a Telegram summary of
