@@ -3,8 +3,6 @@ kind: Ingress
 metadata:
   name: infinite-buying-www
   namespace: infinite-buying
-  annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: infinite-buying-https-redirect@kubernetescrd,infinite-buying-www-redirect@kubernetescrd
 spec:
   ingressClassName: traefik
   tls:
