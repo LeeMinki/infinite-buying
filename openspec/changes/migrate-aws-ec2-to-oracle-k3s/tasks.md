@@ -10,7 +10,7 @@
 - [x] 2.1 Verify OCI CLI authentication and confirm target region, compartment, and availability domain from current OCI config.
 - [x] 2.2 Create OCI VCN, public subnet, internet gateway, route table, and security list or NSG because no reusable VCN is available.
 - [x] 2.3 Configure OCI network rules for SSH (22, restricted source), HTTP (80), and HTTPS (443); do not expose the k3s API (6443) publicly unless required.
-- [ ] 2.4 Provision one Ampere A1 (ARM64) Ubuntu instance with 4 OCPU / 24GB RAM (Always Free max) and record its public/private IPs; run the OCI region env bootstrap and multi-region retry scripts on a cron to retry subscribed regions until host capacity is available.
+- [x] 2.4 Provision one Ampere A1 (ARM64) Ubuntu instance with 4 OCPU / 24GB RAM (Always Free max) and record its public/private IPs; run the OCI region env bootstrap and multi-region retry scripts on a cron to retry subscribed regions until host capacity is available.
 - [ ] 2.5 Configure swap and verify memory headroom for k3s, Argo CD, cert-manager, Traefik, backend, and frontend.
 
 ## 3. k3s Cluster Bring-up

@@ -163,8 +163,9 @@ RESULT="$("$OCI_BIN" "${REGION_ARGS[@]}" compute instance launch \
   --query 'data.id' \
   --raw-output 2>&1)"
 EXIT_CODE=$?
+INSTANCE_ID="$(printf '%s\n' "$RESULT" | grep -o 'ocid1[.]instance[^[:space:]]*' | tail -n1 || true)"
 
-if [ "$EXIT_CODE" -ne 0 ] || [ -z "$RESULT" ] || [ "$RESULT" = "null" ] || ! printf '%s' "$RESULT" | grep -q '^ocid1.instance'; then
+if [ "$EXIT_CODE" -ne 0 ] || [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
   log "Failed to launch instance. exit_code=$EXIT_CODE"
   log "$RESULT"
   log "---"
@@ -173,7 +174,6 @@ if [ "$EXIT_CODE" -ne 0 ] || [ -z "$RESULT" ] || [ "$RESULT" = "null" ] || ! pri
   exit 1
 fi
 
-INSTANCE_ID="$RESULT"
 log "SUCCESS: instance created and RUNNING: $INSTANCE_ID"
 
 VNIC_ID="$("$OCI_BIN" "${REGION_ARGS[@]}" compute vnic-attachment list \

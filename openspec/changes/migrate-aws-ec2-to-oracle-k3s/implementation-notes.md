@@ -247,3 +247,20 @@ Current state:
 - The bootstrap script validates each required OCID before writing a region env file, so partial/empty regional env files are not retained.
 - Until Seoul/Tokyo authentication and network bootstrap succeed, the retry wrapper skips those missing regional env files and continues using the existing Chuncheon env.
 - Once authentication works, the EC2 cron will create the Seoul/Tokyo network env files and include them in subsequent A1 launch attempts without another manual script change.
+
+### 2026-06-02 A1 Instance Created
+
+The EC2 retry runner successfully created an Ampere A1 instance in Tokyo.
+
+Result:
+
+- Shape: 4 OCPU / 24GB RAM
+- State: RUNNING
+- Public IP and private IP were recorded in the EC2-local Tokyo resource env file
+- Success flag was created, so future cron executions exit without creating another instance
+
+Follow-up:
+
+- Corrected the EC2 resource env file because OCI CLI wait output was mixed into the stored instance ID.
+- Updated `try-create-oci-a1.sh` to extract only the `ocid1.instance...` value from OCI CLI output before writing runtime env state.
+- Do not switch DNS or stop AWS yet. The next migration step is k3s/swap/bootstrap on the new A1 node, then GHCR/Argo CD/data/secret migration and smoke testing.
