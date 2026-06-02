@@ -340,3 +340,32 @@ TLS note:
 - The fallback ingress was also deleted from the A1 cluster so cert-manager can route challenge paths to the solver pods.
 - After the certificate became Ready, Traefik returned 404 because the ingress annotations referenced redirect middleware names without the namespace-qualified Traefik CRD reference format.
 - To restore production routing first, the redirect middleware annotations were removed from the public ingress manifests. HTTPS still terminates with the issued certificate, but HTTP and `www` canonical redirects are not enforced by these annotations in this migration step.
+
+### 2026-06-02 Production Verification and AWS Cleanup
+
+Final production state:
+
+- Route53 `infinite-buying.yuna-pa.com` A record points to the Oracle A1 public IP.
+- `www.infinite-buying.yuna-pa.com` remains a CNAME to `infinite-buying.yuna-pa.com`.
+- A1 Argo CD Application is `Synced/Healthy`.
+- A1 backend and frontend deployments are both `1/1` Running.
+- cert-manager certificate `infinite-buying-tls-secret` is Ready.
+- `https://infinite-buying.yuna-pa.com/` returns HTTP 200.
+- `https://infinite-buying.yuna-pa.com/api/health` returns `{ "ok": true, "enableLiveOrder": false }`.
+- The restored SQLite DB contains existing users, one KIS credential row, and existing auto-trading orders/decision logs.
+- A cutover DB backup is retained on the A1 node at `/var/lib/infinite-buying/backend/backups/app.db.cutover-20260602T073529Z`.
+
+AWS cleanup completed after A1 verification:
+
+- Stopped the AWS EC2 backend/runtime and confirmed production still served from A1.
+- Terminated EC2 instance `i-00e45b6e3c8a1308d`.
+- Confirmed root EBS volume `vol-0e40b53b428d44065` was deleted through `DeleteOnTermination`.
+- Released Elastic IP `3.39.3.103`.
+- Deleted ECR repositories `infinite-buying-backend` and `infinite-buying-frontend`.
+- Deleted the old AWS VPC `vpc-0072935de4f706da7` and its subnet, route table, internet gateway, and custom security group.
+- Confirmed the old ECR repositories and Elastic IP no longer exist.
+
+Rollback note:
+
+- DNS can no longer be rolled back to the previous EC2 runtime because the AWS runtime resources were removed after verification.
+- The retained rollback artifact is the A1 cutover DB backup.

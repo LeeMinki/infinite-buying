@@ -17,13 +17,13 @@
 
 - [x] 3.1 Install single-server k3s on the A1 node (bundled Traefik and ServiceLB).
 - [x] 3.2 Create the hostPath data directory `/var/lib/infinite-buying/backend` with correct ownership.
-- [ ] 3.3 Install Argo CD and register the `infra/kubernetes/argocd/applications/infinite-buying-mvp.yaml` Application against this repo.
+- [x] 3.3 Install Argo CD and register the `infra/kubernetes/argocd/applications/infinite-buying-mvp.yaml` Application against this repo.
 - [x] 3.4 Install cert-manager and create the `letsencrypt-prod` ClusterIssuer.
 
 ## 4. GHCR, ARM64 Build, and Manifest Migration
 
 - [x] 4.1 Update GitHub Actions to remove AWS credential configuration, ECR login, ECR repository creation, and ECR push; remove the AWS OIDC `id-token` permission.
-- [ ] 4.2 Add GHCR login and the `packages: write` permission; push backend/frontend images to GHCR.
+- [x] 4.2 Add GHCR login and the `packages: write` permission; push backend/frontend images to GHCR.
 - [x] 4.3 Add `linux/arm64` (or multi-arch) build via buildx + QEMU or an ARM runner for backend and frontend.
 - [x] 4.4 Update the GitOps tag-commit step to write GHCR `newName` values into `overlays/mvp/kustomization.yaml`.
 - [x] 4.5 Update `overlays/mvp/kustomization.yaml` image `name`/`newName` to the GHCR coordinates.
@@ -32,27 +32,27 @@
 
 ## 5. Secrets, Data Restore, and Smoke Test
 
-- [ ] 5.1 Recreate `infinite-buying-secrets` on the A1 cluster with the preserved `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, and KIS values; create a GHCR pull secret if the package is private.
-- [ ] 5.2 With the A1 backend held at `ENABLE_LIVE_ORDER=false`, stop the EC2 backend (`replicas: 0`), back up `app.db` with `sqlite3 .backup`, and record checksum/size/timestamp.
-- [ ] 5.3 Restore the backed-up `app.db` to the A1 node at `/var/lib/infinite-buying/backend/app.db` and verify checksum.
-- [ ] 5.4 Confirm Argo CD syncs the Application and all pods are Running on the A1 cluster.
-- [ ] 5.5 Verify backend `/api/health`, login, KIS settings metadata, backtest page, auto-trading page, and recent order/log data.
-- [ ] 5.6 Confirm only one production backend scheduler is active (EC2 backend down) before live traffic cutover.
+- [x] 5.1 Recreate `infinite-buying-secrets` on the A1 cluster with the preserved `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, and KIS values; create a GHCR pull secret if the package is private.
+- [x] 5.2 With the A1 backend held at `ENABLE_LIVE_ORDER=false`, stop the EC2 backend (`replicas: 0`), back up `app.db` with `sqlite3 .backup`, and record checksum/size/timestamp.
+- [x] 5.3 Restore the backed-up `app.db` to the A1 node at `/var/lib/infinite-buying/backend/app.db` and verify checksum.
+- [x] 5.4 Confirm Argo CD syncs the Application and all pods are Running on the A1 cluster.
+- [x] 5.5 Verify backend `/api/health`, login, KIS settings metadata, backtest page, auto-trading page, and recent order/log data.
+- [x] 5.6 Confirm only one production backend scheduler is active (EC2 backend down) before live traffic cutover.
 
 ## 6. DNS Cutover and Verification
 
-- [ ] 6.1 Update Route53 `infinite-buying.yuna-pa.com` A record from the AWS EC2 IP to the A1 public IP.
-- [ ] 6.2 Verify `www.infinite-buying.yuna-pa.com` still resolves through the existing CNAME.
-- [ ] 6.3 Verify cert-manager issues the TLS certificate (HTTP-01) and Traefik serves HTTPS.
-- [ ] 6.4 Switch the A1 backend `ENABLE_LIVE_ORDER` to the production value and re-confirm the EC2 backend stays down.
-- [ ] 6.5 Verify production HTTPS traffic reaches the A1 frontend/backend.
-- [ ] 6.6 Monitor pod status, cert-manager/Traefik, backend logs, scheduler logs, KIS token issuance, and user-facing pages after cutover.
+- [x] 6.1 Update Route53 `infinite-buying.yuna-pa.com` A record from the AWS EC2 IP to the A1 public IP.
+- [x] 6.2 Verify `www.infinite-buying.yuna-pa.com` still resolves through the existing CNAME.
+- [x] 6.3 Verify cert-manager issues the TLS certificate (HTTP-01) and Traefik serves HTTPS.
+- [x] 6.4 Switch the A1 backend `ENABLE_LIVE_ORDER` to the production value and re-confirm the EC2 backend stays down.
+- [x] 6.5 Verify production HTTPS traffic reaches the A1 frontend/backend.
+- [x] 6.6 Monitor pod status, cert-manager/Traefik, backend logs, scheduler logs, KIS token issuance, and user-facing pages after cutover.
 
 ## 7. Rollback and AWS Cleanup
 
-- [ ] 7.1 Keep AWS EC2 and EBS available until Oracle production verification is complete.
-- [ ] 7.2 Document rollback steps to point Route53 back to `3.39.3.103` and restart the EC2 backend.
-- [ ] 7.3 After verification, stop AWS EC2 and confirm production remains healthy on the A1 cluster.
-- [ ] 7.4 Terminate AWS EC2, delete EBS, release Elastic IP, and remove unused VPC resources after final backup is retained.
-- [ ] 7.5 Delete ECR repositories or apply lifecycle cleanup after confirming GHCR deployment is stable.
-- [ ] 7.6 Confirm only the Route53 hosted zone remains as the intended AWS runtime cost.
+- [x] 7.1 Keep AWS EC2 and EBS available until Oracle production verification is complete.
+- [x] 7.2 Document rollback steps to point Route53 back to `3.39.3.103` and restart the EC2 backend.
+- [x] 7.3 After verification, stop AWS EC2 and confirm production remains healthy on the A1 cluster.
+- [x] 7.4 Terminate AWS EC2, delete EBS, release Elastic IP, and remove unused VPC resources after final backup is retained.
+- [x] 7.5 Delete ECR repositories or apply lifecycle cleanup after confirming GHCR deployment is stable.
+- [x] 7.6 Confirm only the Route53 hosted zone remains as the intended AWS runtime cost.
