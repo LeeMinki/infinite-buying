@@ -62,7 +62,7 @@ TELEGRAM_CHAT_ID=...
 
 `TELEGRAM_TOKEN`, OCI API key, `retry.env`, `oci-resources.env` 같은 실행 값은 git에 커밋하지 않는다.
 
-EC2 cron 예시:
+과거 EC2 retry runner cron 예시:
 
 ```cron
 * * * * * set -a; . /home/<user>/oci-a1-retry/retry.env; set +a; /home/<user>/oci-a1-retry/ensure-oci-a1-region-envs.sh; /home/<user>/oci-a1-retry/try-create-oci-a1-all-regions.sh >/dev/null 2>&1
@@ -76,4 +76,4 @@ tail -f ~/oci-a1-create.log
 
 ## `install-ec2-runtime-guards.sh`
 
-현재 AWS EC2 k3s 런타임의 DNS loop와 메모리 압박을 완화하는 guard를 설치한다. Oracle 이전이 완료되기 전까지 AWS EC2는 rollback 대상이므로, 이 스크립트와 EC2 운영 메모는 유지한다.
+과거 AWS EC2 k3s 런타임의 DNS loop와 메모리 압박을 완화하던 guard 설치 스크립트다. 현재 production은 OCI A1에서 동작하므로 이 스크립트는 운영 적용 대상이 아니라 이전 기록과 재현용으로만 보존한다.
