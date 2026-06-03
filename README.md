@@ -380,9 +380,9 @@ npm run dev      # backend(:4000)·frontend dev 서버 동시 실행
 
 현재 운영 환경은 **Oracle Cloud Ampere A1(ARM64) 단일 노드 k3s + Argo CD + cert-manager + Traefik** 구성입니다(2026-06-02 AWS EC2에서 이전 완료). 노드는 홈 리전 `ap-chuncheon-1`의 Always Free A1(`4 OCPU / 24GB`)이라 컴퓨트 비용이 들지 않습니다.
 
-`main`에 머지되면 GitHub Actions가 backend/frontend 이미지를 **multi-arch(amd64+arm64)** 로 빌드해 **GHCR**에 push하고, GitOps 매니페스트(`infra/kubernetes/infinite-buying/overlays/mvp/kustomization.yaml`)의 이미지 태그를 갱신하면 Argo CD가 운영 클러스터에 자동 동기화합니다. `[skip deploy]`가 커밋 메시지에 있으면 배포를 건너뜁니다.
+`main`에 머지되면 GitHub Actions가 backend/frontend 이미지를 **multi-arch(amd64+arm64)** 로 빌드해 **OCIR (Oracle Cloud Container Registry, ap-chuncheon-1)** 에 push하고, GitOps 매니페스트(`infra/kubernetes/infinite-buying/overlays/mvp/kustomization.yaml`)의 이미지 태그를 갱신하면 Argo CD가 운영 클러스터에 자동 동기화합니다. `[skip deploy]`가 커밋 메시지에 있으면 배포를 건너뜁니다.
 
-- 이미지: `ghcr.io/leeminki/infinite-buying-backend`, `ghcr.io/leeminki/infinite-buying-frontend`.
+- 이미지: `yny.ocir.io/axnyuujz40an/infinite-buying-backend`, `yny.ocir.io/axnyuujz40an/infinite-buying-frontend`.
 - backend는 SQLite 단일 writer + scheduler라 replica 1개로 고정합니다(노드 장애 시 무중단 HA는 비목표).
 - TLS는 cert-manager `letsencrypt-prod` ClusterIssuer가 HTTP-01로 발급합니다.
 - `SECRET_ENCRYPTION_KEY`/`SESSION_SECRET`은 클러스터 Secret(`infinite-buying-secrets`)으로 주입하며, 노드를 옮길 때 동일 값을 보존해야 기존 KIS credential 복호화가 깨지지 않습니다.
