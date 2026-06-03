@@ -45,7 +45,7 @@ export function DashboardPage({ user, onOpenKis, onOpenBacktest, onOpenAutoTradi
   return (
     <section className="content dashboard">
       <header className="dashboard-header">
-        <h2>운용 대시보드</h2>
+        <h2>대시보드</h2>
         <p>{user?.email ? `${user.email} · ` : ''}계좌, 전략, 주문 상태를 한 화면에서 확인합니다.</p>
       </header>
 
