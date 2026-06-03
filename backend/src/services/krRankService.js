@@ -14,13 +14,13 @@ import {
   parseHhmmMinutes,
   makeKrRankIdempotencyKey,
   checkBuyCandidate,
-  MAX_FLUCTUATION_RATE
+  maxFluctuationRateForEntryWindow
 } from './krRankStrategyEngine.js';
 
 const LOCK_KEY = 'evaluate';
 const RANKING_SNAPSHOT_SIZE = 10;
 // 매수 필터(분봉 단기 흐름 검사)에서 검사할 상위 후보 개수.
-// 1위부터 차례로 분봉을 조회해 통과한 첫 종목을 산다. 너무 크면 KIS 호출이 늘어 rate limit 위험.
+// 상위 후보들을 점수화해 고르되, 너무 크면 KIS 호출이 늘어 rate limit 위험이 있어 제한한다.
 const BUY_FILTER_CANDIDATE_LIMIT = 5;
 // 같은 (날짜·전략·구간·방향) 주문이 실패로 누적되면 더 시도하지 않는 한도.
 const ORDER_RETRY_LIMIT = 5;
@@ -447,8 +447,9 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     // 랭킹 조회 실패 시 예외가 상위로 전파되어 ERROR로 기록된다(진입 기록 미생성 → 다음 tick 재시도).
     const ranking = await getDomesticFluctuationRanking(userId);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
-    // 등락률 상한(기본 20%) 미만 후보를 위에서부터 모은 뒤, 매수 필터(분봉 단기 흐름)로 한 번 더 거른다.
-    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE })
+    // 구간별 등락률 상한 미만 후보를 모은 뒤, 매수 필터(분봉 단기 흐름)와 점수로 한 번 더 거른다.
+    const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
+    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate })
       .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
     const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
     const picked = filterResult.picked;
@@ -458,7 +459,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       // 후보 없음/전원 거절: 진입 기록을 만들지 않고(또는 레거시 기록을 SELECTED로 굳히지 않고) SKIP만 한다.
       // 다음 tick에 랭킹을 다시 본다. 스케줄러 SKIP은 매분 폴링 노이즈를 막기 위해 로그를 남기지 않는다.
       const reason = candidates.length === 0
-        ? `${label} 진입: 등락률 ${MAX_FLUCTUATION_RATE * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
+        ? `${label} 진입: 등락률 ${maxFluctuationRate * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
         : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
@@ -941,11 +942,12 @@ async function safeOpenOrders(trading, symbol) {
   }
 }
 
-// 상위 후보를 순서대로 보면서 매수 필터(시가·VWAP·거래량·장대 음봉·고점 돌파)를 적용.
-// 첫 통과 후보를 picked로 반환. 모두 거절되면 picked=null과 거절 사유 목록을 함께 돌려준다.
+// 상위 후보를 순서대로 보면서 매수 필터(시가·VWAP·거래량·장대 음봉·고점 돌파)를 적용한다.
+// 통과 후보 중 점수가 가장 높은 후보를 picked로 반환한다. 모두 거절되면 picked=null과 거절 사유 목록을 함께 돌려준다.
 // 분봉 조회가 실패한 후보는 단기 흐름 확인 불가로 보수적으로 건너뛴다.
 async function pickFirstFilteredCandidate(userId, candidates, { trading = null, strategy = null, entryWindow = null } = {}) {
   const rejections = [];
+  const accepted = [];
   for (const candidate of candidates) {
     let candles = [];
     try {
@@ -954,32 +956,36 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
       rejections.push({ symbol: candidate.symbol, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
       continue;
     }
-    const check = checkBuyCandidate(candles);
+    const check = checkBuyCandidate(candles, { candidate });
     if (!check.ok) {
       rejections.push({ symbol: candidate.symbol, reason: check.reason });
       continue;
     }
-    if (trading && strategy && entryWindow) {
-      let buyPlan;
-      try {
-        buyPlan = await buildKrBuyPlan(trading, strategy, entryWindow, candidate);
-      } catch (error) {
-        rejections.push({ symbol: candidate.symbol, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
-        continue;
-      }
-      if (buyPlan.quantity <= 0) {
-        const budgetNote = strategy.autoBudgetEnabled
-          ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원`
-          : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
-        rejections.push({
-          symbol: candidate.symbol,
-          reason: `${budgetNote}으로 ${fmt(buyPlan.marginPrice)}원 기준 1주도 살 수 없음`
-        });
-        continue;
-      }
-      return { picked: candidate, buyPlan, rejections };
+    accepted.push({ picked: candidate, score: check.score ?? 0, rejections });
+  }
+  accepted.sort((a, b) => b.score - a.score);
+  if (!trading || !strategy || !entryWindow) {
+    return accepted[0] || { picked: null, rejections };
+  }
+  for (const result of accepted) {
+    let buyPlan;
+    try {
+      buyPlan = await buildKrBuyPlan(trading, strategy, entryWindow, result.picked);
+    } catch (error) {
+      rejections.push({ symbol: result.picked.symbol, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
+      continue;
     }
-    return { picked: candidate, rejections };
+    if (buyPlan.quantity <= 0) {
+      const budgetNote = strategy.autoBudgetEnabled
+        ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원`
+        : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
+      rejections.push({
+        symbol: result.picked.symbol,
+        reason: `${budgetNote}으로 ${fmt(buyPlan.marginPrice)}원 기준 1주도 살 수 없음`
+      });
+      continue;
+    }
+    return { ...result, buyPlan, rejections };
   }
   return { picked: null, rejections };
 }
