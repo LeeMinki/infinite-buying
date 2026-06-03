@@ -21,7 +21,7 @@ TBD - created by archiving change improve-rank-trading-execution-and-replay. Upd
 
 ### Requirement: MFE/MAE와 도달 시각 계산
 
-거래 복기 결과는 매수 이후 최대 상승률(MFE), 최대 하락률(MAE), 목표 수익 도달 시각, 손절 도달 시각, 진입 실패 조건 도달 시각을 계산해야 한다(MUST). 1분봉 안에서 고가와 저가의 선후 관계를 확정할 수 없는 경우에는 불확실성을 결과에 표시해야 한다(MUST).
+거래 복기 결과는 매수 이후 최대 상승률(MFE), 최대 하락률(MAE), 목표 수익 도달 시각, 손절 도달 시각, 빠른 손절 조건 도달 시각을 계산해야 한다(MUST). 1분봉 안에서 고가와 저가의 선후 관계를 확정할 수 없는 경우에는 불확실성을 결과에 표시해야 한다(MUST).
 
 #### Scenario: 목표 수익과 손절이 같은 분봉에 존재
 
@@ -36,7 +36,7 @@ TBD - created by archiving change improve-rank-trading-execution-and-replay. Upd
 
 ### Requirement: 대체 파라미터 비교
 
-시스템은 사용자가 입력한 익절률, 손절률, 진입 실패 조건에 대해 해당 거래가 어떤 결과였을지 비교할 수 있어야 한다(MUST). 이 비교는 분봉 기반 근사이며 실제 주문 체결 보장을 의미하지 않아야 한다(MUST).
+시스템은 사용자가 입력한 익절률, 손절률, 빠른 손절 조건에 대해 해당 거래가 어떤 결과였을지 비교할 수 있어야 한다(MUST). 이 비교는 분봉 기반 근사이며 실제 주문 체결 보장을 의미하지 않아야 한다(MUST).
 
 #### Scenario: 익절률 변경 비교
 
@@ -61,4 +61,3 @@ TBD - created by archiving change improve-rank-trading-execution-and-replay. Upd
 
 - **WHEN** 사용자가 제한 수를 초과한 거래 복기를 요청
 - **THEN** 시스템은 요청을 거절하거나 허용 범위까지만 분석하고 제한 사유를 반환해야 한다
-

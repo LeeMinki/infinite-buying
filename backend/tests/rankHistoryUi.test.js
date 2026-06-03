@@ -256,7 +256,8 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.ok(app.indexOf('한국 국장 상승률 랭킹 전략') < app.indexOf('미국장 상승률 랭킹 전략'));
   assert.ok(app.indexOf('미국장 상승률 랭킹 전략') < app.indexOf('라오어 무한매수법'));
   assert.match(home, /top-nav/);
-  assert.match(home, /전략 운용 대시보드/);
+  assert.match(home, /티끌모아 태산/);
+  assert.match(home, /label: '대시보드'/);
   assert.doesNotMatch(home, /주문\/체결 로그/);
   assert.doesNotMatch(home, /key: 'strategies'/);
   assert.doesNotMatch(appShell, /history\.back/);

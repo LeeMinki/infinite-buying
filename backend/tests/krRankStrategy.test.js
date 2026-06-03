@@ -16,6 +16,7 @@ import {
   isFailingHighBreakout,
   checkBuyCandidate,
   evaluateEntryFailure,
+  evaluateFastStopLoss,
   MAX_FLUCTUATION_RATE
 } from '../src/services/krRankStrategyEngine.js';
 
@@ -438,7 +439,7 @@ test('checkBuyCandidate: 데이터 부족이면 보수적으로 거절', () => {
   assert.equal(checkBuyCandidate([candle('090100', 100, 101, 99, 100, 1000)]).ok, false);
 });
 
-test('evaluateEntryFailure: VWAP 이탈과 고점 이탈이 겹치면 진입 실패로 본다', () => {
+test('evaluateEntryFailure: VWAP 이탈과 고점 이탈이 겹치면 흐름 이탈로 본다', () => {
   const candles = [
     candle('091000', 100, 103, 99, 102, 1000),
     candle('091100', 102, 105, 101, 104, 1200),
@@ -447,6 +448,16 @@ test('evaluateEntryFailure: VWAP 이탈과 고점 이탈이 겹치면 진입 실
   const result = evaluateEntryFailure(candles, { highPullbackRate: 0.02 });
   assert.equal(result.failed, true);
   assert.match(result.reason, /VWAP|고점/);
+});
+
+test('evaluateFastStopLoss: 흐름 이탈이 있어도 최소 손실 전에는 빠른 손절하지 않는다', () => {
+  const candles = [
+    candle('091000', 100, 103, 99, 102, 1000),
+    candle('091100', 102, 105, 101, 104, 1200),
+    candle('091200', 104, 104, 99, 100, 1400)
+  ];
+  assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.005, highPullbackRate: 0.02 }).failed, false);
+  assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.025, highPullbackRate: 0.02 }).failed, true);
 });
 
 // ── 진입 기록 승격: 레거시 NO_CANDIDATE → SELECTED ──────────────────────

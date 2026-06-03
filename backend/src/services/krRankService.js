@@ -8,7 +8,7 @@ import {
   resolveEntryWindow,
   selectRankingCandidates,
   computeBuyQuantity,
-  evaluateEntryFailure,
+  evaluateFastStopLoss,
   evaluateSell,
   kstNowMinutes,
   parseHhmmMinutes,
@@ -263,7 +263,8 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   if (sell.decision === 'HOLD') {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
-      const failure = evaluateEntryFailure(candles);
+      const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
+      const failure = evaluateFastStopLoss(candles, { profitRate });
       if (failure.failed) {
         entryFailureReason = failure.reason;
         sell = {
@@ -301,7 +302,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     : sell.sellReason === 'STOP_LOSS'
       ? '손절 기준 도달'
       : sell.sellReason === 'ENTRY_FAILED'
-        ? `진입 실패${entryFailureReason ? ` (${entryFailureReason})` : ''}`
+        ? `빠른 손절${entryFailureReason ? ` (${entryFailureReason})` : ''}`
       : `청산 시각 도달 (${liquidateTime} KST)`;
   const activeTargetOrder = repo.getActiveSellOrder({
     strategyId: strategy.id,

@@ -6,12 +6,13 @@ import {
   BUY_FILTER_DEFAULTS,
   computeVwap,
   evaluateEntryFailure,
+  evaluateFastStopLoss,
   isVolumeDecreasing,
   findLargeBearishCandle,
   isFailingHighBreakout
 } from './krRankStrategyEngine.js';
 
-export { evaluateEntryFailure };
+export { evaluateEntryFailure, evaluateFastStopLoss };
 
 export const DEFAULT_TARGET_PROFIT_RATE = 0.02;
 export const DEFAULT_STOP_LOSS_RATE = 0.05;

@@ -13,7 +13,7 @@ import {
   computeBuyQuantity,
   computeCycleProfitRate,
   etTradeDate,
-  evaluateEntryFailure,
+  evaluateFastStopLoss,
   evaluateSell,
   isUsForceCloseTime,
   isUsRegularSession,
@@ -429,7 +429,13 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   if (!committedReason && sell.decision === 'HOLD') {
     try {
       const candles = await getOverseasTodayMinuteCandles(userId, symbol, exchange, { minutes: 1, count: 120 });
-      const failure = evaluateEntryFailure(candles, { highPullbackRate: 0.025, openBreakRate: 0.005 });
+      const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
+      const failure = evaluateFastStopLoss(candles, {
+        profitRate,
+        minLossRate: 0.03,
+        highPullbackRate: 0.04,
+        openBreakRate: 0.01
+      });
       if (failure.failed) {
         entryFailureReason = failure.reason;
         sell = {
@@ -1569,7 +1575,7 @@ function sellReasonLabel(reason) {
   if (reason === 'STOP_LOSS') return '손절';
   if (reason === 'FORCE_CLOSE') return '강제 청산';
   if (reason === 'CYCLE_COMPLETE') return '누적 목표 달성';
-  if (reason === 'ENTRY_FAILED') return '진입 실패';
+  if (reason === 'ENTRY_FAILED') return '빠른 손절';
   return reason || '-';
 }
 
