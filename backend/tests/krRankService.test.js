@@ -98,10 +98,11 @@ function passingMinuteCandles() {
   const out = [];
   for (let i = 0; i < 10; i += 1) {
     const close = 100 + i;
+    const minute = String(i).padStart(2, '0');
     out.push({
-      stck_cntg_hour: String(91000 + i * 100).padStart(6, '0'),
+      stck_cntg_hour: `09${minute}00`,
       stck_oprc: String(close - 1),
-      stck_hgpr: String(close + 1),
+      stck_hgpr: String(close),
       stck_lwpr: String(close - 2),
       stck_prpr: String(close),
       cntg_vol: '100000'

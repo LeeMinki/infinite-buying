@@ -11,13 +11,17 @@ import {
   kstNowMinutes,
   makeKrRankIdempotencyKey,
   computeVwap,
+  getCompletedMinuteCandles,
   isVolumeDecreasing,
   findLargeBearishCandle,
   isFailingHighBreakout,
+  highPullbackRate,
+  scoreBuyCandidate,
   checkBuyCandidate,
   evaluateEntryFailure,
   evaluateFastStopLoss,
-  MAX_FLUCTUATION_RATE
+  MAX_FLUCTUATION_RATE,
+  maxFluctuationRateForEntryWindow
 } from '../src/services/krRankStrategyEngine.js';
 
 const tmp = useTempDb();
@@ -54,6 +58,12 @@ test('모든 종목이 20% 이상이면 후보가 없다', () => {
     { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.22 }
   ];
   assert.equal(selectRankingCandidate(ranking), null);
+});
+
+test('진입 구간별 등락률 상한은 오전 15%, 점심 12%를 쓴다', () => {
+  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.15);
+  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.12);
+  assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
 });
 
 // ── 7.x 매수 수량 계산 ──────────────────────────────────────────────────
@@ -419,7 +429,7 @@ test('checkBuyCandidate: 시가 위 + VWAP 위 + 거래량 유지 + 고점 갱�
     candle('090500', 104, 105, 103, 105, 1200),
     candle('090600', 105, 106, 104, 106, 1300)
   ];
-  const result = checkBuyCandidate(candles);
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
   assert.equal(result.ok, true, `필터 통과해야 하는데 거절: ${result.reason}`);
 });
 
@@ -429,14 +439,63 @@ test('checkBuyCandidate: 현재가가 시가 아래면 거절', () => {
     candle('090200', 95, 96, 92, 93, 1000),
     candle('090300', 93, 94, 90, 92, 1000)
   ];
-  const result = checkBuyCandidate(candles);
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
   assert.equal(result.ok, false);
   assert.ok(/시가/.test(result.reason));
 });
 
 test('checkBuyCandidate: 데이터 부족이면 보수적으로 거절', () => {
-  assert.equal(checkBuyCandidate([]).ok, false);
-  assert.equal(checkBuyCandidate([candle('090100', 100, 101, 99, 100, 1000)]).ok, false);
+  assert.equal(checkBuyCandidate([], { useCompletedCandles: false }).ok, false);
+  assert.equal(checkBuyCandidate([candle('090100', 100, 101, 99, 100, 1000)], { useCompletedCandles: false }).ok, false);
+});
+
+test('getCompletedMinuteCandles: 현재 진행 중인 마지막 분봉은 진입 판단에서 제외한다', () => {
+  const candles = [
+    candle('090800', 100, 102, 99, 101, 1000),
+    candle('090900', 101, 103, 100, 102, 1000),
+    candle('091000', 102, 120, 101, 119, 3000)
+  ];
+  const completed = getCompletedMinuteCandles(candles, { nowHms: '091008' });
+  assert.deepEqual(completed.map((c) => c.time), ['090800', '090900']);
+});
+
+test('checkBuyCandidate: VWAP 바로 위라 이격이 부족하면 거절한다', () => {
+  const candles = [
+    candle('090100', 100, 101, 99, 100, 1000),
+    candle('090200', 100, 101, 99, 100, 1000),
+    candle('090300', 100, 101, 99, 100.1, 1000)
+  ];
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /VWAP/);
+});
+
+test('checkBuyCandidate: 최근 고점 대비 0.8% 이상 밀리면 거절한다', () => {
+  const candles = [
+    candle('090100', 100, 102, 99, 101, 1000),
+    candle('090200', 101, 110, 100, 109, 1000),
+    candle('090300', 109, 109, 106, 108, 1000)
+  ];
+  assert.ok(highPullbackRate(candles) >= 0.008);
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /고점/);
+});
+
+test('scoreBuyCandidate: VWAP 이격이 좋고 덜 밀린 후보를 더 높게 평가한다', () => {
+  const strong = [
+    candle('090100', 100, 101, 99, 101, 1000),
+    candle('090200', 101, 103, 100, 103, 1200),
+    candle('090300', 103, 106, 102, 106, 1500)
+  ];
+  const weak = [
+    candle('090100', 100, 105, 99, 104, 1000),
+    candle('090200', 104, 106, 103, 105, 1000),
+    candle('090300', 105, 106, 103, 104.5, 900)
+  ];
+  assert.ok(
+    scoreBuyCandidate(strong, { fluctuationRate: 0.09 }) > scoreBuyCandidate(weak, { fluctuationRate: 0.09 })
+  );
 });
 
 test('evaluateEntryFailure: VWAP 이탈과 고점 이탈이 겹치면 흐름 이탈로 본다', () => {

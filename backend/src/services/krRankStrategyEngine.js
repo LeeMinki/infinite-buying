@@ -4,6 +4,10 @@
 // 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
 // 20% — 상한가(+30%)까지 헤드룸을 충분히 남겨 목표 수익 도달 여지를 확보한다.
 export const MAX_FLUCTUATION_RATE = 0.20;
+export const ENTRY_MAX_FLUCTUATION_RATES = {
+  MORNING: 0.15,
+  LUNCH: 0.12
+};
 
 // 매수 필터 기본값 — 단기 흐름 검사용. krRankBuyFilter 절을 참고.
 export const BUY_FILTER_DEFAULTS = {
@@ -13,7 +17,13 @@ export const BUY_FILTER_DEFAULTS = {
   bearishBodyMinRate: 0.005,
   bearishVolumeMultiplier: 1.2,
   // 단기 고점 돌파 실패 — 마지막 종가가 최근 N봉(마지막 제외) 최고가의 이 비율 미만이면 거절.
-  highBreakoutTolerance: 0.99,
+  highBreakoutTolerance: 0.995,
+  // VWAP 바로 위에서 흔들리는 종목을 피하기 위한 최소 이격. 0.3% 이상 위에 있을 때만 통과.
+  vwapBufferRate: 0.003,
+  // 최근 고점 대비 이 비율 이상 밀린 후보는 이미 꺾인 흐름으로 본다.
+  highPullbackMaxRate: 0.008,
+  // 최근 완성봉들이 VWAP 아래로 닫혔는지 확인할 봉 수.
+  recentVwapWindow: 2,
   // 필터에 쓸 최근 분봉 수. 30분이면 9:10 평가 시점에 9봉(09:01~09:09)만 들어와 부족할 수 있어
   // 최소 봉 수도 함께 둔다.
   minimumCandles: 3,
@@ -77,6 +87,10 @@ export function selectRankingCandidates(rankingList = [], { maxFluctuationRate =
   return out;
 }
 
+export function maxFluctuationRateForEntryWindow(entryWindow) {
+  return ENTRY_MAX_FLUCTUATION_RATES[entryWindow] ?? MAX_FLUCTUATION_RATE;
+}
+
 // ── 단기 흐름 매수 필터 ───────────────────────────────────────────────
 //
 // 등락률 랭킹 상위라 해서 무조건 매수하지 않는다. 9시 10분 진입 직전까지의 분봉으로
@@ -104,6 +118,17 @@ export function computeVwap(candles) {
     v += volume;
   }
   return v > 0 ? pv / v : 0;
+}
+
+export function getCompletedMinuteCandles(candles, { nowHms = nowKstHms() } = {}) {
+  if (!Array.isArray(candles)) return [];
+  const normalized = candles
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+  const nowMinute = String(nowHms || '').padStart(6, '0').slice(0, 4);
+  if (!/^\d{4}$/.test(nowMinute)) return normalized;
+  return normalized.filter((c) => String(c?.time || '').padStart(6, '0').slice(0, 4) < nowMinute);
 }
 
 export function isVolumeDecreasing(candles, window = BUY_FILTER_DEFAULTS.trendWindow, shrinkRatio = BUY_FILTER_DEFAULTS.volumeShrinkRatio) {
@@ -148,14 +173,56 @@ export function isFailingHighBreakout(candles, opts = {}) {
   return close < recentHigh * tolerance;
 }
 
+export function highPullbackRate(candles, opts = {}) {
+  const window = opts.window ?? BUY_FILTER_DEFAULTS.breakoutWindow;
+  if (!Array.isArray(candles) || candles.length < 3) return 0;
+  const last = candles[candles.length - 1];
+  const recent = candles.slice(-Math.min(window, candles.length));
+  const recentHigh = Math.max(...recent.map((c) => Number(c?.high) || 0));
+  const close = Number(last?.close) || 0;
+  if (recentHigh <= 0 || close <= 0) return 0;
+  return Math.max(0, (recentHigh - close) / recentHigh);
+}
+
+export function scoreBuyCandidate(candles, candidate = {}, opts = {}) {
+  const vwap = computeVwap(candles);
+  const last = Array.isArray(candles) ? candles[candles.length - 1] : null;
+  const current = Number(last?.close) || Number(candidate.price) || 0;
+  const opening = Number(candles?.[0]?.open) || 0;
+  const pullback = highPullbackRate(candles, opts);
+  const recentVolume = Array.isArray(candles)
+    ? candles.slice(-BUY_FILTER_DEFAULTS.trendWindow).reduce((sum, c) => sum + (Number(c?.volume) || 0), 0)
+    : 0;
+  const priorVolume = Array.isArray(candles)
+    ? candles.slice(-BUY_FILTER_DEFAULTS.trendWindow * 2, -BUY_FILTER_DEFAULTS.trendWindow).reduce((sum, c) => sum + (Number(c?.volume) || 0), 0)
+    : 0;
+  const vwapGap = vwap > 0 && current > 0 ? (current - vwap) / vwap : 0;
+  const openGap = opening > 0 && current > 0 ? (current - opening) / opening : 0;
+  const volumeRatio = priorVolume > 0 ? recentVolume / priorVolume : 1;
+  const fluctuationRate = Number(candidate.fluctuationRate) || 0;
+
+  let score = 0;
+  score += Math.min(Math.max(vwapGap, 0), 0.03) * 1000;
+  score += Math.min(Math.max(openGap, 0), 0.05) * 400;
+  score += Math.min(volumeRatio, 3) * 5;
+  score -= pullback * 1500;
+  score -= Math.max(0, fluctuationRate - 0.10) * 200;
+  if (last && Number(last.close) > Number(last.open)) score += 4;
+  if (findLargeBearishCandle(candles, opts)) score -= 30;
+  return score;
+}
+
 // 매수 필터의 통합 진입점. ok=true면 매수 후보로 통과, false면 reason에 거절 사유.
 export function checkBuyCandidate(candles, opts = {}) {
+  const completedCandles = opts.useCompletedCandles === false
+    ? (Array.isArray(candles) ? candles : [])
+    : getCompletedMinuteCandles(candles, opts);
   const minCandles = opts.minimumCandles ?? BUY_FILTER_DEFAULTS.minimumCandles;
-  if (!Array.isArray(candles) || candles.length < minCandles) {
+  if (!Array.isArray(completedCandles) || completedCandles.length < minCandles) {
     return { ok: false, reason: '분봉 데이터가 부족해 단기 흐름을 확인할 수 없습니다.' };
   }
-  const last = candles[candles.length - 1];
-  const opening = Number(candles[0]?.open) || 0;
+  const last = completedCandles[completedCandles.length - 1];
+  const opening = Number(completedCandles[0]?.open) || 0;
   const current = Number(last?.close) || 0;
   if (opening <= 0 || current <= 0) {
     return { ok: false, reason: '분봉 시가/현재가가 비어 있어 단기 흐름을 확인할 수 없습니다.' };
@@ -165,25 +232,44 @@ export function checkBuyCandidate(candles, opts = {}) {
     return { ok: false, reason: `현재가 ${fmtPrice(current)}원이 시가 ${fmtPrice(opening)}원 아래라 매수하지 않습니다.` };
   }
 
-  const vwap = computeVwap(candles);
-  if (vwap > 0 && current <= vwap) {
-    return { ok: false, reason: `현재가 ${fmtPrice(current)}원이 VWAP ${fmtPrice(vwap)}원 아래라 매수하지 않습니다.` };
+  const vwap = computeVwap(completedCandles);
+  const vwapBufferRate = opts.vwapBufferRate ?? BUY_FILTER_DEFAULTS.vwapBufferRate;
+  const requiredVwap = vwap * (1 + vwapBufferRate);
+  if (vwap > 0 && current < requiredVwap) {
+    return { ok: false, reason: `현재가 ${fmtPrice(current)}원이 VWAP ${fmtPrice(vwap)}원 대비 충분히 높지 않아 매수하지 않습니다.` };
   }
 
-  if (isVolumeDecreasing(candles, opts.trendWindow, opts.volumeShrinkRatio)) {
+  const recentVwapWindow = opts.recentVwapWindow ?? BUY_FILTER_DEFAULTS.recentVwapWindow;
+  const recentVwapCandles = completedCandles.slice(-recentVwapWindow);
+  if (vwap > 0 && recentVwapCandles.some((c) => Number(c?.close || 0) <= vwap)) {
+    return { ok: false, reason: '최근 완성봉이 VWAP 아래로 닫혀 매수하지 않습니다.' };
+  }
+
+  if (isVolumeDecreasing(completedCandles, opts.trendWindow, opts.volumeShrinkRatio)) {
     return { ok: false, reason: '최근 거래량이 직전 구간보다 크게 줄어 매수하지 않습니다.' };
   }
 
-  const bearish = findLargeBearishCandle(candles, opts);
+  const bearish = findLargeBearishCandle(completedCandles, opts);
   if (bearish) {
     return { ok: false, reason: '거래량을 동반한 장대 음봉이 발생해 매수하지 않습니다.' };
   }
 
-  if (isFailingHighBreakout(candles, opts)) {
+  const pullback = highPullbackRate(completedCandles, opts);
+  const pullbackLimit = opts.highPullbackMaxRate ?? BUY_FILTER_DEFAULTS.highPullbackMaxRate;
+  if (pullback >= pullbackLimit) {
+    return { ok: false, reason: `최근 고점 대비 ${(pullback * 100).toFixed(1)}% 밀려 매수하지 않습니다.` };
+  }
+
+  if (isFailingHighBreakout(completedCandles, opts)) {
     return { ok: false, reason: '직전 고점을 돌파하지 못하고 밀려 매수하지 않습니다.' };
   }
 
-  return { ok: true, reason: null };
+  return {
+    ok: true,
+    reason: null,
+    candles: completedCandles,
+    score: scoreBuyCandidate(completedCandles, opts.candidate, opts)
+  };
 }
 
 export function evaluateEntryFailure(candles, opts = {}) {
@@ -307,4 +393,12 @@ export function makeKrRankIdempotencyKey({ tradeDate, strategyId, entryWindow, s
     entryWindow,
     side
   ].join('-');
+}
+
+function nowKstHms() {
+  const kst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const hh = String(kst.getHours()).padStart(2, '0');
+  const mm = String(kst.getMinutes()).padStart(2, '0');
+  const ss = String(kst.getSeconds()).padStart(2, '0');
+  return `${hh}${mm}${ss}`;
 }
