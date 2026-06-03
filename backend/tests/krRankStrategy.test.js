@@ -27,6 +27,7 @@ import {
 const tmp = useTempDb();
 const db = await bootstrapDb();
 const repo = await import('../src/repositories/krRankRepository.js');
+const service = await import('../src/services/krRankService.js');
 
 const user = createUser(db, 'kr-rank@example.com');
 
@@ -60,9 +61,9 @@ test('모든 종목이 20% 이상이면 후보가 없다', () => {
   assert.equal(selectRankingCandidate(ranking), null);
 });
 
-test('진입 구간별 등락률 상한은 오전 15%, 점심 12%를 쓴다', () => {
-  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.15);
-  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.12);
+test('진입 구간별 등락률 상한은 오전·점심 모두 20%를 쓴다', () => {
+  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.20);
+  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.20);
   assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
 });
 
@@ -271,8 +272,6 @@ test('autoBudgetEnabled=false 전략은 lunch 진입 켜고 lunch budget = 0이�
 
 // ── 청산 시각 검증 (진입 시각 이전 footgun 차단) ─────────────────────────
 
-const service = await import('../src/services/krRankService.js');
-
 test('오전 청산 시각이 09:10 이전이면 거절', async () => {
   await assert.rejects(
     async () => service.createStrategy(user.id, {
@@ -410,7 +409,7 @@ test('거래량 동반 장대 음봉은 거절 사유로 잡힌다', () => {
   assert.equal(bearish.time, '090300');
 });
 
-test('직전 고점을 1% 이상 못 뚫는 마지막 봉은 거절', () => {
+test('직전 고점 돌파 흐름이 크게 깨진 마지막 봉은 거절', () => {
   const candles = [
     candle('090100', 100, 110, 99, 108, 1000),
     candle('090200', 108, 115, 107, 110, 1000),
@@ -470,13 +469,13 @@ test('checkBuyCandidate: VWAP 바로 위라 이격이 부족하면 거절한다'
   assert.match(result.reason, /VWAP/);
 });
 
-test('checkBuyCandidate: 최근 고점 대비 0.8% 이상 밀리면 거절한다', () => {
+test('checkBuyCandidate: 최근 고점 대비 1.2% 이상 밀리면 거절한다', () => {
   const candles = [
     candle('090100', 100, 102, 99, 101, 1000),
     candle('090200', 101, 110, 100, 109, 1000),
     candle('090300', 109, 109, 106, 108, 1000)
   ];
-  assert.ok(highPullbackRate(candles) >= 0.008);
+  assert.ok(highPullbackRate(candles) >= 0.012);
   const result = checkBuyCandidate(candles, { useCompletedCandles: false });
   assert.equal(result.ok, false);
   assert.match(result.reason, /고점/);

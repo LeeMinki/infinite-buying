@@ -5,8 +5,8 @@
 // 20% — 상한가(+30%)까지 헤드룸을 충분히 남겨 목표 수익 도달 여지를 확보한다.
 export const MAX_FLUCTUATION_RATE = 0.20;
 export const ENTRY_MAX_FLUCTUATION_RATES = {
-  MORNING: 0.15,
-  LUNCH: 0.12
+  MORNING: 0.20,
+  LUNCH: 0.20
 };
 
 // 매수 필터 기본값 — 단기 흐름 검사용. krRankBuyFilter 절을 참고.
@@ -18,10 +18,10 @@ export const BUY_FILTER_DEFAULTS = {
   bearishVolumeMultiplier: 1.2,
   // 단기 고점 돌파 실패 — 마지막 종가가 최근 N봉(마지막 제외) 최고가의 이 비율 미만이면 거절.
   highBreakoutTolerance: 0.995,
-  // VWAP 바로 위에서 흔들리는 종목을 피하기 위한 최소 이격. 0.3% 이상 위에 있을 때만 통과.
-  vwapBufferRate: 0.003,
+  // VWAP 바로 위에서 흔들리는 종목을 피하기 위한 최소 이격. 0.1% 이상 위에 있을 때만 통과.
+  vwapBufferRate: 0.001,
   // 최근 고점 대비 이 비율 이상 밀린 후보는 이미 꺾인 흐름으로 본다.
-  highPullbackMaxRate: 0.008,
+  highPullbackMaxRate: 0.012,
   // 최근 완성봉들이 VWAP 아래로 닫혔는지 확인할 봉 수.
   recentVwapWindow: 2,
   // 필터에 쓸 최근 분봉 수. 30분이면 9:10 평가 시점에 9봉(09:01~09:09)만 들어와 부족할 수 있어
@@ -94,13 +94,14 @@ export function maxFluctuationRateForEntryWindow(entryWindow) {
 // ── 단기 흐름 매수 필터 ───────────────────────────────────────────────
 //
 // 등락률 랭킹 상위라 해서 무조건 매수하지 않는다. 9시 10분 진입 직전까지의 분봉으로
-// 다음 다섯 가지를 본다:
+// 다음 조건들을 본다:
 //   1) 현재가가 시가보다 위에 있는가
-//   2) 현재가가 VWAP(누적 거래량가중 평균가)보다 위에 있는가
-//   3) 직전 N봉 거래량 합이 그 이전 N봉 거래량 합보다 너무 줄지 않았는가(거래량 유지)
-//   4) 최근 N봉 중 거래량을 동반한 장대 음봉이 있는가(있으면 거절)
-//   5) 직전 N봉 최고가 대비 현재가가 너무 밀려 있는가(고점 미돌파)
-// 다섯 모두 통과해야 매수 후보로 본다. 분봉이 부족하면 보수적으로 거절한다.
+//   2) 현재가가 VWAP(누적 거래량가중 평균가)보다 0.1% 이상 위에 있는가
+//   3) 최근 완성봉 2개가 VWAP 위에서 닫혔는가
+//   4) 직전 N봉 거래량 합이 그 이전 N봉 거래량 합보다 너무 줄지 않았는가(거래량 유지)
+//   5) 최근 N봉 중 거래량을 동반한 장대 음봉이 있는가(있으면 거절)
+//   6) 최근 고점 대비 1.2% 이상 밀렸거나 직전 고점 돌파 흐름이 깨졌는가(있으면 거절)
+// 모두 통과해야 매수 후보로 본다. 분봉이 부족하면 보수적으로 거절한다.
 
 export function computeVwap(candles) {
   if (!Array.isArray(candles) || candles.length === 0) return 0;

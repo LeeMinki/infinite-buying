@@ -18,7 +18,7 @@ import {
 } from './krRankStrategyEngine.js';
 
 const LOCK_KEY = 'evaluate';
-const RANKING_SNAPSHOT_SIZE = 10;
+const RANKING_SNAPSHOT_SIZE = 30;
 // 매수 필터(분봉 단기 흐름 검사)에서 검사할 상위 후보 개수.
 // 상위 후보들을 점수화해 고르되, 너무 크면 KIS 호출이 늘어 rate limit 위험이 있어 제한한다.
 const BUY_FILTER_CANDIDATE_LIMIT = 5;

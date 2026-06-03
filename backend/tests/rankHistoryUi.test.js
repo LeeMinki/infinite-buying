@@ -262,7 +262,7 @@ test('랭킹 자동매매 화면은 탭 순서, 홈 진입 카드, 왕복 주문
   assert.doesNotMatch(home, /key: 'strategies'/);
   assert.doesNotMatch(appShell, /history\.back/);
   assert.match(appShell, /onOpenDashboard=\{\(\) => setView\('strategies', \{ replace: true \}\)\}/);
-  assert.match(dashboard, /운용 대시보드/);
+  assert.match(dashboard, /<h2>대시보드<\/h2>/);
   assert.match(dashboard, /계좌 요약/);
   assert.match(dashboard, /기간별 수익률/);
   assert.match(dashboard, /전략별 상태/);
