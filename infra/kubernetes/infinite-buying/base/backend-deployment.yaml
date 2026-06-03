@@ -18,6 +18,10 @@ spec:
       labels:
         app: infinite-buying-backend
     spec:
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
       containers:
         - name: backend
           image: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend:latest

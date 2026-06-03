@@ -49,7 +49,7 @@ SQLite (`better-sqlite3`). 마이그레이션은 `backend/src/db/migrations/0001
 
 - `kr_rank_strategies` — 한국 국장 상승률 랭킹 전략(`KR_RANK_MOMENTUM`). status (`CREATED`/`RUNNING`/`STOPPED`/`ERROR`), 진입 구간별 매수 금액·목표 수익률·손절률(`morning_*`/`lunch_*`), 점심 진입 사용 여부, 현재 보유 종목(`holding_symbol`/`holding_symbol_name`/`holding_entry_window`, 무보유면 NULL), started/stopped/last_evaluated_at, last_decision, last_error_message.
 - `kr_rank_entries` — 일자별·진입 구간별 진입 기록. `(strategy_id, trade_date, entry_window) UNIQUE`로 "하루 1회·진입 구간당 1회" 보장. 선택 종목·등락률·랭킹 스냅샷·`bought` 플래그.
-- `kr_rank_orders` — 주문 라이프사이클. `idempotency_key`, side, entry_window, sell_reason(`TARGET`/`STOP_LOSS`/`TIME_LIQUIDATE`/`ENTRY_FAILED`) 포함. 매수 체결 후 목표가 주문은 `TARGET` 매도 주문으로 추적하며, 실주문 OFF의 목표가 예정 기록은 KIS 주문 없이 저장된다.
+- `kr_rank_orders` — 주문 라이프사이클. `idempotency_key`, side, entry_window, sell_reason(`TARGET`/`STOP_LOSS`/`TIME_LIQUIDATE`/`ENTRY_FAILED`) 포함. `ENTRY_FAILED`는 화면에서 "빠른 손절"로 표시한다. 매수 체결 후 목표가 주문은 `TARGET` 매도 주문으로 추적하며, 실주문 OFF의 목표가 예정 기록은 KIS 주문 없이 저장된다.
 - `kr_rank_decision_logs` — 매 평가의 결정·진입 구간·선택 종목·매도 사유·랭킹 스냅샷·평가 출처·order_id·reason.
 - `kr_rank_locks` — `(strategy_id, lock_key) UNIQUE`. 동시 평가 방지.
 
@@ -58,8 +58,8 @@ SQLite (`better-sqlite3`). 마이그레이션은 `backend/src/db/migrations/0001
 라오어 자동매매(`auto_trading_*`)와 한국 랭킹(`kr_rank_*`)을 변경하지 않는 별도 테이블 세트. 실주문 실행 설정(`user_trading_settings`)과 KIS credential만 공유한다.
 
 - `us_rank_strategies` — 미국장 상승률 랭킹 전략(`US_RANK_MOMENTUM`). status, 자동 예산 여부, 고정 매수 금액(USD), 익절률, 손절률, 강제 청산 시각(KST), 거래소(`ALL`/`NAS`/`NYS`/`AMS`), 통화(`USD`), 누적 목표 수익률·기준 자본·완료 시각(`0030`), 현재 보유 종목, 당일 신규 매수 잠금(`day_locked_out`)과 잠금 사유. 미국장은 가격제한폭이 없어 `0030`에서 등락률 상한 컬럼을 제거했다.
-- `us_rank_trades` — 한 번의 매수~매도 사이클 기록. `(strategy_id, trade_date, trade_seq) UNIQUE`로 미국 거래일 안의 N번째 사이클을 구분한다. 선택 종목, 랭킹 스냅샷, 진입가/수량, 청산가/사유(`TARGET`/`STOP_LOSS`/`FORCE_CLOSE`/`CYCLE_COMPLETE`/`ENTRY_FAILED`), 수익률, 상태를 저장한다.
-- `us_rank_orders` — 주문 라이프사이클. `idempotency_key`, side, sell_reason(`TARGET`/`STOP_LOSS`/`FORCE_CLOSE`/`CYCLE_COMPLETE`/`ENTRY_FAILED`), 수량, 단가, 예상 금액, KIS 주문번호, 마스킹된 요청/응답, 에러 메시지. 목표가 지정가 주문과 방어 매도 주문은 같은 보유분에 동시에 열리지 않도록 service에서 취소 확인 후 전환한다.
+- `us_rank_trades` — 한 번의 매수~매도 사이클 기록. `(strategy_id, trade_date, trade_seq) UNIQUE`로 미국 거래일 안의 N번째 사이클을 구분한다. 선택 종목, 랭킹 스냅샷, 진입가/수량, 청산가/사유(`TARGET`/`STOP_LOSS`/`FORCE_CLOSE`/`CYCLE_COMPLETE`/`ENTRY_FAILED`), 수익률, 상태를 저장한다. `ENTRY_FAILED`는 화면에서 "빠른 손절"로 표시한다.
+- `us_rank_orders` — 주문 라이프사이클. `idempotency_key`, side, sell_reason(`TARGET`/`STOP_LOSS`/`FORCE_CLOSE`/`CYCLE_COMPLETE`/`ENTRY_FAILED`), 수량, 단가, 예상 금액, KIS 주문번호, 마스킹된 요청/응답, 에러 메시지. `ENTRY_FAILED`는 화면에서 "빠른 손절"로 표시한다. 목표가 지정가 주문과 방어 매도 주문은 같은 보유분에 동시에 열리지 않도록 service에서 취소 확인 후 전환한다.
 - `us_rank_decision_logs` — 매 평가의 결정, 선택 종목, 현재가, 보유 수량, 매수가능금액, 예상 주문, 랭킹 스냅샷, 평가 출처, order_id, 사유.
 - `us_rank_locks` — `(strategy_id, lock_key) UNIQUE`. 동시 평가 방지.
 

@@ -22,6 +22,14 @@ export const BUY_FILTER_DEFAULTS = {
   breakoutWindow: 10
 };
 
+// 빠른 손절 기본값. 분봉 흐름이 깨졌다는 신호만으로 바로 팔지 않고,
+// 실제 손실이 일정 수준 이상일 때만 고정 손절률 전에 방어 매도를 시도한다.
+export const FAST_STOP_LOSS_DEFAULTS = {
+  minLossRate: 0.02,
+  highPullbackRate: 0.03,
+  openBreakRate: 0.008
+};
+
 // 진입 구간. 스케줄러 tick 간격(기본 10분)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {
   MORNING: { label: '오전', startMinutes: 9 * 60 + 10, endMinutes: 10 * 60 },
@@ -219,6 +227,19 @@ export function evaluateEntryFailure(candles, opts = {}) {
     };
   }
   return { failed: false, reason: null };
+}
+
+export function evaluateFastStopLoss(candles, { profitRate = 0, ...opts } = {}) {
+  const minLossRate = opts.minLossRate ?? FAST_STOP_LOSS_DEFAULTS.minLossRate;
+  const currentLossRate = -Number(profitRate || 0);
+  if (!Number.isFinite(currentLossRate) || currentLossRate < minLossRate) {
+    return { failed: false, reason: null };
+  }
+  return evaluateEntryFailure(candles, {
+    ...opts,
+    highPullbackRate: opts.highPullbackRate ?? FAST_STOP_LOSS_DEFAULTS.highPullbackRate,
+    openBreakRate: opts.openBreakRate ?? FAST_STOP_LOSS_DEFAULTS.openBreakRate
+  });
 }
 
 function fmtPrice(value) {

@@ -4,7 +4,7 @@ import {
   getDomesticHistoricalMinuteCandles,
   getOverseasHistoricalMinuteCandles
 } from './marketDataService.js';
-import { evaluateEntryFailure } from './krRankStrategyEngine.js';
+import { evaluateFastStopLoss } from './krRankStrategyEngine.js';
 
 const DEFAULT_TARGETS = [0.02, 0.03, 0.05];
 const DEFAULT_STOPS = [0.03, 0.04, 0.05];
@@ -20,7 +20,7 @@ export async function replayKrRankTrade(userId, strategyId, buyOrderId, options 
   const candles = await getDomesticHistoricalMinuteCandles(userId, row.symbol, {
     date,
     // KIS 분봉은 기준 시각에서 과거로 ~120봉만 돌려준다. 종가(153000) 고정이면 오전·점심
-    // 거래가 창 밖으로 빠지므로, 매수 시각 기준으로 잡는다. +100분이면 매수 직전 ~20봉(진입 실패
+    // 거래가 창 밖으로 빠지므로, 매수 시각 기준으로 잡는다. +100분이면 매수 직전 ~20봉(빠른 손절
     // 직전 분봉 창 확보)과 보유 구간·매도 직후가 함께 담긴다.
     hour: shiftHms(buyHms, 100)
   });
@@ -74,7 +74,7 @@ function buildReplayResult({ market, currency, row, candles, buyTime, sellTime, 
   const maeLow = replayCandles.reduce((min, c) => Math.min(min, Number(c.low || Infinity)), Infinity);
   const targetHits = targetRates.map((rate) => firstHit(replayCandles, buyPrice, rate, 'TARGET'));
   const stopHits = stopRates.map((rate) => firstHit(replayCandles, buyPrice, rate, 'STOP'));
-  const entryFailure = firstEntryFailure(candles, buyTime, sellTime);
+  const entryFailure = firstFastStopLoss(candles, buyTime, sellTime, buyPrice, market);
   const ambiguity = findAmbiguity(replayCandles, buyPrice, targetRates, stopRates);
   return {
     market,
@@ -116,19 +116,23 @@ function firstHit(candles, buyPrice, rate, type) {
   };
 }
 
-// 라이브 진입 실패 판정은 KIS 당일분봉(FHKST03010200, 최대 ~30봉)을 보므로,
+// 라이브 빠른 손절 판정은 KIS 당일분봉(FHKST03010200, 최대 ~30봉)을 보므로,
 // 복기도 같은 길이의 직전 분봉 창으로 평가해야 라이브와 어긋나지 않는다. 매수 시각 이후(보유
-// 구간)의 각 봉에서, 매수 직전 봉까지 포함한 직전 LIVE_FLOW_WINDOW 봉으로 진입 실패를 판단한다.
+// 구간)의 각 봉에서, 매수 직전 봉까지 포함한 직전 LIVE_FLOW_WINDOW 봉으로 빠른 손절을 판단한다.
 const LIVE_FLOW_WINDOW = 30;
 
-function firstEntryFailure(candles, buyTime, sellTime) {
+function firstFastStopLoss(candles, buyTime, sellTime, buyPrice, market) {
   for (let i = 0; i < candles.length; i += 1) {
     const time = candles[i].time;
     if (time < buyTime) continue;
     if (sellTime && time > sellTime) break;
     const window = candles.slice(Math.max(0, i - (LIVE_FLOW_WINDOW - 1)), i + 1);
     if (window.length < 3) continue;
-    const result = evaluateEntryFailure(window);
+    const close = Number(candles[i]?.close || 0);
+    const profitRate = buyPrice > 0 && close > 0 ? (close - buyPrice) / buyPrice : 0;
+    const result = evaluateFastStopLoss(window, market === 'US'
+      ? { profitRate, minLossRate: 0.03, highPullbackRate: 0.04, openBreakRate: 0.01 }
+      : { profitRate });
     if (result.failed) {
       return { hit: true, time, reason: result.reason };
     }

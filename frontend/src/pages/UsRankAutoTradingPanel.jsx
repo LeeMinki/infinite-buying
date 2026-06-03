@@ -521,7 +521,7 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
           </tbody>
         </table>
       </div>
-      <p className="helper">목표 수익 주문이 접수된 상태에서 손절, 진입 실패, 강제 청산 조건이 나오면 기존 목표가 주문을 먼저 취소한 뒤 새 매도 주문을 시도합니다.</p>
+      <p className="helper">목표 수익 주문이 접수된 상태에서 손절, 빠른 손절, 강제 청산 조건이 나오면 기존 목표가 주문을 먼저 취소한 뒤 새 매도 주문을 시도합니다.</p>
       {replay && <ReplayPanel replay={replay} />}
       <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
@@ -536,7 +536,7 @@ function ReplayPanel({ replay }) {
       <div className="metric-grid compact-grid">
         <Metric label="최대 상승" value={formatPercent(replay.mfeRate)} hint="매수 후 고가 기준" />
         <Metric label="최대 하락" value={formatPercent(replay.maeRate)} hint="매수 후 저가 기준" />
-        <Metric label="진입 실패" value={replay.entryFailure?.hit ? replay.entryFailure.time : '없음'} hint={replay.entryFailure?.reason || '조건 미도달'} />
+        <Metric label="빠른 손절" value={replay.entryFailure?.hit ? replay.entryFailure.time : '없음'} hint={replay.entryFailure?.reason || '조건 미도달'} />
         <Metric label="분봉 수" value={`${replay.candleCount || 0}개`} hint={replay.ambiguity?.length ? '일부 1분봉은 선후 관계 불확실' : '분봉 기준 근사'} />
       </div>
     </div>
@@ -572,7 +572,7 @@ function sellReasonLabel(reason) {
   if (reason === 'STOP_LOSS') return '손절';
   if (reason === 'FORCE_CLOSE') return '강제 청산';
   if (reason === 'CYCLE_COMPLETE') return '누적 목표 달성';
-  if (reason === 'ENTRY_FAILED') return '진입 실패';
+  if (reason === 'ENTRY_FAILED') return '빠른 손절';
   return reason || '-';
 }
 

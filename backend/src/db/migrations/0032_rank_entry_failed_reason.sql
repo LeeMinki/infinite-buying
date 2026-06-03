@@ -1,5 +1,5 @@
--- 랭킹 전략의 진입 실패 조기 매도 사유를 저장한다.
--- 목표가 주문은 기존 sell_reason='TARGET' 주문 행으로 추적하고, 진입 실패 매도는
+-- 랭킹 전략의 빠른 손절 조기 매도 사유를 저장한다.
+-- 목표가 주문은 기존 sell_reason='TARGET' 주문 행으로 추적하고, 빠른 손절 매도는
 -- ENTRY_FAILED로 일반 손절/청산과 구분한다.
 
 CREATE TABLE kr_rank_orders_new (
