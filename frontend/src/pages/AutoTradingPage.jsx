@@ -520,7 +520,7 @@ function BudgetHint({ preview, loading, currentCurrency, onApply }) {
     return <p className="helper">한국투자증권에서 잔액을 확인하는 중입니다…</p>;
   }
   if (!preview) {
-    return <p className="helper">종목을 선택하면 한국투자증권에 등록된 매수가능금액을 기준으로 추천 예산을 보여드립니다.</p>;
+    return <p className="helper">종목을 선택하면 한국투자증권에 등록된 매수가능금액 기준 추천 예산을 표시합니다.</p>;
   }
   if (preview.error) {
     return <p className="helper">잔액 확인 실패: {preview.error}</p>;

@@ -160,7 +160,9 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
     setError('');
     setReplay(null);
     try {
-      setReplay(await replayKrRankTrade(selected.id, order.buyOrderId));
+      const result = await replayKrRankTrade(selected.id, order.buyOrderId);
+      setReplay({ ...result, buyOrderId: order.buyOrderId });
+      setMessage(`${order.symbolName || order.symbol} 거래 복기 결과를 주문 행 아래에 표시했습니다.`);
     } catch (err) {
       setError(err.message || '거래 복기에 실패했습니다.');
     } finally {
@@ -231,7 +233,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
           <li>당일 분봉으로 단기 흐름을 한 번 더 봅니다 — 시가 위, VWAP보다 0.1% 이상 위, 최근 완성봉 2개 VWAP 상회, 거래량 유지, 거래량 동반 장대 음봉 없음, 최근 고점 대비 1.2% 이상 밀리지 않음, 직전 고점의 99.5% 이상 유지. 모두 통과한 첫 후보만 삽니다. 떨어지면 차순위로 넘어가고, 상위 5개가 다 떨어지면 그 구간 매수는 건너뜁니다.</li>
           <li>진입 구간별(오전/점심)로 매수 금액·목표 수익률·손절 기준을 따로 정합니다.</li>
           <li>진입 구간별로 청산 시각(KST)을 선택할 수 있습니다. 켜면 그 시각 이후 목표·손절 미도달이어도 전량 매도하고, 끄면 목표·손절만 기다립니다.</li>
-          <li>"전 재산 자동 매수"를 켜면 매수 금액 입력 없이 진입 시점의 매수가능금액 전액을 한 종목에 투입합니다. 매도 후 잔액 변동이 다음 매수에 자동 반영됩니다.</li>
+          <li>"매수가능금액 전액 사용"을 켜면 매수 금액 입력 없이 진입 시점의 매수가능금액 전액을 한 종목에 투입합니다. 매도 후 잔액 변동이 다음 매수에 자동 반영됩니다.</li>
         </ul>
       </section>
 
@@ -246,7 +248,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
           <label className="checkbox-field">
             <input type="checkbox" checked={form.autoBudgetEnabled}
               onChange={(e) => setForm({ ...form, autoBudgetEnabled: e.target.checked })} />
-            <span>전 재산 자동 매수 (매수가능금액 전액을 매번 그대로 사용)</span>
+            <span>매수가능금액 전액 사용</span>
           </label>
           {form.autoBudgetEnabled
             ? (
@@ -360,7 +362,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
                   <strong>한국 랭킹 #{strategy.id}</strong>
                   <span className="strategy-chip-sub">
                     {strategy.autoBudgetEnabled
-                      ? '전 재산 자동 매수'
+                      ? '매수가능금액 전액'
                       : `오전 ${formatKrw(strategy.morningBudget)}${strategy.lunchEntryEnabled ? ` · 점심 ${formatKrw(strategy.lunchBudget)}` : ''}`}
                   </span>
                 </span>
@@ -392,12 +394,12 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
               <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
               <Metric
                 label="오전 진입"
-                value={selected.autoBudgetEnabled ? '전 재산 자동' : formatKrw(selected.morningBudget)}
+                value={selected.autoBudgetEnabled ? '전액 사용' : formatKrw(selected.morningBudget)}
                 hint={`목표 +${pct(selected.morningTargetProfitRate)} / 손절 -${pct(selected.morningStopLossRate)}${selected.morningLiquidateTime ? ` / 청산 ${selected.morningLiquidateTime} KST` : ''}`}
               />
               <Metric
                 label="점심 진입"
-                value={selected.lunchEntryEnabled ? (selected.autoBudgetEnabled ? '전 재산 자동' : formatKrw(selected.lunchBudget)) : '미사용'}
+                value={selected.lunchEntryEnabled ? (selected.autoBudgetEnabled ? '전액 사용' : formatKrw(selected.lunchBudget)) : '미사용'}
                 hint={selected.lunchEntryEnabled ? `목표 +${pct(selected.lunchTargetProfitRate)} / 손절 -${pct(selected.lunchStopLossRate)}${selected.lunchLiquidateTime ? ` / 청산 ${selected.lunchLiquidateTime} KST` : ''}` : '오전 진입만'}
               />
               <Metric label="현재 보유" value={selected.holdingSymbol ? `${selected.holdingSymbolName || selected.holdingSymbol}` : '무보유'} hint={selected.holdingSymbol ? `${ENTRY_WINDOW_LABEL[selected.holdingEntryWindow] || ''}로 매수` : '진입 대기'} />
@@ -454,7 +456,7 @@ function KrwBalanceHint({ preview, loading, onApply }) {
     return <p className="helper">한국투자증권에서 잔액을 확인하는 중입니다…</p>;
   }
   if (!preview) {
-    return <p className="helper">칸을 누르면 한국투자증권 매수가능금액을 보여 드립니다.</p>;
+    return <p className="helper">입력칸을 선택하면 한국투자증권 매수가능금액을 표시합니다.</p>;
   }
   if (preview.error) {
     return <p className="helper">잔액 확인 실패: {preview.error}</p>;
@@ -613,28 +615,38 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
             {orders.map((order) => {
               const profit = Number(order.profitRate);
               const hasProfit = Number.isFinite(profit);
+              const replayOpen = replay?.buyOrderId === order.buyOrderId;
               return (
-                <tr key={`${order.buyOrderId}-${order.sellOrderId || 'open'}`}>
-                  <td className="muted">{formatDate(order.buyTime)}</td>
-                  <td>{order.symbolName ? `${order.symbolName} ${order.symbol}` : order.symbol}</td>
-                  <td>{formatFillPrice(order.buyPrice)}</td>
-                  <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
-                  <td>{order.sellTime ? formatFillPrice(order.sellPrice) : '-'}</td>
-                  <td>{rankOrderReasonText(order)}</td>
-                  <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
-                    {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : (order.sellTime ? '체결 확인 중' : '-')}
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      className="ghost sm"
-                      disabled={!order.buyPrice || replayBusyId === String(order.buyOrderId)}
-                      onClick={() => onReplay?.(order)}
-                    >
-                      {replayBusyId === String(order.buyOrderId) ? '복기 중…' : '거래 복기'}
-                    </button>
-                  </td>
-                </tr>
+                <React.Fragment key={`${order.buyOrderId}-${order.sellOrderId || 'open'}`}>
+                  <tr className={replayOpen ? 'selected-row' : ''}>
+                    <td className="muted">{formatDate(order.buyTime)}</td>
+                    <td>{order.symbolName ? `${order.symbolName} ${order.symbol}` : order.symbol}</td>
+                    <td>{formatFillPrice(order.buyPrice)}</td>
+                    <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
+                    <td>{order.sellTime ? formatFillPrice(order.sellPrice) : '-'}</td>
+                    <td>{rankOrderReasonText(order)}</td>
+                    <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
+                      {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : (order.sellTime ? '체결 확인 중' : '-')}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        disabled={!order.buyPrice || replayBusyId === String(order.buyOrderId)}
+                        onClick={() => onReplay?.(order)}
+                      >
+                        {replayBusyId === String(order.buyOrderId) ? '복기 중…' : (replayOpen ? '다시 복기' : '거래 복기')}
+                      </button>
+                    </td>
+                  </tr>
+                  {replayOpen && (
+                    <tr className="replay-result-row">
+                      <td colSpan="8">
+                        <ReplayPanel replay={replay} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               );
             })}
             {orders.length === 0 && <tr><td className="empty-row" colSpan="8">아직 주문 이력이 없습니다.</td></tr>}
@@ -642,7 +654,6 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
         </table>
       </div>
       <p className="helper">목표 수익 주문이 접수된 상태에서 손절, 빠른 손절, 청산 시각 조건이 나오면 기존 목표가 주문을 먼저 취소한 뒤 새 매도 주문을 시도합니다.</p>
-      {replay && <ReplayPanel replay={replay} />}
       <LoadMoreFooter shown={orders.length} total={list.total} hasMore={list.hasMore} loading={list.loading} onLoadMore={onLoadMore} />
     </section>
   );

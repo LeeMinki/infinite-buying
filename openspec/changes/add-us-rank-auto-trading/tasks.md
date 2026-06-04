@@ -41,7 +41,7 @@
 - [x] 5.4 `evaluateStrategy(userId, id, { scheduled })` — 락 획득, 장 외/장 잠금 SKIP, evaluateSellPath 또는 새 매매 사이클 시작 분기.
 - [x] 5.5 `evaluateUnlocked(userId, strategy, evaluationSource)` — `day_locked_out` 갱신·점검, 보유 있으면 evaluateSellPath, 없으면 evaluateEntryPath. 장 외이면 noLog SKIP.
 - [x] 5.6 `evaluateSellPath` — 잔고 0이면 보유 해제. evaluateSell 호출. HOLD면 사유에 익절·손절·강제청산 미도달 명시. TARGET이면 랭킹 순위와 관계없이 전량 매도. SELL면 hasNonFailedOrder/재시도 한도 검사, 매도 주문, exit_reason에 따라 trade 행 업데이트(`status=CLOSED`, `exit_*` 채움). STOP_LOSS / FORCE_CLOSE이면 `setDayLockedOut(today_et)`, CYCLE_COMPLETE이면 전략 STOPPED.
-- [x] 5.7 `evaluateEntryPath` — day_locked_out 검사, force_close 1분 전 가드, 진행 중인 trade 없으면 새 trade INSERT(랭킹 조회 → 후보 선택 → trade_seq+1 행 생성), 이미 SELECTED 상태 trade 있으면 그것을 사용. 매수 수량 계산(자동 예산 vs 고정), 안전 검증, placeOrder. 성공 시 `setHolding`·trade `status=BOUGHT, entry_price=...`.
+- [x] 5.7 `evaluateEntryPath` — day_locked_out 검사, force_close 직전 가드, 진행 중인 trade 없으면 새 trade INSERT(랭킹 조회 → 5 USD·거래량·거래대금·+50% 과열·분봉 필터 통과 후보 선택 → trade_seq+1 행 생성), 이미 SELECTED 상태 trade 있으면 그것을 사용. 매수 수량 계산(자동 예산 vs 고정), 안전 검증, placeOrder. 성공 시 `setHolding`·trade `status=BOUGHT, entry_price=...`.
 - [x] 5.8 `placeOrder` — `kisTradingService.placeBuyOrder/placeSellOrder` 위임 (KIS 해외 일반 주문 제약에 맞춰 현재가 지정가, exchange 정규화는 기존 placeOverseasOrder 경로 재사용).
 - [x] 5.9 `checkOrderSafety` — 수량 0/미체결 주문/중복 주문/매수가능금액 부족/보유 수량 부족 차단.
 - [x] 5.10 `saveDecision` / `saveSkip(noLog)` — KR 랭킹 패턴. 장 외·idle SKIP은 noLog.
@@ -50,7 +50,7 @@
 
 ## 6. 라우트
 
-- [x] 6.1 `backend/src/routes/usRankRoutes.js` 생성. `GET /api/us-rank/overview`, `GET/POST /api/us-rank/strategies`, `GET/DELETE /api/us-rank/strategies/:id`, `POST /api/us-rank/strategies/:id/start|stop|evaluate`, `GET /api/us-rank/strategies/:id/trades|orders|decisions`.
+- [x] 6.1 `backend/src/routes/usRankRoutes.js` 생성. `GET /api/us-rank/overview`, `GET/POST /api/us-rank/strategies`, `GET/PUT/DELETE /api/us-rank/strategies/:id`, `POST /api/us-rank/strategies/:id/start|stop|evaluate|sync-fills`, `GET /api/us-rank/strategies/:id/trades|orders|trade-history|decisions`, `POST /api/us-rank/strategies/:id/trade-history/:tradeId/replay`.
 - [x] 6.2 `backend/src/app.js`에 라우터 마운트.
 - [x] 6.3 라우트 인증 검증(기존 미들웨어 재사용).
 

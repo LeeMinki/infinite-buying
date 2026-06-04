@@ -893,6 +893,20 @@ button.danger-button:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+.decision-log-table tr.selected-row td {
+  background: #f8fafc;
+}
+
+.replay-result-row td {
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.replay-result-row .info-panel {
+  border: 1px solid var(--border);
+  margin: 0;
+}
+
 .half-chip {
   background: #eef2ff;
   border: 1px solid #c7d2fe;

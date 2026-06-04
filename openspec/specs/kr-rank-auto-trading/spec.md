@@ -1,7 +1,7 @@
 # kr-rank-auto-trading Specification
 
 ## Purpose
-TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after archive.
+한국 국장 상승률 랭킹 전략(`KR_RANK_MOMENTUM`)의 현재 운용 기준을 정의한다. 이 전략은 라오어 무한매수법과 분리된 테이블·서비스·화면을 사용하며, 오전 09:10과 선택적 점심 11:30 진입 구간에서 등락률 상위 후보를 단기 분봉 필터로 걸러 매수하고 목표 수익·손절·청산 시각으로 매도한다.
 ## Requirements
 ### Requirement: 한국 국장 상승률 랭킹 전략은 라오어 전략과 독립적이다
 
@@ -138,9 +138,9 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 - **THEN** 보유 수량 전량 매도 주문이 만들어져야 한다
 - **AND** 매도 사유가 "손절"로 기록되어야 한다
 
-### Requirement: 전 재산 자동 매수 옵션
+### Requirement: 매수가능금액 전액 사용 옵션
 
-시스템은 전략에 "전 재산 자동 매수"(`autoBudgetEnabled`) 옵션을 받아야 한다(MUST). 이 옵션이 켜져 있으면 매수 평가 시점의 KIS 매수가능금액을 그대로 매수 한도로 사용해야 하며(MUST), `morning_budget`·`lunch_budget` 입력값은 무시하고 0으로 저장한다. 옵션이 꺼져 있으면 입력된 `morning_budget`(점심 진입을 켜면 `lunch_budget`도)를 매수 한도로 사용해야 한다(MUST). 옵션이 꺼져 있고 `morning_budget`이 0 이하이거나 점심 진입이 켜진 상태에서 `lunch_budget`이 0 이하이면 전략 생성을 거절해야 한다(MUST).
+시스템은 전략에 "매수가능금액 전액 사용"(`autoBudgetEnabled`) 옵션을 받아야 한다(MUST). 이 옵션이 켜져 있으면 매수 평가 시점의 KIS 매수가능금액을 그대로 매수 한도로 사용해야 하며(MUST), `morning_budget`·`lunch_budget` 입력값은 무시하고 0으로 저장한다. 옵션이 꺼져 있으면 입력된 `morning_budget`(점심 진입을 켜면 `lunch_budget`도)를 매수 한도로 사용해야 한다(MUST). 옵션이 꺼져 있고 `morning_budget`이 0 이하이거나 점심 진입이 켜진 상태에서 `lunch_budget`이 0 이하이면 전략 생성을 거절해야 한다(MUST).
 
 #### Scenario: 자동 예산 모드 매수
 - **WHEN** `autoBudgetEnabled = true` 전략의 오전 진입에서 매수가능금액이 1,250,000원, 선택 종목 현재가 5,000원
@@ -214,7 +214,7 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 
 ### Requirement: 중복 주문 방지
 
-같은 거래일·같은 전략·같은 진입 구간에서는 중복 매수를 만들지 않아야 한다(MUST). 미체결 주문이 있으면 신규 주문을 만들지 않아야 한다. 중복 평가가 발생해도 중복 주문을 만들지 않아야 한다. 주문 실패 시 자동으로 재시도하지 않아야 한다.
+같은 거래일·같은 전략·같은 진입 구간에서는 중복 매수를 만들지 않아야 한다(MUST). 미체결 주문이 있으면 신규 주문을 만들지 않아야 한다. 중복 평가가 발생해도 중복 주문을 만들지 않아야 한다. 주문 실패(`FAILED`/`REJECTED`)는 같은 멱등키 기준으로 최대 5회까지만 재시도해야 한다(MUST). 안전 검증 실패나 미체결 주문 존재 시에는 새 주문을 만들지 않아야 한다.
 
 #### Scenario: 중복 평가 시 단일 주문
 - **WHEN** 같은 거래일·전략·진입 구간에 대해 평가가 두 번 수행됨
@@ -224,9 +224,9 @@ TBD - created by archiving change add-kr-rank-auto-trading. Update Purpose after
 - **WHEN** 해당 전략에 미체결 주문이 있음
 - **THEN** 신규 주문을 만들지 않아야 한다
 
-#### Scenario: 주문 실패 시 재시도 안 함
-- **WHEN** 매수 또는 매도 주문이 실패(`FAILED`/`REJECTED`)함
-- **THEN** 같은 평가 또는 자동으로 재시도하지 않아야 한다
+#### Scenario: 주문 실패 재시도 한도
+- **WHEN** 같은 거래일·전략·진입 구간·방향의 주문이 5회 실패함
+- **THEN** 더 이상 같은 주문을 만들지 않고 판단 사유에 재시도 한도 초과를 남겨야 한다
 
 ### Requirement: 실주문 실행 설정 재사용
 

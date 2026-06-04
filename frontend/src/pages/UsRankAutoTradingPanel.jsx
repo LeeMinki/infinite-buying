@@ -119,7 +119,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
       const result = await action(selected.id);
       if (label === 'start') setMessage('전략을 시작했습니다.');
       if (label === 'stop') setMessage('전략을 종료했습니다.');
-      if (label === 'evaluate') setMessage(result?.decision?.reason || '평가 완료.');
+      if (label === 'evaluate') setMessage(result?.decision?.reason || '평가를 완료했습니다.');
       await refresh(selected.id);
     } catch (err) {
       setError(err.message);
@@ -231,7 +231,7 @@ export function UsRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
           <li>매수 필터(분봉): 현재가가 VWAP·최근 시작가 위, 거래량 유지, 거래량 동반 장대 음봉 부재, 직전 고점을 밀리지 않음, VWAP보다 15% 넘게 높지 않음(과열). 상위 후보가 모두 떨어지면 그 tick은 건너뜁니다(고점 추격 방지).</li>
           <li>보유 종목이 없으면 평가 시점의 USD 매수가능금액 전액으로 1주 단위 매수 수량을 계산합니다.</li>
           <li>익절 기준에 닿으면 랭킹 순위와 관계없이 보유 수량을 모두 매도합니다. 다음 평가에서 조건이 맞으면 다시 매수합니다.</li>
-          <li>매도는 KIS 체결 확인 후에만 청산을 확정하고 실제 체결가로 손익을 기록합니다. 손절 매도가 체결되지 않으면 더 낮은 가격으로 다시 내 빠르게 빠져나갑니다.</li>
+          <li>매도는 KIS 체결 확인 후에만 청산을 확정하고 실제 체결가로 손익을 기록합니다. 손절 매도가 체결되지 않으면 더 공격적인 지정가로 다시 주문합니다.</li>
           <li>손절 또는 강제 청산이 발생하면 그 미국 거래일에는 더 사지 않습니다.</li>
           <li>누적 목표 수익률에 닿으면 보유분을 정리하고 전략을 종료합니다.</li>
           <li>주문은 1주 단위입니다. 수수료, 세금, 환율 차이는 계산에 넣지 않습니다.</li>

@@ -4,14 +4,12 @@
 
 ## 인증 / 세션
 
-- [ ] `SESSION_SECRET` 누락 시 부팅 실패 또는 경고 동작 — `backend/src/auth/sessionStore.js` 및 `config/env.js`.
-- [ ] 회원가입 이메일 검증 정책(중복, 형식, 길이) — `backend/src/auth/authService.js`.
-- [ ] 비밀번호 정책(최소 길이, 복잡도) — 같은 파일.
+- [ ] 회원가입 이메일 검증 정책 중 길이 제한 — `backend/src/auth/authService.js`.
+- [ ] 비밀번호 정책 중 복잡도 제한.
 - [ ] 로그인 실패 횟수 제한·계정 잠금 여부.
 
 ## KIS 자격증명·Token
 
-- [ ] `SECRET_ENCRYPTION_KEY` 길이/형식 검증 위치와 실패 동작 — `backend/src/crypto/` 또는 `config/env.js`.
 - [ ] Token 만료 임박 판단 기준 (분 단위?) — `kisTokenManager.js`.
 - [ ] 토큰 발급 실패 시 `last_token_error_message` 보관 형식과 PII 마스킹.
 - [ ] `kis_credentials.status` 변경 로직: 어떤 사건에서 `TOKEN_VALID` → `TOKEN_ERROR`로 전환되는지.
@@ -48,7 +46,6 @@
 
 ## Frontend
 
-- [ ] `frontend/src/api/client.js`의 정확한 함수 집합과 에러 처리 인터페이스.
 - [ ] 세션 만료 시 frontend 동작(자동 로그아웃 / 401 처리).
 - [ ] `LaorStrategyGuide` 본문의 문구가 spec 문서와 항상 일치하도록 강제하는 메커니즘.
 
