@@ -531,6 +531,18 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         reason: `${label} 진입: ${symbol} 매수 체결 확인(${filledQuantity}주). 보유로 전환했습니다.`
       });
     }
+    // 잔고는 0인데 매수 주문이 이미 FILLED인 경우는 "매수 체결 → 매도 체결"이 같은 평가 사이 간격
+    // 안에서 끝난 케이스다. 진입 기록을 BOUGHT로 굳혀 다음 tick부터 같은 SKIP을 반복하지 않게 한다.
+    const buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+    if (buyOrder?.status === 'FILLED') {
+      repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
+        noLog: evaluationSource !== 'MANUAL'
+      });
+    }
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
       liveOrderEnabled, evaluationSource,
