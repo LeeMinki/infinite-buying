@@ -53,5 +53,5 @@ Frontend는 broker API(KIS)를 직접 호출하지 않는다. 모든 KIS 호출�
 
 ## 비밀 환경변수 요구
 
-- `SECRET_ENCRYPTION_KEY` (32바이트 base64) — 누락 또는 잘못된 길이면 backend가 부팅 단계에서 실패해야 한다. **구현 확인 필요**: 부팅 검증 위치 (`backend/src/config/env.js` 또는 `crypto/`).
-- `SESSION_SECRET` — 누락 시 세션이 안전하지 않으므로 환경변수 점검 필요. **구현 확인 필요**: 부팅 시 검증 여부.
+- `SECRET_ENCRYPTION_KEY` (32바이트 base64) — `backend/src/config/env.js`의 `validateEnv()`에서 길이를 검증한다. 운영 환경에서는 값이 없으면 부팅 단계에서 실패한다.
+- `SESSION_SECRET` — `validateEnv()`에서 32자 이상을 요구한다. 운영 환경에서는 값이 없으면 부팅 단계에서 실패한다.

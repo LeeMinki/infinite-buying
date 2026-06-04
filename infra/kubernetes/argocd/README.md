@@ -17,7 +17,7 @@
 ## Oracle A1/k3s 운영 메모
 
 - backend는 SQLite 단일 writer와 scheduler를 포함하므로 production replica를 1개로 유지한다.
-- 이미지 registry는 GHCR이다. 운영 매니페스트에는 AWS ECR pull secret이나 ECR token refresh CronJob이 없어야 한다.
+- 이미지 registry는 OCIR(`yny.ocir.io/axnyuujz40an`)이다. 운영 매니페스트에는 AWS ECR pull secret이나 ECR token refresh CronJob이 없어야 한다.
 - TLS는 cert-manager `letsencrypt-prod` ClusterIssuer와 Traefik ingress로 처리한다.
 - `SECRET_ENCRYPTION_KEY`와 `SESSION_SECRET`은 `infinite-buying-secrets` Kubernetes Secret으로 주입한다. 노드를 옮길 때 같은 값을 보존해야 기존 KIS credential을 복호화할 수 있다.
 - Route53은 DNS authority로 유지하지만, 런타임은 OCI A1 클러스터다.

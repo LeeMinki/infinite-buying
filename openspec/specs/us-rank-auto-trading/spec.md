@@ -1,7 +1,7 @@
 # us-rank-auto-trading Specification
 
 ## Purpose
-TBD - created by archiving change improve-rank-trading-execution-and-replay. Update Purpose after archive.
+미국장 상승률 랭킹 전략(`US_RANK_MOMENTUM`)의 현재 운용 기준을 정의한다. 이 전략은 미국 정규장 ET 10:00~16:00 동안 상승률 상위 후보를 유동성·과열·분봉 흐름 필터로 걸러 반복 매수하고, 목표가 선주문·손절·빠른 손절·강제 청산·누적 목표 종료를 체결 확인 기반으로 처리한다.
 ## Requirements
 ### Requirement: 미국장 목표가 매도 주문
 
@@ -50,7 +50,7 @@ TBD - created by archiving change improve-rank-trading-execution-and-replay. Upd
 
 ### Requirement: 미국장 후보 필터 강화
 
-미국장 랭킹 전략은 매수 후보 선정 시 매수가능금액으로 1주도 살 수 없는 종목, 1 USD 미만 종목, 거래량 기준 미달 종목, 거래대금 기준 미달 종목, 과열 급등 후보, 단기 흐름이 꺾인 후보를 제외해야 한다(MUST).
+미국장 랭킹 전략은 매수 후보 선정 시 매수가능금액으로 1주도 살 수 없는 종목, 5 USD 미만 종목, 거래량 기준 미달 종목, 거래대금 기준 미달 종목, 당일 등락률 +50% 이상 과열 급등 후보, VWAP 대비 과도하게 이탈한 후보, 단기 흐름이 꺾인 후보를 제외해야 한다(MUST). 거래량 기준은 KIS 랭킹 요청의 1,000만 주 이상 필터를 1차로 사용하고, 응답 거래량이 유효하면 서버에서도 거래량 1,000만 주와 거래대금 5천만 USD 이상을 확인해야 한다(MUST). 단기 분봉 검사는 상위 후보 최대 3개에 적용한다.
 
 #### Scenario: 1주 매수 불가능 후보 제외
 

@@ -13,6 +13,8 @@
 | `/api/orders` | `routes/ordersRoutes.js` |
 | `/api/backtests` | `routes/backtestRoutes.js` |
 | `/api/auto-trading` | `routes/autoTradingRoutes.js` |
+| `/api/kr-rank` | `routes/krRankRoutes.js` |
+| `/api/us-rank` | `routes/usRankRoutes.js` |
 | `/api/health` | `app.js` 내 인라인 |
 
 ## Endpoint 일람
@@ -96,6 +98,40 @@
 | GET | `/orders` | 전체 주문 |
 | GET | `/orders/:id` | 단일 주문 |
 | POST | `/orders/:id/refresh` | KIS 조회로 상태 갱신 |
+
+### 한국 랭킹 자동매매 (`/api/kr-rank`)
+
+| Method | Path | 설명 |
+| --- | --- | --- |
+| GET | `/overview` | 사용자 한국 랭킹 전략 요약 |
+| GET/POST | `/strategies` | 전략 목록/생성 |
+| GET/PUT/DELETE | `/strategies/:id` | 전략 상세/수정/soft delete |
+| POST | `/strategies/:id/start` | 시작 |
+| POST | `/strategies/:id/stop` | 종료 |
+| POST | `/strategies/:id/evaluate` | 수동 평가 |
+| POST | `/strategies/:id/sync-fills` | KIS 체결 조회로 주문/보유 상태 동기화 |
+| GET | `/strategies/:id/orders` | 전략 주문 목록 |
+| GET | `/strategies/:id/trade-history` | 매수·매도 연결 왕복 거래 이력 |
+| POST | `/strategies/:id/trade-history/:buyOrderId/replay` | KIS 과거 분봉 기반 거래 복기 |
+| GET | `/strategies/:id/decisions` | 판단 로그 |
+| GET | `/strategies/:id/entries` | 진입 기록 |
+
+### 미국 랭킹 자동매매 (`/api/us-rank`)
+
+| Method | Path | 설명 |
+| --- | --- | --- |
+| GET | `/overview` | 사용자 미국 랭킹 전략 요약 |
+| GET/POST | `/strategies` | 전략 목록/생성 |
+| GET/PUT/DELETE | `/strategies/:id` | 전략 상세/수정/soft delete |
+| POST | `/strategies/:id/start` | 시작 |
+| POST | `/strategies/:id/stop` | 종료 |
+| POST | `/strategies/:id/evaluate` | 수동 평가 |
+| POST | `/strategies/:id/sync-fills` | KIS 체결 조회로 주문/보유 상태 동기화 |
+| GET | `/strategies/:id/trades` | 매매 사이클 목록 |
+| GET | `/strategies/:id/orders` | 전략 주문 목록 |
+| GET | `/strategies/:id/trade-history` | 매수·매도 연결 왕복 거래 이력 |
+| POST | `/strategies/:id/trade-history/:tradeId/replay` | KIS 과거 분봉 기반 거래 복기 |
+| GET | `/strategies/:id/decisions` | 판단 로그 |
 
 ### (구) 가상 전략 (`/api/strategies`)
 

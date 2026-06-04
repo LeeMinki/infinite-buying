@@ -40,7 +40,7 @@ export const FAST_STOP_LOSS_DEFAULTS = {
   openBreakRate: 0.008
 };
 
-// 진입 구간. 스케줄러 tick 간격(기본 10분)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
+// 진입 구간. 스케줄러 tick 간격(기본 30초)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {
   MORNING: { label: '오전', startMinutes: 9 * 60 + 10, endMinutes: 10 * 60 },
   LUNCH: { label: '점심', startMinutes: 11 * 60 + 30, endMinutes: 12 * 60 + 20 }

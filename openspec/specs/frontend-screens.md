@@ -23,7 +23,7 @@ React 19 + Vite + Recharts. 라우팅 라이브러리는 사용하지 않고 `fr
 ## 백테스트 (`BacktestPage`)
 
 - 입력 폼 + 실행 버튼 → `POST /api/backtests`.
-- 입력 옵션: 분할 회차·목표 수익률·큰수 매수 여유율·"목표 매도 후 새 사이클 시작"·**"소수점 매매 시뮬레이션"** 체크박스. 소수점 옵션을 끄면 기본 1주 단위(자동매매와 동일, carryover 적용), 켜면 소수점 6자리 수량 시뮬레이션.
+- 입력 옵션: 분할 회차·목표 수익률·큰수 매수 여유율·"목표 매도 후 새 사이클 시작"·**"소수점 매매 시뮬레이션"** 체크박스. 소수점 옵션을 끄면 기본 1주 단위(자동매매와 동일, 잔액 이월 없음), 켜면 소수점 6자리 수량 시뮬레이션.
 - 결과 영역: 요약 카드 (return rate, max drawdown, **매수 단위 모드** 등), `AssetCurveChart`, `AveragePriceChart`, `DailyChart`, `TradeHistoryTable`, `ResultSummary`.
 - `RunPicker`로 과거 run 선택·일괄 삭제.
 - `ZeroBuyDiagnostic` — 매수 0회 케이스 진단 보조 UI.
@@ -43,7 +43,7 @@ React 19 + Vite + Recharts. 라우팅 라이브러리는 사용하지 않고 `fr
 ## 공용 컴포넌트 (`frontend/src/components/`)
 
 - `StockSearchField` — KIS 종목 검색 결과 UI (소수점매매 가능 여부 등 부가 정보 표시 가능)
-- `StrategyForm` — 메인 좌측 폼
+- `StrategyForm` — 기존 라오어 전략 초안 흐름에서 쓰는 폼 컴포넌트
 - `LaorStrategyGuide` — 알고리즘 가이드 (백테스트/자동매매 모드)
 - 차트류: `AssetCurveChart`, `AveragePriceChart`, `DailyChart`
 - 결과 표시: `EvaluationPanel`, `HoldingPanel`, `OrdersTable`, `ResultSummary`, `TradeHistoryTable`
@@ -51,4 +51,4 @@ React 19 + Vite + Recharts. 라우팅 라이브러리는 사용하지 않고 `fr
 
 ## API 호출 클라이언트
 
-`frontend/src/api/client.js` (정확한 모듈 인터페이스는 본 baseline에서 직접 확인하지 않았다 — 구현 확인 필요 항목 참고).
+`frontend/src/api/client.js`가 인증, KIS 설정, 시장 데이터, 백테스트, 라오어 자동매매, 한국 랭킹, 미국 랭킹 API 함수를 한 곳에서 제공한다.
