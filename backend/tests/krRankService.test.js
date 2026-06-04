@@ -7,6 +7,7 @@ const db = await bootstrapDb();
 const credentialService = await import('../src/services/kisCredentialService.js');
 const service = await import('../src/services/krRankService.js');
 const repo = await import('../src/repositories/krRankRepository.js');
+const autoTradingRepo = await import('../src/repositories/autoTradingRepository.js');
 
 const user = createUser(db, 'kr-rank-service@example.com');
 credentialService.saveSettings(user.id, {
@@ -114,6 +115,69 @@ function passingMinuteCandles() {
 function json(body) {
   return { ok: true, status: 200, json: async () => body };
 }
+
+test('한국 랭킹: 매수 체결과 목표 매도 체결이 한 tick 안에 끝나면 진입 기록을 BOUGHT로 굳혀 다음 tick부터 같은 SKIP을 반복하지 않는다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  // 9:10:58 KST 진입 tick에 evaluateEntryPath가 만들었던 상태 그대로 재현한다.
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-06-04', entryWindow: 'MORNING',
+    status: 'SELECTED',
+    selectedSymbol: '015260', selectedSymbolName: '동국홀딩스',
+    selectedPrice: 5000, selectedFluctuationRate: 0.1,
+    rankingSnapshot: null, bought: false
+  });
+  // 같은 tick 사이클에 BUY가 KIS에서 FILLED로 동기화됐다.
+  repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '015260', symbolName: '동국홀딩스',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 222, orderPrice: 5000, estimatedAmount: 1_110_000,
+    kisOrderNo: 'BUY-FAST-1', status: 'FILLED', filledQuantity: 222, averageFilledPrice: 5000,
+    idempotencyKey: '20260604-' + strategy.id + '-MORNING-BUY',
+    decisionReason: '단위 테스트', liveOrderEnabled: true
+  });
+  // TARGET 매도까지 같은 사이클에 체결돼 잔고는 0.
+  repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '015260', symbolName: '동국홀딩스',
+    side: 'SELL', sellReason: 'TARGET', entryWindow: 'MORNING', quantity: 222, orderPrice: 5100, estimatedAmount: 1_132_200,
+    kisOrderNo: 'SELL-FAST-1', status: 'FILLED', filledQuantity: 222, averageFilledPrice: 5100,
+    idempotencyKey: '20260604-' + strategy.id + '-MORNING-SELL-TARGET',
+    decisionReason: '단위 테스트', liveOrderEnabled: true
+  });
+
+  await withMockedFetch({ cash: 0, prices: { '015260': 5100 } }, async () => {
+    await withMockedDate('2026-06-04T00:15:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      // saveDecision은 noLog=true라 로그는 안 남기지만 보유 상태는 NULL을 유지해야 한다.
+      const refreshed = repo.getStrategy(user.id, strategy.id);
+      assert.equal(refreshed.holdingSymbol, null);
+      // 핵심: 진입 기록이 BOUGHT로 굳어졌는지 확인.
+      const after = repo.getEntry(strategy.id, '2026-06-04', 'MORNING');
+      assert.equal(after.bought, true);
+      assert.equal(after.status, 'BOUGHT');
+      assert.equal(result.decision, null); // SCHEDULED SKIP은 로그를 만들지 않는다.
+    });
+
+    // 다음 tick: 같은 시각에 다시 평가해도 line 191 조기 종료 분기에 빠져 매수 시도를 안 한다.
+    await withMockedDate('2026-06-04T00:15:30Z', async () => {
+      const second = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(second.decision, null);
+      const orderCount = repo.listOrders(user.id, { strategyId: strategy.id }).length;
+      assert.equal(orderCount, 2); // 새 매수가 추가되지 않아야 한다.
+    });
+  });
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
 
 test('한국 랭킹은 매수가능금액으로 1주도 못 사는 후보를 건너뛰고 다음 후보를 산다', async () => {
   await withMockedFetch({
