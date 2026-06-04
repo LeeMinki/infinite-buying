@@ -82,6 +82,13 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl')) {
       return json({ rt_cd: '0', output: [] });
     }
+    if (text.includes('/uapi/domestic-stock/v1/trading/inquire-daily-ccld')) {
+      state.historyCalls = (state.historyCalls || 0) + 1;
+      return json({ rt_cd: '0', output1: state.history || [] });
+    }
+    if (text.includes('/uapi/domestic-stock/v1/trading/inquire-balance')) {
+      return json({ rt_cd: '0', output1: state.holdings || [], output2: [{ dnca_tot_amt: String(state.cash ?? 0) }] });
+    }
     if (options.method === 'POST' && text.includes('/uapi/domestic-stock/v1/trading/order-cash')) {
       state.orderCalls = (state.orderCalls || 0) + 1;
       return json({ rt_cd: '0', output: { ODNO: `KRO${state.orderCalls}` } });
@@ -175,6 +182,123 @@ test('한국 랭킹: 매수 체결과 목표 매도 체결이 한 tick 안에 �
       assert.equal(orderCount, 2); // 새 매수가 추가되지 않아야 한다.
     });
   });
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
+
+test('한국 랭킹: 우리 DB의 BUY가 아직 ACCEPTED여도 KIS 체결조회로 FILLED가 확인되면 진입을 BOUGHT로 굳힌다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  // 평가 시작점의 syncOrderFills 가 KIS 일시 오류로 BUY 상태를 갱신하지 못한 시나리오를 재현한다.
+  // 우리 DB 의 BUY 는 ACCEPTED, 잔고도 0 (TARGET 매도도 실제론 체결됐다고 가정).
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-06-05', entryWindow: 'MORNING',
+    status: 'SELECTED',
+    selectedSymbol: '015261', selectedSymbolName: '동국홀딩스B',
+    selectedPrice: 5000, selectedFluctuationRate: 0.1,
+    rankingSnapshot: null, bought: false
+  });
+  const idempotencyKey = '20260605-' + strategy.id + '-MORNING-BUY';
+  const buy = repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '015261', symbolName: '동국홀딩스B',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 100, orderPrice: 5000, estimatedAmount: 500_000,
+    kisOrderNo: 'BUY-STALE-1', status: 'ACCEPTED',
+    idempotencyKey,
+    decisionReason: '단위 테스트', liveOrderEnabled: true
+  });
+
+  // KIS 체결조회는 FILLED 로 응답한다 — 우리 DB 보다 KIS 가 최신.
+  const state = {
+    cash: 0,
+    prices: { '015261': 5100 },
+    history: [{
+      odno: 'BUY-STALE-1', pdno: '015261', sll_buy_dvsn_cd: '02',
+      ord_qty: '100', tot_ccld_qty: '100', nccs_qty: '0', avg_prvs: '5005'
+    }]
+  };
+
+  await withMockedFetch(state, async () => {
+    await withMockedDate('2026-06-05T00:15:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision, null);
+    });
+  });
+
+  // 평가 분기에서 KIS 체결조회로 BUY 상태가 FILLED 로 보정됐고, 진입은 BOUGHT 로 굳었다.
+  const refreshedOrder = repo.getOrder(user.id, buy.id);
+  assert.equal(refreshedOrder.status, 'FILLED');
+  assert.equal(Number(refreshedOrder.filledQuantity), 100);
+  assert.equal(Number(refreshedOrder.averageFilledPrice), 5005);
+  const refreshedEntry = repo.getEntry(strategy.id, '2026-06-05', 'MORNING');
+  assert.equal(refreshedEntry.bought, true);
+  assert.equal(refreshedEntry.status, 'BOUGHT');
+  // 보유로 전환하진 않는다 — 매도까지 끝난 상태로 본다.
+  const refreshedStrategy = repo.getStrategy(user.id, strategy.id);
+  assert.equal(refreshedStrategy.holdingSymbol, null);
+  // 평가 안에서 KIS 체결조회는 한 번만 호출된다(평가 시작점 syncOrderFills 1회 + 분기 보강 1회 = 최대 2회).
+  assert.ok(state.historyCalls >= 1 && state.historyCalls <= 2);
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
+
+test('한국 랭킹: KIS 체결조회도 미체결로 응답하면 SKIP "보유 전환을 보류" 메시지로 끝낸다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-06-08', entryWindow: 'MORNING',
+    status: 'SELECTED',
+    selectedSymbol: '015262', selectedSymbolName: '동국홀딩스C',
+    selectedPrice: 5000, selectedFluctuationRate: 0.1,
+    rankingSnapshot: null, bought: false
+  });
+  repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '015262', symbolName: '동국홀딩스C',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 100, orderPrice: 5000, estimatedAmount: 500_000,
+    kisOrderNo: 'BUY-WAIT-1', status: 'ACCEPTED',
+    idempotencyKey: '20260608-' + strategy.id + '-MORNING-BUY',
+    decisionReason: '단위 테스트', liveOrderEnabled: true
+  });
+
+  // KIS 체결조회도 미체결로 응답한다.
+  const state = {
+    cash: 0,
+    prices: { '015262': 5000 },
+    history: [{
+      odno: 'BUY-WAIT-1', pdno: '015262', sll_buy_dvsn_cd: '02',
+      ord_qty: '100', tot_ccld_qty: '0', nccs_qty: '100', avg_prvs: '0'
+    }]
+  };
+
+  await withMockedFetch(state, async () => {
+    await withMockedDate('2026-06-08T00:15:00Z', async () => {
+      await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+    });
+  });
+
+  // 진입 기록은 아직 BOUGHT 로 굳지 않는다 — 정말 아직 체결 전이기 때문.
+  const after = repo.getEntry(strategy.id, '2026-06-08', 'MORNING');
+  assert.equal(after.bought, false);
+  assert.equal(after.status, 'SELECTED');
 
   autoTradingRepo.updateLiveOrderSetting(user.id, false);
 });
