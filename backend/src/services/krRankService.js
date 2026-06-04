@@ -1022,7 +1022,7 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
       rejections.push({ symbol: candidate.symbol, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
       continue;
     }
-    const check = checkBuyCandidate(candles, { candidate });
+    const check = checkBuyCandidate(candles, { candidate, entryWindow });
     if (!check.ok) {
       rejections.push({ symbol: candidate.symbol, reason: check.reason });
       continue;
