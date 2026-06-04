@@ -2,11 +2,11 @@
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
 // 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
-// 20% — 상한가(+30%)까지 헤드룸을 충분히 남겨 목표 수익 도달 여지를 확보한다.
+// 오전은 20%, 점심은 오전 급등 뒤 되돌림 위험을 줄이기 위해 더 낮은 16%를 쓴다.
 export const MAX_FLUCTUATION_RATE = 0.20;
 export const ENTRY_MAX_FLUCTUATION_RATES = {
   MORNING: 0.20,
-  LUNCH: 0.20
+  LUNCH: 0.16
 };
 
 // 매수 필터 기본값 — 단기 흐름 검사용. krRankBuyFilter 절을 참고.
@@ -20,6 +20,18 @@ export const BUY_FILTER_DEFAULTS = {
   highBreakoutTolerance: 0.995,
   // VWAP 바로 위에서 흔들리는 종목을 피하기 위한 최소 이격. 0.1% 이상 위에 있을 때만 통과.
   vwapBufferRate: 0.001,
+  // VWAP 위에 있어도 평균가에서 너무 멀면 급등 막판 추격 위험이 커 거절한다.
+  maxVwapPremiumRate: 0.08,
+  lunchMaxVwapPremiumRate: 0.06,
+  // 점심 진입은 오전 전체 VWAP만 보면 급등 직전 평균에 끌려 과열을 놓칠 수 있어 최근 VWAP도 함께 본다.
+  lunchRecentVwapWindow: 30,
+  lunchRecentVwapBufferRate: 0.001,
+  lunchRecentVwapMaxPremiumRate: 0.04,
+  // 짧은 시간에 수직 급등한 후보는 되돌림 위험이 커 거절한다.
+  rapidRiseWindow: 3,
+  rapidRiseMaxRate: 0.04,
+  extendedRapidRiseWindow: 8,
+  extendedRapidRiseMaxRate: 0.07,
   // 최근 고점 대비 이 비율 이상 밀린 후보는 이미 꺾인 흐름으로 본다.
   highPullbackMaxRate: 0.012,
   // 최근 완성봉들이 VWAP 아래로 닫혔는지 확인할 봉 수.
@@ -72,6 +84,7 @@ export function selectRankingCandidates(rankingList = [], { maxFluctuationRate =
   const out = [];
   for (const item of rankingList) {
     if (!item || !item.symbol) continue;
+    if (excludedKrRankIssueReason(item)) continue;
     const rate = Number(item.fluctuationRate);
     if (!Number.isFinite(rate)) continue;
     if (rate >= maxFluctuationRate) continue;
@@ -91,16 +104,37 @@ export function maxFluctuationRateForEntryWindow(entryWindow) {
   return ENTRY_MAX_FLUCTUATION_RATES[entryWindow] ?? MAX_FLUCTUATION_RATE;
 }
 
+export function excludedKrRankIssueReason(candidate = {}) {
+  const rawName = String(candidate?.name || '').trim();
+  if (!rawName) return null;
+  const upperName = rawName.toUpperCase();
+  if (/우선주|우선/.test(rawName) || /우[ABC]?$/.test(rawName)) {
+    return '우선주는 변동성과 유동성 위험이 커 매수하지 않습니다.';
+  }
+  const specialKeywords = ['ETF', 'ETN', '스팩', 'SPAC', '리츠', 'REIT', '레버리지', '인버스', '선물'];
+  if (specialKeywords.some((keyword) => upperName.includes(keyword))) {
+    return 'ETF/ETN/스팩/리츠/파생형 상품은 전략 대상이 아니라 매수하지 않습니다.';
+  }
+  const productPrefixes = ['KODEX', 'TIGER', 'ACE', 'SOL', 'KBSTAR', 'HANARO', 'KOSEF', 'KIWOOM', 'RISE', 'PLUS', 'TIMEFOLIO', 'ARIRANG'];
+  if (productPrefixes.some((prefix) => upperName.startsWith(prefix))) {
+    return '상장지수·파생형 상품명으로 판단되어 매수하지 않습니다.';
+  }
+  return null;
+}
+
 // ── 단기 흐름 매수 필터 ───────────────────────────────────────────────
 //
 // 등락률 랭킹 상위라 해서 무조건 매수하지 않는다. 9시 10분 진입 직전까지의 분봉으로
 // 다음 조건들을 본다:
 //   1) 현재가가 시가보다 위에 있는가
 //   2) 현재가가 VWAP(누적 거래량가중 평균가)보다 0.1% 이상 위에 있는가
-//   3) 최근 완성봉 2개가 VWAP 위에서 닫혔는가
-//   4) 직전 N봉 거래량 합이 그 이전 N봉 거래량 합보다 너무 줄지 않았는가(거래량 유지)
-//   5) 최근 N봉 중 거래량을 동반한 장대 음봉이 있는가(있으면 거절)
-//   6) 최근 고점 대비 1.2% 이상 밀렸거나 직전 고점 돌파 흐름이 깨졌는가(있으면 거절)
+//   3) 현재가가 VWAP에서 과도하게 멀지 않은가(점심은 더 엄격)
+//   4) 점심 진입이면 최근 VWAP 기준으로도 과열되지 않았는가
+//   5) 최근 3분·8분 수직 급등 후보가 아닌가
+//   6) 최근 완성봉 2개가 VWAP 위에서 닫혔는가
+//   7) 직전 N봉 거래량 합이 그 이전 N봉 거래량 합보다 너무 줄지 않았는가(거래량 유지)
+//   8) 최근 N봉 중 거래량을 동반한 장대 음봉이 있는가(있으면 거절)
+//   9) 최근 고점 대비 1.2% 이상 밀렸거나 직전 고점 돌파 흐름이 깨졌는가(있으면 거절)
 // 모두 통과해야 매수 후보로 본다. 분봉이 부족하면 보수적으로 거절한다.
 
 export function computeVwap(candles) {
@@ -185,6 +219,16 @@ export function highPullbackRate(candles, opts = {}) {
   return Math.max(0, (recentHigh - close) / recentHigh);
 }
 
+export function recentCloseRiseRate(candles, window = BUY_FILTER_DEFAULTS.rapidRiseWindow) {
+  if (!Array.isArray(candles) || candles.length <= window) return 0;
+  const last = candles[candles.length - 1];
+  const base = candles[candles.length - 1 - window];
+  const close = Number(last?.close) || 0;
+  const baseClose = Number(base?.close) || 0;
+  if (close <= 0 || baseClose <= 0) return 0;
+  return (close - baseClose) / baseClose;
+}
+
 export function scoreBuyCandidate(candles, candidate = {}, opts = {}) {
   const vwap = computeVwap(candles);
   const last = Array.isArray(candles) ? candles[candles.length - 1] : null;
@@ -215,6 +259,10 @@ export function scoreBuyCandidate(candles, candidate = {}, opts = {}) {
 
 // 매수 필터의 통합 진입점. ok=true면 매수 후보로 통과, false면 reason에 거절 사유.
 export function checkBuyCandidate(candles, opts = {}) {
+  const issueReason = excludedKrRankIssueReason(opts.candidate);
+  if (issueReason) {
+    return { ok: false, reason: issueReason };
+  }
   const completedCandles = opts.useCompletedCandles === false
     ? (Array.isArray(candles) ? candles : [])
     : getCompletedMinuteCandles(candles, opts);
@@ -238,6 +286,44 @@ export function checkBuyCandidate(candles, opts = {}) {
   const requiredVwap = vwap * (1 + vwapBufferRate);
   if (vwap > 0 && current < requiredVwap) {
     return { ok: false, reason: `현재가 ${fmtPrice(current)}원이 VWAP ${fmtPrice(vwap)}원 대비 충분히 높지 않아 매수하지 않습니다.` };
+  }
+  const entryWindow = opts.entryWindow || null;
+  const maxVwapPremiumRate = opts.maxVwapPremiumRate ?? (
+    entryWindow === 'LUNCH'
+      ? BUY_FILTER_DEFAULTS.lunchMaxVwapPremiumRate
+      : BUY_FILTER_DEFAULTS.maxVwapPremiumRate
+  );
+  const vwapPremium = vwap > 0 ? (current - vwap) / vwap : 0;
+  if (vwap > 0 && vwapPremium > maxVwapPremiumRate) {
+    return { ok: false, reason: `현재가가 VWAP 대비 ${(vwapPremium * 100).toFixed(1)}% 높아 과열로 보고 매수하지 않습니다.` };
+  }
+
+  if (entryWindow === 'LUNCH') {
+    const lunchRecentVwapWindow = opts.lunchRecentVwapWindow ?? BUY_FILTER_DEFAULTS.lunchRecentVwapWindow;
+    const lunchRecentCandles = completedCandles.slice(-lunchRecentVwapWindow);
+    const lunchRecentVwap = computeVwap(lunchRecentCandles);
+    const lunchRecentVwapBufferRate = opts.lunchRecentVwapBufferRate ?? BUY_FILTER_DEFAULTS.lunchRecentVwapBufferRate;
+    const lunchRecentVwapMaxPremiumRate = opts.lunchRecentVwapMaxPremiumRate ?? BUY_FILTER_DEFAULTS.lunchRecentVwapMaxPremiumRate;
+    if (lunchRecentVwap > 0 && current < lunchRecentVwap * (1 + lunchRecentVwapBufferRate)) {
+      return { ok: false, reason: `점심 진입 현재가 ${fmtPrice(current)}원이 최근 VWAP ${fmtPrice(lunchRecentVwap)}원 대비 충분히 높지 않아 매수하지 않습니다.` };
+    }
+    const lunchRecentVwapPremium = lunchRecentVwap > 0 ? (current - lunchRecentVwap) / lunchRecentVwap : 0;
+    if (lunchRecentVwap > 0 && lunchRecentVwapPremium > lunchRecentVwapMaxPremiumRate) {
+      return { ok: false, reason: `점심 진입 현재가가 최근 VWAP 대비 ${(lunchRecentVwapPremium * 100).toFixed(1)}% 높아 과열로 보고 매수하지 않습니다.` };
+    }
+  }
+
+  const rapidRiseWindow = opts.rapidRiseWindow ?? BUY_FILTER_DEFAULTS.rapidRiseWindow;
+  const rapidRiseMaxRate = opts.rapidRiseMaxRate ?? BUY_FILTER_DEFAULTS.rapidRiseMaxRate;
+  const rapidRise = recentCloseRiseRate(completedCandles, rapidRiseWindow);
+  if (rapidRise >= rapidRiseMaxRate) {
+    return { ok: false, reason: `최근 ${rapidRiseWindow}분 상승률이 ${(rapidRise * 100).toFixed(1)}%라 수직 급등으로 보고 매수하지 않습니다.` };
+  }
+  const extendedRapidRiseWindow = opts.extendedRapidRiseWindow ?? BUY_FILTER_DEFAULTS.extendedRapidRiseWindow;
+  const extendedRapidRiseMaxRate = opts.extendedRapidRiseMaxRate ?? BUY_FILTER_DEFAULTS.extendedRapidRiseMaxRate;
+  const extendedRapidRise = recentCloseRiseRate(completedCandles, extendedRapidRiseWindow);
+  if (extendedRapidRise >= extendedRapidRiseMaxRate) {
+    return { ok: false, reason: `최근 ${extendedRapidRiseWindow}분 상승률이 ${(extendedRapidRise * 100).toFixed(1)}%라 수직 급등으로 보고 매수하지 않습니다.` };
   }
 
   const recentVwapWindow = opts.recentVwapWindow ?? BUY_FILTER_DEFAULTS.recentVwapWindow;

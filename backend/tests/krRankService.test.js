@@ -105,7 +105,7 @@ function withMockedFetch(state, run) {
 function passingMinuteCandles() {
   const out = [];
   for (let i = 0; i < 10; i += 1) {
-    const close = 100 + i;
+    const close = 100 + i * 0.5;
     const minute = String(i).padStart(2, '0');
     out.push({
       stck_cntg_hour: `09${minute}00`,

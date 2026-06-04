@@ -16,8 +16,10 @@ import {
   findLargeBearishCandle,
   isFailingHighBreakout,
   highPullbackRate,
+  recentCloseRiseRate,
   scoreBuyCandidate,
   checkBuyCandidate,
+  excludedKrRankIssueReason,
   evaluateEntryFailure,
   evaluateFastStopLoss,
   MAX_FLUCTUATION_RATE,
@@ -61,9 +63,9 @@ test('모든 종목이 20% 이상이면 후보가 없다', () => {
   assert.equal(selectRankingCandidate(ranking), null);
 });
 
-test('진입 구간별 등락률 상한은 오전·점심 모두 20%를 쓴다', () => {
+test('진입 구간별 등락률 상한은 오전 20%, 점심 16%를 쓴다', () => {
   assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.20);
-  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.20);
+  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.16);
   assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
 });
 
@@ -375,6 +377,18 @@ test('selectRankingCandidates는 상한 미만 후보를 순서대로 반환한�
   assert.deepEqual(list.map((c) => c.symbol), ['B', 'C']);
 });
 
+test('selectRankingCandidates는 우선주와 상장지수·파생형 상품을 제외한다', () => {
+  const ranking = [
+    { symbol: '006345', name: '대원전선우', price: 12240, fluctuationRate: 0.12 },
+    { symbol: '460860', name: 'KIWOOM 2차전지산업레버리지', price: 11000, fluctuationRate: 0.11 },
+    { symbol: '999999', name: '미래스팩12호', price: 2100, fluctuationRate: 0.10 },
+    { symbol: '000660', name: 'SK하이닉스', price: 180000, fluctuationRate: 0.09 }
+  ];
+  assert.match(excludedKrRankIssueReason(ranking[0]), /우선주/);
+  assert.match(excludedKrRankIssueReason(ranking[1]), /상품/);
+  assert.deepEqual(selectRankingCandidates(ranking).map((c) => c.symbol), ['000660']);
+});
+
 test('VWAP은 (고+저+종)/3 가중 평균으로 계산된다', () => {
   const candles = [
     candle('090100', 100, 105, 99, 102, 1000),
@@ -467,6 +481,80 @@ test('checkBuyCandidate: VWAP 바로 위라 이격이 부족하면 거절한다'
   const result = checkBuyCandidate(candles, { useCompletedCandles: false });
   assert.equal(result.ok, false);
   assert.match(result.reason, /VWAP/);
+});
+
+test('checkBuyCandidate: VWAP 대비 과열이면 거절한다', () => {
+  const candles = [
+    candle('090100', 100, 101, 99, 100, 5000),
+    candle('090200', 100, 102, 99, 101, 5000),
+    candle('090300', 101, 111, 101, 110, 1000)
+  ];
+  const result = checkBuyCandidate(candles, {
+    useCompletedCandles: false,
+    maxVwapPremiumRate: 0.05,
+    rapidRiseMaxRate: 0.50
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /과열/);
+});
+
+test('checkBuyCandidate: 점심 진입은 최근 VWAP 대비 과열도 거절한다', () => {
+  const candles = [
+    candle('112100', 100, 101, 99, 100, 1000),
+    candle('112200', 100, 101, 99, 100, 1000),
+    candle('112300', 100, 101, 99, 101, 1000),
+    candle('112400', 101, 102, 100, 102, 1000),
+    candle('112500', 102, 103, 101, 103, 1000),
+    candle('112600', 103, 108, 103, 108, 1000)
+  ];
+  const result = checkBuyCandidate(candles, {
+    useCompletedCandles: false,
+    entryWindow: 'LUNCH',
+    maxVwapPremiumRate: 0.50,
+    lunchRecentVwapWindow: 3,
+    lunchRecentVwapMaxPremiumRate: 0.03,
+    rapidRiseMaxRate: 0.50
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /최근 VWAP.*과열/);
+});
+
+test('checkBuyCandidate: 최근 3분 또는 8분 수직 급등 후보는 거절한다', () => {
+  const rapidCandles = [
+    candle('090100', 100, 101, 99, 100, 1000),
+    candle('090200', 100, 101, 99, 101, 1000),
+    candle('090300', 101, 102, 100, 102, 1000),
+    candle('090400', 102, 105, 102, 105, 1200),
+    candle('090500', 105, 106, 104, 106, 1200),
+    candle('090600', 106, 107, 105, 107, 1200)
+  ];
+  assert.ok(recentCloseRiseRate(rapidCandles, 3) >= 0.04);
+  const rapidResult = checkBuyCandidate(rapidCandles, {
+    useCompletedCandles: false,
+    maxVwapPremiumRate: 0.50
+  });
+  assert.equal(rapidResult.ok, false);
+  assert.match(rapidResult.reason, /최근 3분/);
+
+  const extendedCandles = [
+    candle('090100', 100, 101, 99, 100, 1000),
+    candle('090200', 100, 101, 99, 100.5, 1000),
+    candle('090300', 100.5, 101, 100, 101, 1000),
+    candle('090400', 101, 102, 100, 101.5, 1000),
+    candle('090500', 101.5, 103, 101, 102.5, 1000),
+    candle('090600', 102.5, 104, 102, 103.5, 1100),
+    candle('090700', 103.5, 105, 103, 104.5, 1100),
+    candle('090800', 104.5, 106, 104, 106, 1200),
+    candle('090900', 106, 108, 106, 108, 1200)
+  ];
+  assert.ok(recentCloseRiseRate(extendedCandles, 8) >= 0.07);
+  const extendedResult = checkBuyCandidate(extendedCandles, {
+    useCompletedCandles: false,
+    maxVwapPremiumRate: 0.50,
+    rapidRiseMaxRate: 0.50
+  });
+  assert.equal(extendedResult.ok, false);
+  assert.match(extendedResult.reason, /최근 8분/);
 });
 
 test('checkBuyCandidate: 최근 고점 대비 1.2% 이상 밀리면 거절한다', () => {
