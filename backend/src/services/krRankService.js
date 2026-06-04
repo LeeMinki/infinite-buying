@@ -533,7 +533,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     }
     // 잔고는 0인데 매수 주문이 이미 FILLED인 경우는 "매수 체결 → 매도 체결"이 같은 평가 사이 간격
     // 안에서 끝난 케이스다. 진입 기록을 BOUGHT로 굳혀 다음 tick부터 같은 SKIP을 반복하지 않게 한다.
-    const buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+    let buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
     if (buyOrder?.status === 'FILLED') {
       repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
       return saveDecision(userId, strategy, {
@@ -542,6 +542,25 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
         noLog: evaluationSource !== 'MANUAL'
       });
+    }
+    // BUY 가 우리 DB 에는 ACCEPTED 인 채 남아 있고 잔고도 0인 모호한 상태. 두 가지 가능성:
+    //   (a) KIS 에서 실제로 아직 체결 전 — 다음 tick에 다시 확인하면 된다.
+    //   (b) 이미 체결돼 TARGET 매도까지 끝났는데 평가 시작점의 syncOrderFills 가 일시 KIS 오류로
+    //       실패해 우리 DB 가 뒤처져 있다.
+    // (b)를 (a)로 잘못 판단하면 무한 SKIP 노이즈가 다시 생기므로, 이번 케이스에 한정해서
+    // KIS 체결조회를 한 번만 콕 찍어 다시 확인한다(주기적 폴링이 아니라 모호한 분기에서만 호출).
+    if (liveOrderEnabled && buyOrder?.kisOrderNo) {
+      const refreshed = await tryRefreshBuyOrderState(userId, trading, buyOrder);
+      if (refreshed?.status === 'FILLED') {
+        buyOrder = refreshed;
+        repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+          liveOrderEnabled, evaluationSource,
+          reason: `${label} 진입: ${symbol} 매수가 KIS 체결조회로 체결 확인됐고 잔고가 0이라 매도까지 끝난 상태로 보고 오늘 ${label} 진입을 마쳤습니다.`,
+          noLog: evaluationSource !== 'MANUAL'
+        });
+      }
     }
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
@@ -721,6 +740,41 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
     }
   }
   return updated;
+}
+
+// 평가 안에서 모호한 분기(잔고=0 + 우리 DB 상의 BUY 상태가 ACCEPTED 등)에 한해 호출해,
+// KIS 체결조회로 단일 매수 주문의 실제 체결 상태를 다시 묻고 DB에 반영한다.
+// 주기적 폴링이 아니라 이번 평가 한 번에만 KIS를 한 번 더 호출하는 보조 안전망이다.
+async function tryRefreshBuyOrderState(userId, trading, buyOrder) {
+  if (!buyOrder?.kisOrderNo) return null;
+  try {
+    const dateWindow = orderHistoryDateWindow(buyOrder);
+    const history = await trading.getOrderHistory(buyOrder.symbol, {
+      market: 'KR',
+      ...dateWindow
+    });
+    const matched = (Array.isArray(history) ? history : []).find((row) => (
+      (buyOrder.kisOrderNo && row.orderNo === buyOrder.kisOrderNo)
+      || (buyOrder.kisOriginalOrderNo && row.originalOrderNo === buyOrder.kisOriginalOrderNo)
+    ));
+    if (!matched) return null;
+    const filledQty = Math.floor(Number(matched.filledQuantity || 0));
+    const remaining = matched.remainingQuantity != null && matched.remainingQuantity !== ''
+      ? Number(matched.remainingQuantity)
+      : null;
+    const avgFilledPrice = Number(matched.averageFilledPrice || 0);
+    const fullyFilled = matched.status === 'FILLED' || (remaining != null && remaining <= 0 && filledQty > 0);
+    if (!fullyFilled) return null;
+    return repo.updateOrder(userId, buyOrder.id, {
+      status: 'FILLED',
+      filledQuantity: filledQty > 0 ? filledQty : (buyOrder.filledQuantity ?? buyOrder.quantity),
+      remainingQuantity: 0,
+      averageFilledPrice: avgFilledPrice > 0 ? avgFilledPrice : (buyOrder.averageFilledPrice ?? null)
+    });
+  } catch {
+    // KIS 일시 오류면 다음 평가 tick의 syncOrderFills 에 맡긴다.
+    return null;
+  }
 }
 
 // 주문 접수 직후(체결까지 보통 수 초)에 호출해, 다음 30초 tick보다 빠르게 체결가를 갱신한다.
