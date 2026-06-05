@@ -17,7 +17,11 @@
   },
   "devDependencies": {},
   "engines": {
-    "node": ">=22 <23",
-    "npm": ">=10 <11"
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-arm64-gnu": "4.60.2",
+    "@rollup/rollup-linux-arm64-musl": "4.60.2"
   }
 }
