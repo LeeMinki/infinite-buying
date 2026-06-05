@@ -15,5 +15,9 @@
     "react-dom": "^19.0.0",
     "recharts": "^2.15.1"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "engines": {
+    "node": ">=22 <23",
+    "npm": ">=10 <11"
+  }
 }

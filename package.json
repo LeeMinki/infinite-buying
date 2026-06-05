@@ -11,5 +11,9 @@
     "test": "npm --workspace backend test",
     "build": "npm --workspace frontend run build",
     "migrate": "npm --workspace backend run migrate"
+  },
+  "engines": {
+    "node": ">=22 <23",
+    "npm": ">=10 <11"
   }
 }
