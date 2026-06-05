@@ -17,6 +17,10 @@
 ## 클론 후 시작하기
 
 ```bash
+# 0. Node.js 22 사용 (.nvmrc / .node-version 기준)
+nvm use  # nvm을 쓰는 경우
+node -v  # v22.x 확인
+
 # 1. 의존성 설치 (npm workspaces: 루트에서 backend·frontend 모두 설치)
 npm install
 
