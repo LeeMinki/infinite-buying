@@ -132,8 +132,10 @@ Backend에서 사용하는 주요 환경변수입니다.
 PORT=4000
 DB_PATH=data/app.db
 KIS_API_BASE_URL=https://openapi.koreainvestment.com:9443
+KIS_TIMEOUT_MS=5000
 SECRET_ENCRYPTION_KEY=<base64-encoded 32-byte key>
 SESSION_SECRET=<32 characters or longer>
+SESSION_COOKIE_SECURE=true  # HTTPS 운영 환경에서 true
 ENABLE_LIVE_ORDER=false
 ENABLE_RESERVED_ORDER=false
 AUTO_TRADING_SCHEDULER_ENABLED=true
@@ -272,7 +274,7 @@ KIS/한국투자증권_오픈API_전체문서_20260512_030000.xlsx
 자동매매 화면의 **미국장 상승률 랭킹 전략** 탭은 미국 정규장 ET 10:00~16:00 동안 KIS 해외주식 상승률 랭킹을 30초마다 확인합니다. 보유 종목이 없으면 진입 필터를 통과한 상위 종목을 사고, 보유 중이면 익절·손절·강제 청산 조건만 봅니다.
 
 - 랭킹 조회: KIS 해외주식 상승율/하락율 API(`/uapi/overseas-stock/v1/ranking/updown-rate`, TR `HHDFS76290000`)로 NASDAQ, NYSE, AMEX 상승률 상위 종목을 조회합니다.
-- 진입 유니버스(1차 필터): 변동성·유동성이 위험한 종목군을 먼저 배제합니다 — ① 당일 등락률 +50% 이상은 제외(이미 수직 급등한 종목 추격 금지) ② 현재가 5 USD 미만 제외(초저가 micro-cap은 스프레드·호가 공백이 커 진입·청산 슬리피지가 큼) ③ 거래대금(가격×거래량) 5천만 USD 미만 제외(주 수만으로는 저가주가 통과하므로 달러 유동성으로 거름). 거래량 필드가 비거나 0이면 서버 필터를 신뢰해 통과합니다.
+- 진입 유니버스(1차 필터): 변동성·유동성이 위험한 종목군을 먼저 배제합니다 — ① 당일 등락률 +50% 이상은 제외(이미 수직 급등한 종목 추격 금지) ② 현재가 5 USD 미만 제외(초저가 micro-cap은 스프레드·호가 공백이 커 진입·청산 슬리피지가 큼) ③ 거래량 1,000만 주 미만 제외(KIS 랭킹 요청의 `VOL_RANG=6`와 코드 상수 `US_RANK_MIN_VOLUME`) ④ 거래대금(가격×거래량) 5천만 USD 미만 제외(주 수만으로는 저가주가 통과하므로 달러 유동성으로 거름). 거래량 필드가 비거나 0이면 서버 필터를 신뢰해 거래량·거래대금 검사를 건너뜁니다.
 - 매수 필터(단기 흐름 검사): 상위 후보(최대 3개)의 당일 분봉(KIS 해외 분봉 `inquire-time-itemchartprice`, TR `HHDFS76950200`)을 보고 — 현재가 > VWAP, 현재가 > 최근 구간 시작가, 거래량 유지, 거래량 동반 장대 음봉 부재, 직전 고점을 밀리지 않음, **그리고 현재가가 VWAP보다 15% 넘게 높지 않음(과열 차단)** — 을 확인합니다. 1위부터 차례로 보고 모두 떨어지면 그 평가는 건너뜁니다(블로우오프 고점 추격 방지).
 - 매수: 보유 종목이 없을 때 필터를 통과한 가장 높은 상승률 종목을 고릅니다. 평가 시점의 USD 매수가능금액 전액으로 1주 단위 최대 수량을 계산합니다.
 - 목표가 선주문: 매수 체결이 확인되면 평균 체결가 기준 목표 수익 지정가 매도를 즉시 걸어 둡니다. 목표 수익 구간을 30초 평가 tick 사이에 놓치지 않기 위한 장치입니다.
@@ -295,6 +297,8 @@ POST   /api/auth/login
 POST   /api/auth/logout
 GET    /api/auth/me
 
+GET    /api/health
+
 GET    /api/settings/kis
 POST   /api/settings/kis
 DELETE /api/settings/kis
@@ -313,6 +317,8 @@ DELETE /api/backtests/:id
 GET    /api/auto-trading/settings
 PUT    /api/auto-trading/settings/live-order
 GET    /api/auto-trading/dashboard
+GET    /api/auto-trading/account-summary?strategyId=
+GET    /api/auto-trading/buying-power-preview?market=&symbol=&exchange=
 POST   /api/auto-trading/strategies
 GET    /api/auto-trading/strategies
 GET    /api/auto-trading/strategies/:id
@@ -359,6 +365,19 @@ GET    /api/us-rank/strategies/:id/orders
 GET    /api/us-rank/strategies/:id/trade-history
 POST   /api/us-rank/strategies/:id/trade-history/:tradeId/replay
 GET    /api/us-rank/strategies/:id/decisions
+
+# 레거시 라오어 초안/가상 주문 API
+GET    /api/strategies
+POST   /api/strategies
+GET    /api/strategies/:id
+PUT    /api/strategies/:id
+DELETE /api/strategies/:id
+GET    /api/strategies/:id/holding
+POST   /api/strategies/:id/evaluate
+GET    /api/strategies/:id/orders
+GET    /api/strategies/:id/logs
+POST   /api/orders/:id/fill
+POST   /api/orders/:id/cancel
 ```
 
 모든 보호 API는 로그인한 사용자의 `userId` 기준으로만 조회/수정/삭제합니다.

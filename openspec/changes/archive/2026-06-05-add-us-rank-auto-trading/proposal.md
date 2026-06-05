@@ -36,6 +36,6 @@
   - `api/client.js`에 US 랭킹 API 함수 추가.
 - **DB 마이그레이션**: `0029_us_rank_auto_trading.sql`.
 - **외부 의존**
-  - KIS Open API 해외주식 등락률 순위 엔드포인트 (TR ID 확인 필요).
+  - KIS Open API 해외주식 등락률 순위 엔드포인트(`/uapi/overseas-stock/v1/ranking/updown-rate`, TR `HHDFS76290000`).
   - KIS Open API 해외주식 현재가·잔고·매수가능금액·주문(기존 라오어 미국 종목에서 이미 사용 중).
 - **공유 설정**: 실주문 실행 설정(`user_trading_settings.live_order_enabled`)을 라오어·한국 랭킹·미국장 랭킹이 모두 공유.

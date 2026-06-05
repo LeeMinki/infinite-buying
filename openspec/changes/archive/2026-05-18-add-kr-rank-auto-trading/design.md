@@ -28,7 +28,7 @@
 **결정**: 라오어 테이블은 그대로 두고, 동일한 패턴(상태 머신, 멱등키, 락, 판단/주문/스냅샷 기록)을 따르는 새 테이블 세트를 만든다.
 - `kr_rank_strategies` — 전략. status(`CREATED`/`RUNNING`/`STOPPED`/`ERROR`), 총 예산, 목표 수익률, 손절률, 점심 진입 사용 여부, 점심 목표 수익률, started/stopped/last_evaluated.
 - `kr_rank_entries` — 일자별·진입 구간별 진입 기록. `UNIQUE(strategy_id, trade_date, entry_window)`로 "하루 1회·진입 구간 1회"를 DB 차원에서 보장. 선택 종목, 매수 여부(`bought`), 랭킹 스냅샷 참조.
-- `kr_rank_orders` — 주문 라이프사이클. `idempotency_key` UNIQUE. side·entry_window·sell_reason 포함.
+- `kr_rank_orders` — 주문 라이프사이클. 최초 생성 시에는 `idempotency_key` UNIQUE였으나, 이후 `0026_round_model_and_retry.sql`에서 실패 주문 재시도를 위해 UNIQUE 제약을 제거하고 인덱스로 바뀌었다. side·entry_window·sell_reason 포함.
 - `kr_rank_decision_logs` — 매 평가의 판단·진입 구간·랭킹/선택 종목·사유.
 - `kr_rank_locks` — `(strategy_id, lock_key) UNIQUE` 동시 평가 방지.
 
@@ -64,7 +64,7 @@
 
 ### 6. 중복 주문 방지 / 멱등성
 
-라오어와 같은 방식: `makeKrRankIdempotencyKey({tradeDate, strategyId, entryWindow, side})` → `{YYYYMMDD}-{strategyId}-{window}-{BUY|SELL}`, `kr_rank_orders.idempotency_key` UNIQUE. 평가 시작에 `kr_rank_locks`로 락 획득, 미체결 주문이 있으면 신규 주문을 만들지 않음, 주문 실패(`FAILED`/`REJECTED`) 시 자동 재시도하지 않음.
+라오어와 같은 방식: `makeKrRankIdempotencyKey({tradeDate, strategyId, entryWindow, side})` → `{YYYYMMDD}-{strategyId}-{window}-{BUY|SELL}`. 현재 `kr_rank_orders.idempotency_key`는 UNIQUE가 아니라 조회 인덱스이며, service 레이어가 같은 키의 `FAILED` 아닌 주문 존재 여부와 실패 재시도 한도를 검사한다. 평가 시작에 `kr_rank_locks`로 락 획득, 미체결 주문이 있으면 신규 주문 금지.
 
 ### 7. 실주문 실행 설정 재사용
 

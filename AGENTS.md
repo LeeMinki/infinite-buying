@@ -8,7 +8,7 @@ KIS Open API로 주식 전략을 백테스트하고 실제 자동매매까지 �
 
 ## 기술 스택
 
-- **Backend**: Node.js 22+, Express, SQLite(`better-sqlite3`), `express-session` + `better-sqlite3-session-store`, `bcrypt`, AES-256-GCM(`node:crypto`), 내장 `fetch`(KIS 호출).
+- **Backend**: Node.js 24, Express, SQLite(`better-sqlite3`), `express-session` + `better-sqlite3-session-store`, `bcrypt`, AES-256-GCM(`node:crypto`), 내장 `fetch`(KIS 호출).
 - **Frontend**: React 19, Vite, Recharts. 단일 페이지 앱(`frontend/src/App.jsx`의 `view` 상태로 화면 분기).
 - **DB**: backend 볼륨 위 SQLite. 마이그레이션은 `backend/src/db/migrations/`에 파일명 순서로 적용(`npm run migrate`).
 

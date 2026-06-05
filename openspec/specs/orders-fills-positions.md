@@ -14,7 +14,7 @@
 - `kis_order_no`, `kis_original_order_no`
 - `status`: `DECIDED` / `DRY_RUN` / `REQUESTED` / `ACCEPTED` / `REJECTED` / `PARTIALLY_FILLED` / `FILLED` / `CANCELED` / `FAILED` / `UNKNOWN`
 - `filled_quantity`, `remaining_quantity`, `average_filled_price`
-- `idempotency_key` UNIQUE — `{YYYYMMDD}-{strategyId}-{round}-{half}` 형식. 같은 평가의 같은 절반 중복 주문 차단
+- `idempotency_key` — `{YYYYMMDD}-{strategyId}-{half}` 형식. `0026`에서 UNIQUE 제약을 제거해 같은 키의 `FAILED` 주문은 제한 재시도할 수 있게 했고, 중복 차단은 service 레이어의 `hasNonFailedOrder`/`countFailedOrders`가 담당한다.
 - `half` (`migrations/0021`) — `FIRST` / `AVG` / `BIG` / `SELL`. 한 평가에서 `AVG`·`BIG` 두 주문이 생길 수 있다
 - `decision_log_id` (`migrations/0021`, references `auto_trading_decision_logs(id)`) — 한 결정과 그 결정이 만든 주문(들)의 1:N 연결
 - `decision_reason`, `live_order_enabled`

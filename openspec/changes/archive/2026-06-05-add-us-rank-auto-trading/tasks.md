@@ -56,7 +56,7 @@
 
 ## 7. 스케줄러
 
-- [x] 7.1 `backend/src/config/env.js`에 `US_RANK_SCHEDULER_INTERVAL_MS`(기본 60_000) 추가.
+- [x] 7.1 `backend/src/config/env.js`에 `US_RANK_SCHEDULER_INTERVAL_MS`(현재 기본 30_000) 추가.
 - [x] 7.2 `backend/src/services/autoTradingScheduler.js`에 `usRankTimer` 추가 — `evaluateRunningStrategies`(usRankService) 호출. 라오어·KR 랭킹과 독립 타이머.
 - [x] 7.3 `stopAutoTradingScheduler()` 정리.
 
@@ -78,11 +78,11 @@
 
 - [x] 10.1 백엔드 테스트(`npm test`) 전체 통과.
 - [x] 10.2 프론트엔드 빌드 성공.
-- [ ] 10.3 PR 생성 — 배포 후 ArgoCD 동기화 확인, 마이그레이션 `0029_us_rank_auto_trading.sql` 적용 확인.
+- [x] 10.3 PR 생성 — 배포 후 ArgoCD 동기화 확인, 마이그레이션 `0029_us_rank_auto_trading.sql` 적용 확인.
 - [x] 10.4 실주문 OFF 상태로 정규장 시간 진입 → DRY_RUN trade·orders 행이 정상 생성되는지 확인.
 - [x] 10.5 강제 청산 시각 / 손절 → day_locked_out 시나리오 확인.
 - [x] 10.6 후속 작업으로 회귀 위험·휴장일 캘린더·자동 종목 차단 필요 여부 평가.
 
 ## 11. 아카이브
 
-- [ ] 11.1 모든 task 완료 후 `/opsx:archive`로 change 아카이브 + 새 spec(`us-rank-auto-trading`) 정식 등록.
+- [x] 11.1 모든 task 완료 후 change 아카이브 + 새 spec(`us-rank-auto-trading`) 정식 등록.

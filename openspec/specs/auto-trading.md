@@ -32,12 +32,12 @@
    - 결정이 BUY 또는 SELL인가 (HOLD/SKIP은 통과 없이 noOrder)
    - `expectedQuantity > 0`
    - 미체결 주문이 없음
-   - 동일 `idempotency_key` 중복 없음 (`auto_trading_orders.idempotency_key` UNIQUE)
+   - 같은 `idempotency_key`로 `FAILED`가 아닌 주문이 이미 있으면 service 레이어에서 중복으로 보고 새 주문을 만들지 않음(`hasNonFailedOrder`). `auto_trading_orders.idempotency_key`에는 실패 재시도를 위해 UNIQUE 제약이 없다.
    - BUY: 매수가능금액 ≥ 예상 금액
    - SELL: 보유 수량 ≥ 예상 수량
    - 실주문 + 해외 BUY + `expectedQuantity < 1` → 차단 (KIS 표준 해외주문은 정수 주만 지원; 이상치 방어용. 엔진이 정수 주만 의도로 만들어 실제로는 거의 발동하지 않음)
    - SafetyGuard는 `intents` 배열의 각 intent를 독립 평가한다. 한 intent의 SKIP이 다른 intent를 차단하지 않는다.
-   - SafetyGuard가 막은 intent는 `FAILED` 주문 row로 기록하되, **같은 `idempotency_key` 주문이 이미 있으면 row를 새로 만들지 않는다**(UNIQUE 충돌 방지). 판단 로그로만 남는다.
+   - SafetyGuard가 막은 intent는 "지금은 못 함"으로 보고 주문 row를 만들지 않는다. 다음 tick에서 미체결·잔액·보유 수량 상태를 다시 평가한다.
 7. 분기:
    - `liveOrderEnabled = false` → 각 intent를 `auto_trading_orders` row로 `DRY_RUN` 상태 저장.
    - `liveOrderEnabled = true` → intent를 평단가(`AVG`) → 큰수(`BIG`) 순으로 직렬 접수. KIS 매수/매도 주문 API 호출, 응답에 따라 `REQUESTED` → `ACCEPTED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `FAILED` / `UNKNOWN`. 같은 평가의 모든 주문은 동일 `decision_log_id`로 묶인다. 해외 주문 단가는 호가 소수 자릿수(1달러 이상 2자리, 미만 4자리)로 정규화해 전송한다.

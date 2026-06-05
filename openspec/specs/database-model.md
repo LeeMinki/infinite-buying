@@ -1,6 +1,6 @@
 # 데이터베이스 모델
 
-SQLite (`better-sqlite3`). 마이그레이션은 `backend/src/db/migrations/0001~0032`. 실행: `npm run migrate`.
+SQLite (`better-sqlite3`). `npm run migrate`는 먼저 `backend/src/db/schema.sql`의 기준 스키마를 적용한 뒤, `backend/src/db/migrations/`의 SQL 파일을 파일명 순서로 적용한다. 현재 추적 중인 마이그레이션 파일은 `0001`, `0002`, `0008`~`0032`(중간 번호 일부는 과거 schema.sql에 흡수된 레거시 구간)이다.
 
 모든 도메인 테이블은 `user_id` 컬럼을 가지며 `ON DELETE CASCADE`로 사용자 삭제 시 정리된다.
 
@@ -19,13 +19,10 @@ SQLite (`better-sqlite3`). 마이그레이션은 `backend/src/db/migrations/0001
 
 ## (구) 가상 주문 / 전략 초안
 
-- `strategies` — 전략 초안. 종목, 총 예산, 분할 회차, 목표 수익률, 큰수 매수 여유율(`big_buy_premium_rate`, `0020`).
-- `holdings` — 가상 보유.
-- `virtual_orders` — 가상 주문.
-- `decision_logs` — 가상 평가 로그.
-- `user_id` 컬럼 추가 마이그레이션은 `0002`.
-
-> 정확한 컬럼 목록은 초기 마이그레이션(0001 이전에 만들어졌을 가능성)을 본 baseline에서 확인하지 못했다. **구현 확인 필요**: `strategies` / `holdings` / `virtual_orders` / `decision_logs`의 컬럼 정의 원본 파일.
+- `strategies` — 라오어 초안 전략. `schema.sql`에서 `id`, `name`, `stock_code`, `stock_name`, `total_budget`, `split_count`, `buy_amount_per_round`, `target_profit_rate`, `current_round`, `status`, `created_at`, `updated_at`을 만들고, `0002`에서 `user_id`, `0020`에서 `big_buy_premium_rate`를 추가한다.
+- `holdings` — 가상 보유. `strategy_id UNIQUE`, `quantity`, `average_price`, `invested_amount`, `remaining_budget`, `realized_profit`, `updated_at`, `user_id`(`0002`).
+- `virtual_orders` — 가상 주문. `strategy_id`, `order_date`, `side`, `price`, `quantity`, `amount`, `status`, `round_no`, `reason`, `created_at`, `filled_at`, `user_id`(`0002`), BUY 주문의 `(strategy_id, order_date, round_no)` 부분 UNIQUE 인덱스.
+- `decision_logs` — 가상 평가 로그. `strategy_id`, `input_price`, `average_price`, `quantity`, `decision`, `reason`, `created_at`, `user_id`(`0002`).
 
 ## 백테스트
 

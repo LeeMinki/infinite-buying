@@ -24,7 +24,7 @@ spec:
             value: "1"
       containers:
         - name: backend
-          image: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend:latest
+          image: infinite-buying-backend:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

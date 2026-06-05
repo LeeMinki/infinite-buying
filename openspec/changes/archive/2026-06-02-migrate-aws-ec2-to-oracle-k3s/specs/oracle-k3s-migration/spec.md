@@ -19,13 +19,13 @@ The system SHALL run the production application on one Oracle Ampere A1 (ARM64) 
 
 ### Requirement: Continuous deploy shall continue through Argo CD GitOps
 
-The system SHALL preserve automatic deployment after `main` updates using the existing Argo CD GitOps flow, with images built and published to GHCR.
+The system SHALL preserve automatic deployment after `main` updates using the existing Argo CD GitOps flow, with images built and published to OCIR.
 
 #### Scenario: Main branch is updated
 
 - **WHEN** a change is merged into `main`
 - **THEN** GitHub Actions builds ARM64-compatible backend and frontend images
-- **AND** GitHub Actions pushes the images to GHCR
+- **AND** GitHub Actions pushes the images to OCIR
 - **AND** GitHub Actions commits the updated image tag into the mvp kustomization
 - **AND** Argo CD syncs the change onto the A1 k3s cluster
 
@@ -35,21 +35,21 @@ The system SHALL preserve automatic deployment after `main` updates using the ex
 - **THEN** Argo CD reconciles the cluster back to the committed state
 - **AND** deployment does not depend on SSH direct deploy or Docker Compose
 
-### Requirement: Container registry shall use GHCR without ECR token refresh
+### Requirement: Container registry shall use OCIR without ECR token refresh
 
-The migrated deployment SHALL use GHCR for backend and frontend application images and SHALL remove AWS ECR, including the ECR credential refresh CronJob, from the production deployment path.
+The migrated deployment SHALL use OCIR for backend and frontend application images and SHALL remove AWS ECR, including the ECR credential refresh CronJob, from the production deployment path.
 
 #### Scenario: Cluster pulls application images
 
 - **WHEN** the A1 cluster deploys the application
-- **THEN** workloads pull backend and frontend images from GHCR
+- **THEN** workloads pull backend and frontend images from OCIR
 - **AND** no production runtime step requires an AWS ECR pull secret
 
 #### Scenario: ECR refresh job is removed from the cluster
 
 - **WHEN** the A1 k3s deployment is active
 - **THEN** the `ecr-secret-refresh` CronJob and its RBAC are not present
-- **AND** if GHCR packages are private, a non-expiring pull token is injected once as an image pull secret
+- **AND** if OCIR packages are private, a non-expiring pull token is injected once as an image pull secret
 
 ### Requirement: Deployment shall produce ARM-compatible images
 

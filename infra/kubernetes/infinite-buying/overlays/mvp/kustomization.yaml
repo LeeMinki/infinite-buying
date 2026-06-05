@@ -13,9 +13,9 @@ patches:
       kind: Ingress
       name: infinite-buying-www
 images:
-  - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-backend
+  - name: infinite-buying-backend
     newName: yny.ocir.io/axnyuujz40an/infinite-buying-backend
     newTag: 992830c635df89852844fa0ddba4060f13b823c6
-  - name: 000000000000.dkr.ecr.ap-northeast-2.amazonaws.com/infinite-buying-frontend
+  - name: infinite-buying-frontend
     newName: yny.ocir.io/axnyuujz40an/infinite-buying-frontend
     newTag: 992830c635df89852844fa0ddba4060f13b823c6

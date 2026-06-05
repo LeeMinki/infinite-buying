@@ -62,7 +62,7 @@ TELEGRAM_CHAT_ID=...
 
 `TELEGRAM_TOKEN`, OCI API key, `retry.env`, `oci-resources.env` 같은 실행 값은 git에 커밋하지 않는다.
 
-과거 EC2 retry runner cron 예시:
+과거 OCI A1 retry runner cron 예시(EC2 이전 과정에서 임시 runner로 사용했던 기록이며, 현재 production에는 적용하지 않음):
 
 ```cron
 * * * * * set -a; . /home/<user>/oci-a1-retry/retry.env; set +a; /home/<user>/oci-a1-retry/ensure-oci-a1-region-envs.sh; /home/<user>/oci-a1-retry/try-create-oci-a1-all-regions.sh >/dev/null 2>&1

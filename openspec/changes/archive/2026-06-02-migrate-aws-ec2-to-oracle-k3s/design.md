@@ -4,11 +4,11 @@
 
 현재 확인한 EC2 메모리는 총 1.9GiB이고, 사용량은 약 1.4GiB, available은 약 248MiB, swap 2.0GiB 중 약 758MiB가 사용 중이다. Kubernetes node 기준 메모리 사용률도 약 79%다. Ampere A1 Always Free 최대치인 **4 OCPU / 24GB RAM** shape을 사용한다(무료 한도 안에서 최대 자원을 선점). 현재 EC2(1.9GiB)보다 메모리가 10배 이상 넉넉하므로 k3s + Argo CD + cert-manager + Traefik 구조를 그대로 옮겨도 메모리 압박은 오히려 줄어든다.
 
-현재 GitOps 흐름은 GitHub Actions가 `main` merge 시 AWS ECR에 backend/frontend 이미지를 push하고, `infra/kubernetes/infinite-buying/overlays/mvp/kustomization.yaml`의 image tag를 commit하면 Argo CD가 EC2 k3s에서 자동 sync하는 구조다. 이번 이전에서도 이 GitOps 흐름을 그대로 유지하고, 이미지 레지스트리만 GHCR로 바꾼다.
+현재 GitOps 흐름은 GitHub Actions가 `main` merge 시 AWS ECR에 backend/frontend 이미지를 push하고, `infra/kubernetes/infinite-buying/overlays/mvp/kustomization.yaml`의 image tag를 commit하면 Argo CD가 EC2 k3s에서 자동 sync하는 구조다. 이번 이전에서도 이 GitOps 흐름을 그대로 유지하고, 이미지 레지스트리만 OCIR로 바꾼다.
 
 backend 데이터는 Kubernetes PVC가 아니라 node hostPath `/var/lib/infinite-buying/backend`에 저장된다(`backend-deployment.yaml`의 `hostPath` 볼륨, `type: DirectoryOrCreate`). 실제 SQLite DB는 `/var/lib/infinite-buying/backend/app.db`이고 현재 크기는 약 7.1MB다. 이 앱은 KIS credential과 자동매매 이력을 저장하므로 DB와 `infinite-buying-secrets`(특히 `SECRET_ENCRYPTION_KEY`)를 함께 유지해야 한다.
 
-현재 ECR 인증은 토큰이 짧게 만료되므로 `ecr-secret-refresh` CronJob이 6시간마다 `ecr-registry` dockerconfigjson Secret을 갱신하고, backend/frontend Deployment가 이를 `imagePullSecrets`로 참조한다. GHCR로 옮기면 이 만료 갱신 구조가 불필요해진다.
+현재 ECR 인증은 토큰이 짧게 만료되므로 `ecr-secret-refresh` CronJob이 6시간마다 `ecr-registry` dockerconfigjson Secret을 갱신하고, backend/frontend Deployment가 이를 `imagePullSecrets`로 참조한다. OCIR로 옮기면 이 만료 갱신 구조가 불필요해진다.
 
 Route53 hosted zone `yuna-pa.com`은 유지한다. 현재 `infinite-buying.yuna-pa.com`은 A record로 `3.39.3.103`을 가리키고, `www.infinite-buying.yuna-pa.com`은 CNAME으로 apex subdomain을 가리킨다.
 
@@ -20,7 +20,7 @@ OCI CLI 인증은 확인됐다. 마이그레이션 적용 단계에서는 현재
 
 - AWS EC2 단일 노드 k3s/Argo CD 운영 환경을 Oracle Ampere A1(ARM64) 단일 노드 k3s 환경으로 리프트앤시프트한다.
 - GitHub merge 후 Argo CD GitOps로 자동 배포되는 흐름을 그대로 유지한다.
-- AWS ECR 의존성을 GHCR로 교체하고, ECR refresh CronJob 의존을 제거한다.
+- AWS ECR 의존성을 OCIR로 교체하고, ECR refresh CronJob 의존을 제거한다.
 - Oracle Ampere A1 ARM 환경에서 동작하도록 ARM64(또는 multi-arch) 이미지를 빌드한다.
 - 기존 Kubernetes manifest(base/overlay)를 최대한 그대로 재사용한다.
 - SQLite DB, 운영 secrets, TLS, DNS 전환을 포함한 안전한 이전 절차를 정의한다.
@@ -53,27 +53,27 @@ backend는 SQLite 단일 writer + scheduler이므로 replica는 1개로 유지�
 
 ### Decision: 자동 배포는 Argo CD GitOps로 유지한다
 
-이미지 레지스트리만 바뀌므로 GitOps 흐름을 바꿀 이유가 없다. GitHub Actions는 다음 순서로 동작한다(현재와 동일, 레지스트리만 GHCR).
+이미지 레지스트리만 바뀌므로 GitOps 흐름을 바꿀 이유가 없다. GitHub Actions는 다음 순서로 동작한다(현재와 동일, 레지스트리만 OCIR).
 
 1. `main` merge 감지
 2. backend/frontend ARM64 이미지 build (buildx + QEMU 또는 ARM runner)
-3. GHCR push
-4. `overlays/mvp/kustomization.yaml`의 image newName(GHCR)·newTag(sha) commit
+3. OCIR push
+4. `overlays/mvp/kustomization.yaml`의 image newName(OCIR)·newTag(sha) commit
 5. Argo CD가 A1 k3s에서 자동 sync
 
 self-heal, drift 감지, rollback(이전 commit으로 revert) 등 기존 GitOps 운영 이점을 그대로 쓴다.
 
-### Decision: image registry는 GHCR로 고정하고 ECR refresh를 제거한다
+### Decision: image registry는 OCIR로 고정하고 ECR refresh를 제거한다
 
-ECR는 토큰이 짧게 만료되어 `ecr-secret-refresh` CronJob(`0 */6 * * *`)과 `ecr-refresher` RBAC, `ecr-registry` Secret을 유지해야 한다. GHCR로 옮기면 이 만료 갱신 구조가 사라진다.
+ECR는 토큰이 짧게 만료되어 `ecr-secret-refresh` CronJob(`0 */6 * * *`)과 `ecr-refresher` RBAC, `ecr-registry` Secret을 유지해야 한다. OCIR로 옮기면 이 만료 갱신 구조가 사라진다.
 
-- public package로 두면 cluster에 pull secret이 필요 없다 → backend/frontend Deployment의 `imagePullSecrets`를 제거한다.
-- private package로 두면 만료되지 않는 GHCR pull token(`read:packages` PAT)을 dockerconfigjson Secret으로 **한 번만** 주입하고 `imagePullSecrets`로 참조한다. 6시간 갱신 CronJob은 여전히 불필요하다.
+- OCIR repository를 public pull 가능하게 두면 cluster에 pull secret이 필요 없다 → backend/frontend Deployment의 `imagePullSecrets`를 제거한다.
+- private repository로 두면 OCIR auth token 기반 dockerconfigjson Secret을 주입하고 `imagePullSecrets`로 참조한다. ECR의 6시간 갱신 CronJob은 불필요하다.
 
 이미지 좌표는 다음으로 고정한다.
 
-- `ghcr.io/leeminki/infinite-buying-backend:<sha>`
-- `ghcr.io/leeminki/infinite-buying-frontend:<sha>`
+- `yny.ocir.io/axnyuujz40an/infinite-buying-backend:<sha>`
+- `yny.ocir.io/axnyuujz40an/infinite-buying-frontend:<sha>`
 
 `ecr-refresh-cronjob.yaml`, `ecr-refresh-rbac.yaml`을 base kustomization에서 제거한다.
 
@@ -119,7 +119,7 @@ TTL은 현재 300초이므로 cutover 전후 전파 지연은 짧다. cert-manag
 - OCI A1 capacity 불확실성 → A1 Always Free는 "Out of host capacity"가 잦다. CLI quota 조회는 사용 가능량을 보여줄 뿐 생성 성공을 보장하지 않는다. 이번 migration은 Always Free 최대치인 4 OCPU / 24GB RAM 확보를 목표로 하므로 shape을 낮추지 않고, EC2 retry runner가 구독된 리전을 순회하며 capacity가 생길 때까지 반복 시도한다.
 - ARM64 image 호환성 → buildx/QEMU 또는 ARM runner로 `linux/arm64`를 빌드하고, A1에서 pull/run smoke test를 먼저 한다. 네이티브 모듈 빌드 실패에 대비해 빌드 로그를 확인한다.
 - 단일 노드 SPOF → 노드 장애 시 서비스가 중단된다(현재 EC2와 동일). rollback용 AWS EC2를 안정화 전까지 유지하고, DB backup 복구 절차를 문서화한다. 다중 노드 HA는 backend SQLite 단일 writer 특성상 복제 스토리지가 필요해 이번 범위에서 제외한다.
-- GHCR 인증 → public이면 pull secret 불필요. private이면 만료되지 않는 pull token을 한 번만 주입한다. GitHub Actions push에는 `packages: write` 권한이 필요하다.
+- OCIR 인증 → public pull 가능이면 pull secret 불필요. private이면 OCIR auth token 기반 pull secret을 주입한다. GitHub Actions push에는 OCIR registry credential이 필요하다.
 - SQLite 데이터 유실/분기 → cutover 직전 EC2 backend를 멈춘 상태에서 `sqlite3 .backup`으로 정합 백업을 뜨고(`cp`는 write 도중 반쪽 위험), A1 복원 후 row count·로그인·KIS 설정 조회로 검증한다.
 - Secret 불일치 → 기존 `SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`을 A1 `infinite-buying-secrets`에 동일하게 주입하기 전까지 backend를 띄우지 않는다.
 - Scheduler 중복 실행 → DNS cutover 전 smoke test 동안에는 A1 backend의 `ENABLE_LIVE_ORDER=false`(또는 `AUTO_TRADING_SCHEDULER_ENABLED=false`)로 두거나 EC2 backend를 `replicas: 0`으로 내려, AWS·Oracle 두 scheduler가 동시에 실주문을 내지 않게 한다.
@@ -145,20 +145,20 @@ TTL은 현재 300초이므로 cutover 전후 전파 지연은 짧다. cert-manag
    - Argo CD 설치 및 `infra/kubernetes/argocd/applications/infinite-buying-mvp.yaml` Application 등록.
    - cert-manager 설치 및 `letsencrypt-prod` ClusterIssuer 생성.
 
-5. GHCR/ARM64 기준으로 GitHub Actions를 변경한다.
+5. OCIR/ARM64 기준으로 GitHub Actions를 변경한다.
    - AWS credentials/ECR login/ECR repo 생성/ECR push 제거.
-   - GHCR login 추가, `packages: write` 권한 추가, AWS OIDC `id-token` 권한 제거.
-   - buildx/QEMU(또는 ARM runner)로 `linux/arm64` build + GHCR push.
-   - GitOps commit 단계의 image newName을 GHCR 경로로 변경.
+   - OCIR login 설정 추가, AWS OIDC `id-token` 권한 제거.
+   - buildx/QEMU(또는 ARM runner)로 `linux/arm64` build + OCIR push.
+   - GitOps commit 단계의 image newName을 OCIR 경로로 변경.
 
-6. Kubernetes manifest를 GHCR 기준으로 정리한다.
-   - `overlays/mvp/kustomization.yaml`의 image name/newName을 GHCR로 변경.
-   - backend/frontend Deployment의 `imagePullSecrets`를 제거(public) 또는 GHCR pull secret으로 교체(private).
+6. Kubernetes manifest를 OCIR 기준으로 정리한다.
+   - `overlays/mvp/kustomization.yaml`의 image name/newName을 OCIR로 변경.
+   - backend/frontend Deployment의 `imagePullSecrets`를 제거(public) 또는 OCIR pull secret으로 교체(private).
    - `ecr-refresh-cronjob.yaml`, `ecr-refresh-rbac.yaml`을 base kustomization에서 제거.
 
 7. 운영 secret을 A1 cluster에 생성한다.
    - 기존 값 그대로 `infinite-buying-secrets`(`SECRET_ENCRYPTION_KEY`, `SESSION_SECRET`, KIS 관련 값) 생성.
-   - private GHCR면 pull token dockerconfigjson Secret 생성.
+   - private OCIR면 auth token 기반 dockerconfigjson Secret 생성.
 
 8. EC2 DB를 백업하고 A1로 복원한다.
    - cutover 직전 EC2 backend를 `replicas: 0`으로 내린 뒤 `sqlite3 app.db ".backup"`으로 정합 백업.
@@ -191,6 +191,6 @@ DB rollback이 필요한 경우, cutover 직전 EC2 DB backup을 기준으로 �
 ## Open Questions
 
 - A1 Always Free instance를 원하는 시점에 확보할 수 있는가(capacity)?
-- GHCR package는 public으로 둘 것인가, private으로 두고 pull token을 사용할 것인가?
+- OCIR repository는 public pull 가능하게 둘 것인가, private으로 두고 OCIR auth token을 사용할 것인가?
 - ARM64 빌드는 QEMU 에뮬레이션으로 충분한가, ARM runner가 필요한가?
 - cutover 동안 실주문 실행을 `ENABLE_LIVE_ORDER=false`로 끌 것인가?

@@ -7,7 +7,7 @@
 ## 주요 파일
 
 - `backend/src/routes/authRoutes.js` — 라우트 (`/api/auth`)
-- `backend/src/auth/authService.js` — `register` / `login` 비즈니스 로직 (이메일 정규화, bcrypt hash 검증)
+- `backend/src/auth/authService.js` — `register` / `login` 비즈니스 로직 (이메일 형식 검증, bcrypt hash 검증)
 - `backend/src/auth/authMiddleware.js` — `requireAuth` 미들웨어
 - `backend/src/auth/sessionStore.js` — `better-sqlite3-session-store` 기반 세션 미들웨어. 쿠키 이름 `ib.sid`.
 - `backend/src/repositories/usersRepository.js`
@@ -24,7 +24,7 @@
 ## 세션
 
 - 저장소: `data/app.db`의 `sessions` 테이블 (세션 미들웨어가 자동 관리).
-- 쿠키: `ib.sid`, `httpOnly`, 환경변수 `SESSION_COOKIE_SECURE`가 true면 `secure` + `app.set('trust proxy', 1)`.
+- 쿠키: `ib.sid`, `httpOnly`, `sameSite: 'lax'`, 14일 만료. 환경변수 `SESSION_COOKIE_SECURE`가 true면 `secure` + `app.set('trust proxy', 1)`.
 - 서명: `SESSION_SECRET` 환경변수 (운영에서는 32자 이상 임의 문자열).
 
 ## 데이터 모델
@@ -40,4 +40,5 @@
 ## 비밀번호
 
 - `bcrypt` 해시로만 저장. 평문은 로그에 남기지 않음.
+- 회원가입 검증은 이메일 형식과 비밀번호 최소 8자만 요구한다. 비밀번호 복잡도 제한, 로그인 실패 횟수 제한, 계정 잠금은 현재 구현되어 있지 않다.
 - 해시 검증 실패 시 generic한 인증 실패 메시지 반환.
