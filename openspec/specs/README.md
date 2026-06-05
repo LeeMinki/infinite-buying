@@ -24,6 +24,6 @@
 | Frontend 화면 | [frontend-screens.md](frontend-screens.md) |
 | 보안 / 민감정보 처리 | [security.md](security.md) |
 | 현재 제한사항 | [current-limitations.md](current-limitations.md) |
-| 구현 확인 필요 항목 | [implementation-verification-needed.md](implementation-verification-needed.md) |
+| 남은 검증 / 운영 개선 후보 | [implementation-verification-needed.md](implementation-verification-needed.md) |
 | Spec Kit ↔ OpenSpec 매핑 | [spec-kit-to-openspec-mapping.md](spec-kit-to-openspec-mapping.md) |
 | 다음 change 후보 | [next-change-candidates.md](next-change-candidates.md) |

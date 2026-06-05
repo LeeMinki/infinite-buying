@@ -9,6 +9,7 @@
 
 - httpOnly 쿠키 `ib.sid` (`backend/src/auth/sessionStore.js`).
 - `SESSION_SECRET` 환경변수로 서명.
+- `sameSite: 'lax'`, `maxAge: 14일`.
 - 운영(`SESSION_COOKIE_SECURE=true`)이면 `Secure` 플래그 + `trust proxy` 활성.
 - 세션 저장소는 SQLite의 `sessions` 테이블 (자동 관리).
 
@@ -35,7 +36,7 @@ Frontend는 broker API(KIS)를 직접 호출하지 않는다. 모든 KIS 호출�
 - 결정이 BUY 또는 SELL이어야 진행.
 - `expectedQuantity > 0`.
 - 미체결 주문 0개 (자동 취소 후 재조회한 미체결 기준).
-- 동일 `idempotency_key` 중복 없음.
+- 라오어 자동매매의 중복 주문·실패 재시도 한도는 service 레이어가 `idempotency_key`로 검사한다(`hasNonFailedOrder`, `countFailedOrders`). SafetyGuard는 상태·수량·미체결·잔액·정수주 조건만 검사한다.
 - BUY: `cashAvailable ≥ expectedAmount`.
 - SELL: `balance.quantity ≥ expectedQuantity`.
 - 실주문 + 해외 BUY + `expectedQuantity < 1`이면 차단 (KIS 표준 해외주문은 정수 주만 허용).

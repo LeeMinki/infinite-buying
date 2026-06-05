@@ -43,13 +43,13 @@ Current Route53 records:
 - `infinite-buying.yuna-pa.com.`: A, TTL 300, `3.39.3.103`
 - `www.infinite-buying.yuna-pa.com.`: CNAME, TTL 300, `infinite-buying.yuna-pa.com`
 
-GitHub/GHCR readiness:
+GitHub/OCIR readiness:
 
 - Repository: `LeeMinki/infinite-buying`
 - Repository visibility: public
 - Current GitHub viewer permission: ADMIN
-- GHCR approach selected for this migration: publish application packages publicly, so the Oracle k3s cluster does not need a GHCR pull secret.
-- GitHub Actions must use `packages: write` for GHCR push.
+- OCIR approach selected for this migration: publish application packages publicly, so the Oracle k3s cluster does not need a OCIR pull secret.
+- GitHub Actions must use OCIR registry credentials for image push.
 
 OCI readiness:
 
@@ -263,7 +263,7 @@ Follow-up:
 
 - Corrected the EC2 resource env file because OCI CLI wait output was mixed into the stored instance ID.
 - Updated `try-create-oci-a1.sh` to extract only the `ocid1.instance...` value from OCI CLI output before writing runtime env state.
-- Do not switch DNS or stop AWS yet. The next migration step is k3s/swap/bootstrap on the new A1 node, then GHCR/Argo CD/data/secret migration and smoke testing.
+- Do not switch DNS or stop AWS yet. The next migration step is k3s/swap/bootstrap on the new A1 node, then OCIR/Argo CD/data/secret migration and smoke testing.
 
 ### 2026-06-02 A1 k3s Bootstrap
 
@@ -293,33 +293,33 @@ Cluster bootstrap:
 - Created `letsencrypt-staging` and `letsencrypt-prod` ClusterIssuers using the existing maintainer email.
 - Verified k3s node Ready and cluster add-on pods Running.
 
-The Argo CD Application is intentionally not registered yet because current committed manifests still point at the pre-migration image state until the GHCR/ARM64 workflow change is merged and GHCR images are available.
+The Argo CD Application is intentionally not registered yet because current committed manifests still point at the pre-migration image state until the OCIR/ARM64 workflow change is merged and OCIR images are available.
 
-### 2026-06-02 GHCR Manifest and Workflow Preparation
+### 2026-06-02 OCIR Manifest and Workflow Preparation
 
-Prepared the repository for GHCR and ARM-compatible deployment.
+Prepared the repository for OCIR and ARM-compatible deployment.
 
 Code changes:
 
 - GitHub Actions no longer configures AWS credentials, ECR login, ECR repository creation, or ECR push.
-- GitHub Actions now has `packages: write`, logs in to GHCR, and uses buildx/QEMU.
+- GitHub Actions logs in to OCIR with repository secrets and uses buildx/QEMU.
 - Backend and frontend images are configured as multi-arch `linux/amd64,linux/arm64` images.
-- The GitOps image tag commit step now writes GHCR image coordinates.
-- The mvp overlay points at `ghcr.io/leeminki/infinite-buying-backend` and `ghcr.io/leeminki/infinite-buying-frontend`.
+- The GitOps image tag commit step now writes OCIR image coordinates.
+- The mvp overlay points at `yny.ocir.io/axnyuujz40an/infinite-buying-backend` and `yny.ocir.io/axnyuujz40an/infinite-buying-frontend`.
 - Backend/frontend Deployments no longer reference the ECR pull secret.
 - The base kustomization no longer includes the ECR refresh CronJob/RBAC.
 
 Validation:
 
 - Rendered the local mvp overlay through the A1 node's k3s kubectl.
-- Confirmed rendered images are GHCR images.
+- Confirmed rendered images are OCIR images.
 - Confirmed no rendered `imagePullSecrets` or ECR image references remain in the application manifests.
 
-GHCR image push is still pending the merge/build workflow run. The A1 Argo CD Application, production secrets, SQLite restore, and DNS cutover remain intentionally pending until that workflow succeeds.
+OCIR image push is still pending the merge/build workflow run. The A1 Argo CD Application, production secrets, SQLite restore, and DNS cutover remain intentionally pending until that workflow succeeds.
 
 ### 2026-06-02 A1 Application Sync and DNS Cutover
 
-After GHCR image publishing succeeded, the A1 cluster was promoted toward production.
+After OCIR image publishing succeeded, the A1 cluster was promoted toward production.
 
 Completed steps:
 

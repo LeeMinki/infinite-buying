@@ -31,4 +31,4 @@
 ## 운영
 
 - 배포: GitHub Actions → OCIR(`yny.ocir.io/axnyuujz40an`) → Oracle A1 k3s → Argo CD. `main` 머지 시 파이프라인 트리거. `[skip deploy]` 커밋으로 스킵.
-- 로그 수집/관측: 코드 상 명시적 로그 수집기 미확인. **구현 확인 필요**.
+- 로그 수집/관측: 별도 Prometheus/Loki/외부 로그 수집 매니페스트는 현재 레포에 없다. 컨테이너 로그와 앱 DB의 판단/주문 기록이 주된 운영 관측 수단이다.

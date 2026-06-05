@@ -19,11 +19,11 @@
 - **분리된 실행 흐름**: 라오어 백테스트는 과거 일봉 기준으로 검증하고, 자동매매는 라오어·한국 랭킹·미국 랭킹 전략을 현재가와 KIS 주문 기준으로 운용한다.
 - **사용자별 자원 격리**: 모든 도메인 테이블에 `user_id`가 있고, 모든 보호 API는 세션의 `userId` 기준으로만 조회/수정/삭제한다.
 - **사용자별 KIS 자격증명**: App Key / Secret / access token / 계좌번호는 사용자별로 AES-256-GCM 암호화 저장.
-- **실주문 안전망**: 미체결·중복·매수가능금액·보유 수량·최소 1주(해외 실주문) 검사를 통과해야 KIS로 주문 전송.
+- **실주문 안전망**: 미체결·중복·재시도 한도·매수가능금액·보유 수량·해외 BUY 1주 미만 차단 검사를 통과해야 KIS로 주문 전송.
 
 ## 기술 스택
 
-- **Backend**: Node.js, Express, `better-sqlite3` 기반 SQLite, `express-session` + `better-sqlite3-session-store`, `bcrypt`, AES-256-GCM (`backend/src/crypto/`).
+- **Backend**: Node.js 24, Express, `better-sqlite3` 기반 SQLite, `express-session` + `better-sqlite3-session-store`, `bcrypt`, AES-256-GCM (`backend/src/crypto/`).
 - **Frontend**: React 19, Vite, Recharts. 단일 페이지 앱이며 라우팅은 `frontend/src/App.jsx`의 `view` 상태로 분기 (`kis` / `backtest` / `auto-trading` / 기본 전략 목록).
 - **데이터 소스**: KIS Open API (`backend/src/market-data/KisMarketDataProvider.js`, `backend/src/services/kisTradingService.js`, `backend/src/services/kisAuthService.js`).
 - **DB 마이그레이션**: `backend/src/db/migrations/`에 `0001`부터 파일명 순서로 적용. 실행은 `npm run migrate`.
@@ -34,12 +34,12 @@
 
 ## 알고리즘
 
-현재 백테스트와 자동매매 모두 동일한 `LAOR_INFINITE_V2` 의사결정 규칙을 따른다. 상세는 [backtest.md](backtest.md), [auto-trading.md](auto-trading.md) 참고.
+라오어 백테스트(`LAOR_INFINITE_V2_NATIVE`)와 라오어 자동매매(`LAOR_INFINITE_V2`)는 같은 분할 매수 철학을 공유하되, 백테스트는 일봉 시가·고가·저가·종가로 체결을 시뮬레이션하고 자동매매는 현재가·잔고·미체결·KIS 주문 상태로 평가한다. 한국·미국 랭킹 전략은 별도 랭킹/분봉 필터와 주문 라이프사이클을 가진 독립 전략이다. 상세는 [backtest.md](backtest.md), [auto-trading.md](auto-trading.md) 참고.
 
 ## 비목표 (현재 버전)
 
 - 예약주문, KIS 예약주문 API 연동
 - 수수료, 세금, 환율, 슬리피지 정밀 계산
 - 주문 실패 무제한 자동 재시도
-- 다종목 포트폴리오 동시 운용
+- 종목 간 포트폴리오 배분/리밸런싱 자동화
 - 모의투자(KIS Mock) 분기 — 본 앱은 실서비스(`KIS_API_BASE_URL`) 기준만 사용

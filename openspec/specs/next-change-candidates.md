@@ -4,14 +4,14 @@
 
 순위는 위험도·가치를 함께 고려한 우선순위. 실제 일정은 사용자의 우선순위에 맞춰 재조정.
 
-## 1. baseline-with-code 무결성 점검 change
+## 1. 운영 DB 백업 / 복구 절차 정식화
 
-**한 문장**: 본 baseline에서 "구현 확인 필요"로 표시한 [implementation-verification-needed.md](implementation-verification-needed.md) 항목을 모두 코드 확인 → baseline 갱신으로 마감.
+**한 문장**: 단일 노드 hostPath SQLite 운영 구조에서 `/var/lib/infinite-buying/backend/app.db` 백업, 복구 리허설, 보존 주기를 정식 운영 절차로 만든다.
 
-- **대상 spec**: 본 OpenSpec baseline 전반.
-- **산출물**: 각 항목별 결론 (코드 정합 / 추가 명세 / 신규 구현 필요).
-- **위험**: 낮음. 코드 변경 없음.
-- **가치**: 베이스라인 신뢰도 확보. 이후 모든 change의 기준점이 된다.
+- **대상 spec**: [oracle-k3s-migration/spec.md](oracle-k3s-migration/spec.md), [database-model.md](database-model.md), [current-limitations.md](current-limitations.md).
+- **산출물**: 백업 스크립트/cron 또는 Kubernetes CronJob, 복구 검증 절차, 시크릿(`SECRET_ENCRYPTION_KEY`) 보존 체크리스트.
+- **위험**: 중간. 실제 운영 DB와 시크릿을 다루므로 dry-run과 복구 리허설이 필요하다.
+- **가치**: 단일 노드/hostPath 구조의 가장 큰 운영 리스크를 줄인다.
 
 ## 2. 자동 취소 동작에 대한 자동화 테스트 추가
 

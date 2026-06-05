@@ -2,7 +2,7 @@
 
 - [x] 1.1 새 마이그레이션 `00xx_kr_rank_auto_trading.sql` 작성 — `kr_rank_strategies`(status, total_budget, target_profit_rate, stop_loss_rate, lunch_entry_enabled, lunch_target_profit_rate, started/stopped/last_evaluated_at, last_decision, last_error_message) 생성. 기존 `auto_trading_*` 테이블은 ALTER하지 않는다.
 - [x] 1.2 `kr_rank_entries` 테이블 생성 — `UNIQUE(strategy_id, trade_date, entry_window)`, 선택 종목·`bought` 플래그·랭킹 스냅샷 참조.
-- [x] 1.3 `kr_rank_orders` 테이블 생성 — side·entry_window·sell_reason·status·`idempotency_key` UNIQUE·`live_order_enabled`·payload masked 컬럼.
+- [x] 1.3 `kr_rank_orders` 테이블 생성 — side·entry_window·sell_reason·status·`idempotency_key`·`live_order_enabled`·payload masked 컬럼. 최초 생성 시 UNIQUE였으나 `0026_round_model_and_retry.sql`에서 실패 주문 재시도를 위해 UNIQUE 제약을 제거했다.
 - [x] 1.4 `kr_rank_decision_logs` 테이블 생성 — decision·entry_window·랭킹/선택 종목·current_price·holding·reason·evaluation_source.
 - [x] 1.5 `kr_rank_locks` 테이블 생성 — `(strategy_id, lock_key) UNIQUE`.
 - [x] 1.6 각 테이블에 `(user_id, ...)` 시작 복합 인덱스 추가, 마이그레이션 적용 확인.
