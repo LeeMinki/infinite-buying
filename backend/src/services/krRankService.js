@@ -1,5 +1,6 @@
 import * as repo from '../repositories/krRankRepository.js';
 import * as autoTradingRepo from '../repositories/autoTradingRepository.js';
+import { env } from '../config/env.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
 import { getDomesticFluctuationRanking, getDomesticTodayMinuteCandles, getDomesticHolidays } from './marketDataService.js';
@@ -63,7 +64,7 @@ export function deleteStrategy(userId, id) {
 export function startStrategy(userId, id) {
   const strategy = requireStrategy(userId, id);
   const started = repo.startStrategy(userId, id);
-  const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
+  const liveOrderEnabled = resolveLiveOrderEnabled(userId);
   repo.createDecisionLog(userId, {
     strategyId: strategy.id,
     decision: 'SKIP',
@@ -114,7 +115,9 @@ export function listEntries(userId, strategyId, paging = {}) {
 // 한국 랭킹 전략 탭 요약: 실주문 설정 + 전략 목록.
 export function getOverview(userId) {
   return {
-    liveOrderEnabled: autoTradingRepo.getSettings(userId).liveOrderEnabled,
+    liveOrderEnabled: resolveLiveOrderEnabled(userId),
+    userLiveOrderEnabled: autoTradingRepo.getSettings(userId).liveOrderEnabled,
+    globalLiveOrderEnabled: isGlobalLiveOrderEnabled(),
     strategies: repo.listStrategies(userId)
   };
 }
@@ -133,12 +136,10 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
   }
   try {
     if (scheduled && !isKrMarketOpen()) {
-      // 장 운영 시간 외 SKIP은 30초마다 폴링이라 로그를 만들지 않고 평가 시각만 갱신한다.
-      return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource, { noLog: true });
+      return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource);
     }
     if (scheduled && !(await isKrTradingDay(userId))) {
-      // 공휴일 등 휴장일에는 평일·시간 조건을 통과해도 매수하지 않는다. 폴링이라 로그는 남기지 않는다.
-      return saveSkip(userId, strategy, '한국 증시 휴장일이라 주문하지 않습니다.', evaluationSource, { noLog: true });
+      return saveSkip(userId, strategy, '한국 증시 휴장일이라 주문하지 않습니다.', evaluationSource);
     }
     // 평가 본 흐름에 들어가기 전에 미체결 주문의 실제 체결가를 KIS에서 끌어와 DB에 채운다.
     // 화면 렌더링이 아니라 평가 tick(이미 30초마다 도는 작업)에 끼워, 추가 폴링 없이 갱신한다.
@@ -170,19 +171,15 @@ export async function evaluateRunningStrategies() {
 }
 
 async function evaluateUnlocked(userId, strategy, evaluationSource) {
-  const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
+  const liveOrderEnabled = resolveLiveOrderEnabled(userId);
   // 1분 폴링이라 할 일이 없는 tick은 KIS 호출 없이 일찍 끝낸다.
   // 무보유이고 진입 구간이 아니거나, 이미 그 구간 진입을 마쳤으면 바로 종료한다.
-  // 사용자가 직접 누른 평가(MANUAL)는 응답으로 사유를 보여주기 위해 기록하지만,
-  // 스케줄러(SCHEDULED) 평가에서 매분 반복되는 idle SKIP은 노이즈라 로그를 생략한다.
-  const noLogIfScheduled = evaluationSource !== 'MANUAL';
   if (!strategy.holdingSymbol) {
     const window = resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
     if (!window) {
       return saveDecision(userId, strategy, {
         decision: 'SKIP', liveOrderEnabled, evaluationSource,
         reason: '지금은 오전·점심 진입 구간이 아니라 매수 평가를 하지 않습니다.',
-        noLog: noLogIfScheduled
       });
     }
     // 진입 기록이 종결 상태(매수 완료 / 후보 없음)면 KIS 호출 없이 끝낸다.
@@ -194,7 +191,6 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
         reason: existing.bought
           ? `오늘 ${ENTRY_WINDOWS[window].label} 진입 매수를 마쳤습니다.`
           : `오늘 ${ENTRY_WINDOWS[window].label} 진입: 매수 대상이 없어 매수하지 않았습니다.`,
-        noLog: noLogIfScheduled
       });
     }
   }
@@ -457,13 +453,12 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
 
     if (!picked) {
       // 후보 없음/전원 거절: 진입 기록을 만들지 않고(또는 레거시 기록을 SELECTED로 굳히지 않고) SKIP만 한다.
-      // 다음 tick에 랭킹을 다시 본다. 스케줄러 SKIP은 매분 폴링 노이즈를 막기 위해 로그를 남기지 않는다.
+      // 다음 tick에 랭킹을 다시 보되, 원인 추적을 위해 스케줄러 SKIP도 판단 로그로 남긴다.
       const reason = candidates.length === 0
         ? `${label} 진입: 등락률 ${maxFluctuationRate * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
         : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
-        noLog: evaluationSource !== 'MANUAL'
       });
     }
 
@@ -539,8 +534,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
-        noLog: evaluationSource !== 'MANUAL'
+        reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`
       });
     }
     // BUY 가 우리 DB 에는 ACCEPTED 인 채 남아 있고 잔고도 0인 모호한 상태. 두 가지 가능성:
@@ -557,8 +551,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         return saveDecision(userId, strategy, {
           decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
           liveOrderEnabled, evaluationSource,
-          reason: `${label} 진입: ${symbol} 매수가 KIS 체결조회로 체결 확인됐고 잔고가 0이라 매도까지 끝난 상태로 보고 오늘 ${label} 진입을 마쳤습니다.`,
-          noLog: evaluationSource !== 'MANUAL'
+          reason: `${label} 진입: ${symbol} 매수가 KIS 체결조회로 체결 확인됐고 잔고가 0이라 매도까지 끝난 상태로 보고 오늘 ${label} 진입을 마쳤습니다.`
         });
       }
     }
@@ -611,8 +604,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없어 후보에서 제외했습니다.${rejectionNote}`,
-        noLog: evaluationSource !== 'MANUAL'
+        reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없어 후보에서 제외했습니다.${rejectionNote}`
       });
     }
   }
@@ -623,8 +615,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
       currentPrice, cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${symbol} 매수가능금액으로 1주도 매수할 수 없습니다.`,
-      noLog: evaluationSource !== 'MANUAL'
+      reason: `${label} 진입: ${symbol} 매수가능금액으로 1주도 매수할 수 없습니다.`
     });
   }
 
@@ -975,7 +966,6 @@ function checkOrderSafety({
 // ── 헬퍼 ──────────────────────────────────────────────────────────────────
 
 // 1분 간격 폴링의 모든 평가(HOLD·SKIP 포함)를 판단 로그에 기록한다.
-// 단, 호출 측에서 noLog: true를 넘긴 평가(장 운영 시간 외 SKIP 등)는 로그를 만들지 않는다.
 function saveDecision(userId, strategy, input) {
   const evaluationSource = input.evaluationSource || 'SCHEDULED';
   const decision = input.decision;
@@ -988,16 +978,14 @@ function saveDecision(userId, strategy, input) {
       errorMessage: decision === 'ERROR' ? input.reason : null
     });
   }
-  const log = input.noLog
-    ? null
-    : repo.createDecisionLog(userId, { strategyId: strategy.id, ...input });
+  const log = repo.createDecisionLog(userId, { strategyId: strategy.id, ...input });
   const order = input.orderId ? repo.getOrder(userId, input.orderId) : null;
   return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order };
 }
 
-function saveSkip(userId, strategy, reason, evaluationSource, { noLog = false } = {}) {
-  const liveOrderEnabled = autoTradingRepo.getSettings(userId).liveOrderEnabled;
-  return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason, noLog });
+function saveSkip(userId, strategy, reason, evaluationSource) {
+  const liveOrderEnabled = resolveLiveOrderEnabled(userId);
+  return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason });
 }
 
 async function safeOpenOrders(trading, symbol) {
@@ -1156,6 +1144,14 @@ function optionalHhmm(value, label, { afterMinutes = null, afterLabel = null } =
     throw badRequest(`${label}은(는) ${afterLabel} 이후여야 합니다. 그 이전이면 매수 직후 즉시 청산됩니다.`);
   }
   return value;
+}
+
+function resolveLiveOrderEnabled(userId) {
+  return autoTradingRepo.getSettings(userId).liveOrderEnabled && isGlobalLiveOrderEnabled();
+}
+
+function isGlobalLiveOrderEnabled() {
+  return env.enableLiveOrder === 'true';
 }
 
 function requireStrategy(userId, id, { includeDeleted = false } = {}) {
