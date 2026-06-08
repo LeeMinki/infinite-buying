@@ -10,5 +10,5 @@ data:
   KIS_API_BASE_URL: https://openapi.koreainvestment.com:9443
   KIS_TIMEOUT_MS: "5000"
   SESSION_COOKIE_SECURE: "true"
-  ENABLE_LIVE_ORDER: "false"
+  ENABLE_LIVE_ORDER: "true"
   ENABLE_RESERVED_ORDER: "false"

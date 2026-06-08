@@ -183,21 +183,20 @@ test('한국 랭킹: 매수 체결과 목표 매도 체결이 한 tick 안에 �
   await withMockedFetch({ cash: 0, prices: { '015260': 5100 } }, async () => {
     await withMockedDate('2026-06-04T00:15:00Z', async () => {
       const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      // saveDecision은 noLog=true라 로그는 안 남기지만 보유 상태는 NULL을 유지해야 한다.
+      // 반복되는 스케줄러 SKIP은 로그를 남기지 않지만 보유 상태는 NULL을 유지해야 한다.
       const refreshed = repo.getStrategy(user.id, strategy.id);
       assert.equal(refreshed.holdingSymbol, null);
       // 핵심: 진입 기록이 BOUGHT로 굳어졌는지 확인.
       const after = repo.getEntry(strategy.id, '2026-06-04', 'MORNING');
       assert.equal(after.bought, true);
       assert.equal(after.status, 'BOUGHT');
-      assert.equal(result.decision.decision, 'SKIP');
-      assert.match(result.decision.reason, /오늘 오전 진입을 마쳤습니다/);
+      assert.equal(result.decision, null);
     });
 
     // 다음 tick: 같은 시각에 다시 평가해도 line 191 조기 종료 분기에 빠져 매수 시도를 안 한다.
     await withMockedDate('2026-06-04T00:15:30Z', async () => {
       const second = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      assert.equal(second.decision.decision, 'SKIP');
+      assert.equal(second.decision, null);
       const orderCount = repo.listOrders(user.id, { strategyId: strategy.id }).length;
       assert.equal(orderCount, 2); // 새 매수가 추가되지 않아야 한다.
     });
@@ -250,8 +249,7 @@ test('한국 랭킹: 우리 DB의 BUY가 아직 ACCEPTED여도 KIS 체결조회�
   await withMockedFetch(state, async () => {
     await withMockedDate('2026-06-05T00:15:00Z', async () => {
       const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      assert.equal(result.decision.decision, 'SKIP');
-      assert.match(result.decision.reason, /오늘 오전 진입을 마쳤습니다/);
+      assert.equal(result.decision, null);
     });
   });
 
@@ -352,6 +350,80 @@ test('한국 랭킹은 매수가능금액으로 1주도 못 사는 후보를 건
       assert.equal(target.liveOrderEnabled, false);
     });
   });
+});
+
+test('한국 랭킹 스케줄러: 진입 구간 밖 idle SKIP은 판단 로그를 남기지 않는다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  const before = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+
+  await withMockedDate('2026-06-08T01:30:00Z', async () => {
+    const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+    assert.equal(result.decision, null);
+  });
+
+  const after = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+  assert.equal(after, before);
+});
+
+test('한국 랭킹 수동 평가: 진입 구간 밖 SKIP은 판단 로그를 남긴다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  const before = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+
+  await withMockedDate('2026-06-08T01:30:00Z', async () => {
+    const result = await service.evaluateStrategy(user.id, strategy.id);
+    assert.equal(result.decision.decision, 'SKIP');
+    assert.equal(result.decision.evaluationSource, 'MANUAL');
+    assert.match(result.decision.reason, /진입 구간이 아니라/);
+  });
+
+  const after = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+  assert.equal(after, before + 1);
+});
+
+test('한국 랭킹 스케줄러: 이미 평가 중인 idle SKIP은 판단 로그를 남기지 않는다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  const before = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+  repo.acquireLock(user.id, strategy.id, 'evaluate', new Date(Date.now() + 60_000).toISOString());
+
+  try {
+    const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+    assert.equal(result.decision, null);
+  } finally {
+    repo.releaseLock(strategy.id, 'evaluate');
+  }
+
+  const after = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+  assert.equal(after, before);
 });
 
 test('한국 랭킹 스케줄러: 후보가 전부 탈락한 SKIP도 판단 로그를 남긴다', async () => {
