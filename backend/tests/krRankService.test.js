@@ -8,6 +8,9 @@ const credentialService = await import('../src/services/kisCredentialService.js'
 const service = await import('../src/services/krRankService.js');
 const repo = await import('../src/repositories/krRankRepository.js');
 const autoTradingRepo = await import('../src/repositories/autoTradingRepository.js');
+const { env } = await import('../src/config/env.js');
+const originalEnableLiveOrder = env.enableLiveOrder;
+env.enableLiveOrder = 'true';
 
 const user = createUser(db, 'kr-rank-service@example.com');
 credentialService.saveSettings(user.id, {
@@ -17,7 +20,10 @@ credentialService.saveSettings(user.id, {
   accountProductCode: '01'
 });
 
-test.after(() => tmp.cleanup());
+test.after(() => {
+  env.enableLiveOrder = originalEnableLiveOrder;
+  tmp.cleanup();
+});
 
 function withMockedDate(iso, run) {
   const RealDate = globalThis.Date;
@@ -41,6 +47,19 @@ function withMockedDate(iso, run) {
     .then(run)
     .finally(() => {
       globalThis.Date = RealDate;
+    });
+}
+
+function withEnvOverride(patch, run) {
+  const previous = {};
+  for (const [key, value] of Object.entries(patch)) {
+    previous[key] = env[key];
+    env[key] = value;
+  }
+  return Promise.resolve()
+    .then(run)
+    .finally(() => {
+      for (const [key, value] of Object.entries(previous)) env[key] = value;
     });
 }
 
@@ -171,13 +190,14 @@ test('한국 랭킹: 매수 체결과 목표 매도 체결이 한 tick 안에 �
       const after = repo.getEntry(strategy.id, '2026-06-04', 'MORNING');
       assert.equal(after.bought, true);
       assert.equal(after.status, 'BOUGHT');
-      assert.equal(result.decision, null); // SCHEDULED SKIP은 로그를 만들지 않는다.
+      assert.equal(result.decision.decision, 'SKIP');
+      assert.match(result.decision.reason, /오늘 오전 진입을 마쳤습니다/);
     });
 
     // 다음 tick: 같은 시각에 다시 평가해도 line 191 조기 종료 분기에 빠져 매수 시도를 안 한다.
     await withMockedDate('2026-06-04T00:15:30Z', async () => {
       const second = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      assert.equal(second.decision, null);
+      assert.equal(second.decision.decision, 'SKIP');
       const orderCount = repo.listOrders(user.id, { strategyId: strategy.id }).length;
       assert.equal(orderCount, 2); // 새 매수가 추가되지 않아야 한다.
     });
@@ -230,7 +250,8 @@ test('한국 랭킹: 우리 DB의 BUY가 아직 ACCEPTED여도 KIS 체결조회�
   await withMockedFetch(state, async () => {
     await withMockedDate('2026-06-05T00:15:00Z', async () => {
       const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      assert.equal(result.decision, null);
+      assert.equal(result.decision.decision, 'SKIP');
+      assert.match(result.decision.reason, /오늘 오전 진입을 마쳤습니다/);
     });
   });
 
@@ -331,4 +352,73 @@ test('한국 랭킹은 매수가능금액으로 1주도 못 사는 후보를 건
       assert.equal(target.liveOrderEnabled, false);
     });
   });
+});
+
+test('한국 랭킹 스케줄러: 후보가 전부 탈락한 SKIP도 판단 로그를 남긴다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+
+  await withMockedFetch({
+    rankingRows: [
+      { stck_shrn_iscd: '018260', hts_kor_isnm: '삼성에스디에스', stck_prpr: '286500', prdy_ctrt: '25.0' },
+      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '21.0' }
+    ],
+    cash: 1_000_000
+  }, async () => {
+    await withMockedDate('2026-06-08T00:10:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision.decision, 'SKIP');
+      assert.equal(result.decision.entryWindow, 'MORNING');
+      assert.match(result.decision.reason, /매수 대상이 없어/);
+    });
+  });
+
+  const logs = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 });
+  assert.equal(logs[0].decision, 'SKIP');
+  assert.equal(logs[0].entryWindow, 'MORNING');
+  assert.match(logs[0].reason, /매수 대상이 없어/);
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
+
+test('한국 랭킹: DB 실주문 설정이 켜져도 ENABLE_LIVE_ORDER=false이면 DRY_RUN으로만 기록한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = { cash: 1_000_000, prices: { '005930': 70_000 } };
+
+  await withEnvOverride({ enableLiveOrder: 'false' }, async () => {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-09T00:10:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+        assert.equal(result.decision.decision, 'BUY');
+        assert.equal(result.decision.liveOrderEnabled, false);
+        assert.equal(result.order.status, 'DRY_RUN');
+        assert.equal(result.order.liveOrderEnabled, false);
+      });
+    });
+  });
+
+  assert.equal(state.orderCalls || 0, 0);
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
 });
