@@ -132,14 +132,14 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
   }
   const lockedUntil = new Date(Date.now() + 2 * 60 * 1000).toISOString();
   if (!repo.acquireLock(userId, id, LOCK_KEY, lockedUntil)) {
-    return saveSkip(userId, strategy, '이미 평가가 진행 중입니다.', evaluationSource);
+    return saveSkip(userId, strategy, '이미 평가가 진행 중입니다.', evaluationSource, { noLog: scheduled });
   }
   try {
     if (scheduled && !isKrMarketOpen()) {
-      return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource);
+      return saveSkip(userId, strategy, '한국 장 운영 시간이 아니라 주문하지 않습니다.', evaluationSource, { noLog: true });
     }
     if (scheduled && !(await isKrTradingDay(userId))) {
-      return saveSkip(userId, strategy, '한국 증시 휴장일이라 주문하지 않습니다.', evaluationSource);
+      return saveSkip(userId, strategy, '한국 증시 휴장일이라 주문하지 않습니다.', evaluationSource, { noLog: true });
     }
     // 평가 본 흐름에 들어가기 전에 미체결 주문의 실제 체결가를 KIS에서 끌어와 DB에 채운다.
     // 화면 렌더링이 아니라 평가 tick(이미 30초마다 도는 작업)에 끼워, 추가 폴링 없이 갱신한다.
@@ -174,12 +174,14 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   const liveOrderEnabled = resolveLiveOrderEnabled(userId);
   // 1분 폴링이라 할 일이 없는 tick은 KIS 호출 없이 일찍 끝낸다.
   // 무보유이고 진입 구간이 아니거나, 이미 그 구간 진입을 마쳤으면 바로 종료한다.
+  const noLogIfScheduled = evaluationSource !== 'MANUAL';
   if (!strategy.holdingSymbol) {
     const window = resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
     if (!window) {
       return saveDecision(userId, strategy, {
         decision: 'SKIP', liveOrderEnabled, evaluationSource,
         reason: '지금은 오전·점심 진입 구간이 아니라 매수 평가를 하지 않습니다.',
+        noLog: noLogIfScheduled
       });
     }
     // 진입 기록이 종결 상태(매수 완료 / 후보 없음)면 KIS 호출 없이 끝낸다.
@@ -191,6 +193,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
         reason: existing.bought
           ? `오늘 ${ENTRY_WINDOWS[window].label} 진입 매수를 마쳤습니다.`
           : `오늘 ${ENTRY_WINDOWS[window].label} 진입: 매수 대상이 없어 매수하지 않았습니다.`,
+        noLog: noLogIfScheduled
       });
     }
   }
@@ -534,7 +537,8 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`
+        reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
+        noLog: evaluationSource !== 'MANUAL'
       });
     }
     // BUY 가 우리 DB 에는 ACCEPTED 인 채 남아 있고 잔고도 0인 모호한 상태. 두 가지 가능성:
@@ -551,7 +555,8 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         return saveDecision(userId, strategy, {
           decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
           liveOrderEnabled, evaluationSource,
-          reason: `${label} 진입: ${symbol} 매수가 KIS 체결조회로 체결 확인됐고 잔고가 0이라 매도까지 끝난 상태로 보고 오늘 ${label} 진입을 마쳤습니다.`
+          reason: `${label} 진입: ${symbol} 매수가 KIS 체결조회로 체결 확인됐고 잔고가 0이라 매도까지 끝난 상태로 보고 오늘 ${label} 진입을 마쳤습니다.`,
+          noLog: evaluationSource !== 'MANUAL'
         });
       }
     }
@@ -965,7 +970,9 @@ function checkOrderSafety({
 
 // ── 헬퍼 ──────────────────────────────────────────────────────────────────
 
-// 1분 간격 폴링의 모든 평가(HOLD·SKIP 포함)를 판단 로그에 기록한다.
+// 판단 로그 저장과 전략의 최근 평가 상태 갱신을 한곳에서 처리한다.
+// scheduled idle/no-op SKIP은 호출부에서 noLog=true로 넘겨 로그 노이즈를 억제하고,
+// 후보 탐색 후 매수 대상이 없어 끝난 SKIP은 로그를 남겨 알고리즘 판단 근거를 볼 수 있게 한다.
 function saveDecision(userId, strategy, input) {
   const evaluationSource = input.evaluationSource || 'SCHEDULED';
   const decision = input.decision;
@@ -978,14 +985,16 @@ function saveDecision(userId, strategy, input) {
       errorMessage: decision === 'ERROR' ? input.reason : null
     });
   }
-  const log = repo.createDecisionLog(userId, { strategyId: strategy.id, ...input });
+  const log = input.noLog
+    ? null
+    : repo.createDecisionLog(userId, { strategyId: strategy.id, ...input });
   const order = input.orderId ? repo.getOrder(userId, input.orderId) : null;
   return { strategy: repo.getStrategy(userId, strategy.id), decision: log, order };
 }
 
-function saveSkip(userId, strategy, reason, evaluationSource) {
+function saveSkip(userId, strategy, reason, evaluationSource, { noLog = false } = {}) {
   const liveOrderEnabled = resolveLiveOrderEnabled(userId);
-  return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason });
+  return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason, noLog });
 }
 
 async function safeOpenOrders(trading, symbol) {
