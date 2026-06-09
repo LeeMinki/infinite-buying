@@ -263,6 +263,49 @@ test('syncRealizedProfits: 매도 체결 후 KIS 실현손익·손익률을 매�
   }
 });
 
+test('syncRealizedProfits: KIS가 1% 미만 손익률을 퍼센트 문자열로 주면 100으로 나눠 저장한다', async () => {
+  const strategy = createStrategyForUser();
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  createAcceptedBuyOrder(strategy.id, { kisOrderNo: 'R-BUY-SMALL-LOSS', symbol: '009190', symbolName: '대양금속', quantity: 56, orderPrice: 2350 });
+  const sell = createAcceptedSellOrder(strategy.id, { kisOrderNo: 'R-SELL-SMALL-LOSS', symbol: '009190', symbolName: '대양금속', quantity: 56, orderPrice: 2345 });
+  repo.updateOrder(user.id, sell.id, {
+    status: 'FILLED',
+    filledQuantity: 56,
+    remainingQuantity: 0,
+    averageFilledPrice: 2345
+  });
+  const state = {
+    realized: [{
+      trad_dt: '20260529',
+      pdno: '009190',
+      prdt_name: '대양금속',
+      buy_qty: '56',
+      buy_amt: '131600',
+      sll_pric: '2345',
+      sll_qty: '56',
+      sll_amt: '131320',
+      rlzt_pfls: '-561',
+      pfls_rt: '-0.42629179',
+      fee: '20',
+      tl_tax: '261'
+    }]
+  };
+  try {
+    await withMockedFetch(state, async () => {
+      const updated = await krRankService.syncRealizedProfits(user.id, { strategyId: strategy.id });
+      assert.equal(updated.length, 1);
+      assert.equal(updated[0].realizedProfitAmount, -561);
+      assert.ok(Math.abs(updated[0].realizedProfitRate - (-0.0042629179)) < 1e-10);
+    });
+    const after = repo.getOrder(user.id, sell.id);
+    assert.ok(Math.abs(after.realizedProfitRate - (-0.0042629179)) < 1e-10);
+    assert.equal(after.realizedFeeAmount, 20);
+    assert.equal(after.realizedTaxAmount, 261);
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
 test('syncOrderFills: 체결 정보가 비어 있으면(미체결 상태) 갱신하지 않고 둔다', async () => {
   const strategy = createStrategyForUser();
   autoTradingRepo.updateLiveOrderSetting(user.id, true);
