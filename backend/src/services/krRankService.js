@@ -146,6 +146,7 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
     // 실패해도 평가는 계속 진행한다 — 체결가는 다음 tick에 다시 시도하면 된다.
     try {
       await syncOrderFills(userId, { strategyId: id });
+      await syncRealizedProfits(userId, { strategyId: id });
     } catch {
       // 동기화 실패는 평가를 막지 않는다.
     }
@@ -735,7 +736,67 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
       // 한 주문의 동기화 실패는 다른 주문 처리를 막지 않는다.
     }
   }
+  if (updated.some((order) => order.side === 'SELL' && order.status === 'FILLED')) {
+    await syncRealizedProfits(userId, { strategyId, limit }).catch(() => []);
+  }
   return updated;
+}
+
+export async function syncRealizedProfits(userId, { strategyId = null, limit = 20 } = {}) {
+  if (strategyId) requireStrategy(userId, strategyId, { includeDeleted: true });
+  const candidates = repo.listRealizedProfitSyncCandidates(userId, { strategyId, limit });
+  if (candidates.length === 0) return [];
+  let trading;
+  try {
+    await getValidAccessToken(userId);
+    trading = new KisTradingService(userId);
+  } catch {
+    return [];
+  }
+
+  const profitCache = new Map();
+  const updated = [];
+  for (const order of candidates) {
+    try {
+      const dateWindow = orderHistoryDateWindow(order);
+      const cacheKey = `${order.symbol}::${dateWindow.startDate}::${dateWindow.endDate}`;
+      let rows = profitCache.get(cacheKey);
+      if (rows == null) {
+        try {
+          rows = await trading.getRealizedProfits({ market: 'KR', symbol: order.symbol, ...dateWindow });
+        } catch {
+          rows = [];
+        }
+        if (!Array.isArray(rows)) rows = [];
+        profitCache.set(cacheKey, rows);
+      }
+      const matched = rows.find((row) => matchesRealizedProfitRow(order, row));
+      if (!matched) continue;
+      const result = repo.updateOrderRealizedProfit(userId, order.id, {
+        realizedProfitAmount: matched.realizedProfitAmount,
+        realizedProfitRate: matched.realizedProfitRate,
+        realizedFeeAmount: matched.feeAmount,
+        realizedTaxAmount: matched.taxAmount,
+        realizedProfitSource: 'KIS_TTTC8715R'
+      });
+      if (result) updated.push(result);
+    } catch {
+      // 한 주문의 실현손익 동기화 실패는 다른 주문 처리를 막지 않는다.
+    }
+  }
+  return updated;
+}
+
+function matchesRealizedProfitRow(order, row) {
+  if (!row) return false;
+  if (String(row.symbol || '').trim() !== String(order.symbol || '').trim()) return false;
+  const sellQty = Number(row.sellQuantity || 0);
+  const orderQty = Number(order.filledQuantity || order.quantity || 0);
+  if (sellQty > 0 && orderQty > 0 && Math.abs(sellQty - orderQty) > 0.000001) return false;
+  const sellPrice = Number(row.sellPrice || 0);
+  const orderPrice = Number(order.averageFilledPrice || order.orderPrice || 0);
+  if (sellPrice > 0 && orderPrice > 0 && Math.abs(sellPrice - orderPrice) > 1) return false;
+  return true;
 }
 
 // 평가 안에서 모호한 분기(잔고=0 + 우리 DB 상의 BUY 상태가 ACCEPTED 등)에 한해 호출해,

@@ -618,21 +618,30 @@ export function buildLaorRealizedRecords(orders) {
   return records;
 }
 
-function collectRankRealizedRecords(userId, strategies, service) {
+export function collectRankRealizedRecords(userId, strategies, service) {
   const records = [];
   for (const strategy of strategies || []) {
     try {
       const response = service.listRoundTripOrders(userId, strategy.id, { limit: 2000, offset: 0 });
       for (const item of response.items || []) {
-        if (!item.sellTime || item.sellPrice == null || item.buyPrice == null) continue;
+        if (!item.sellTime || item.buyPrice == null) continue;
         // 모의(DRY_RUN)·미거래 상태는 손익에서 제외한다. round-trip 쿼리는 이미
         // FAILED/REJECTED/CANCELED를 거르지만 DRY_RUN은 포함하므로 여기서 한 번 더 막는다.
         if (EXCLUDED_REALIZED_ORDER_STATUSES.has(item.buyStatus) || EXCLUDED_REALIZED_ORDER_STATUSES.has(item.sellStatus)) continue;
-        // 한 매도가 여러 매수에 매칭될 때 매도수량을 매수별로 곱하면 중복 집계되므로,
-        // 각 매수 lot의 수량(buyQuantity)을 기준으로 그 lot의 실현 손익을 계산한다.
+        // 기간별 수익률은 KIS 기간별매매손익현황조회가 돌려준 실현 손익률 기준으로만 집계한다.
+        // 실현 손익률이 아직 비어 있는 과거 항목은 syncRealizedProfits가 채운 뒤 다음 캐시 갱신부터 반영된다.
+        let rawRealizedProfitRate = item.realizedProfitRate;
+        // 미국 랭킹은 별도 KIS 실현손익 API를 아직 쓰지 않고, 매도 체결 확정 시 저장한 profitRate가
+        // 실제 체결가 기준 실현 손익률이다(수수료·세금 미반영). KRW 국장 랭킹은 반드시 KIS 실현 손익률만 쓴다.
+        if ((rawRealizedProfitRate === null || rawRealizedProfitRate === undefined || rawRealizedProfitRate === '')
+          && (item.currency || strategy.currency) === 'USD') {
+          rawRealizedProfitRate = item.profitRate;
+        }
+        if (rawRealizedProfitRate === null || rawRealizedProfitRate === undefined || rawRealizedProfitRate === '') continue;
+        const realizedProfitRate = Number(rawRealizedProfitRate);
+        if (!Number.isFinite(realizedProfitRate)) continue;
         const quantity = Number(item.buyQuantity || item.sellQuantity || 0);
         const buyPrice = Number(item.buyPrice || 0);
-        const sellPrice = Number(item.sellPrice || 0);
         const baseAmount = buyPrice * quantity;
         if (quantity <= 0 || baseAmount <= 0) continue;
         records.push({
@@ -640,8 +649,11 @@ function collectRankRealizedRecords(userId, strategies, service) {
           currency: item.currency || strategy.currency || 'KRW',
           occurredAt: item.sellTime,
           occurredMs: parseTime(item.sellTime),
-          profitAmount: (sellPrice - buyPrice) * quantity,
+          profitAmount: Number.isFinite(Number(item.realizedProfitAmount))
+            ? Number(item.realizedProfitAmount)
+            : baseAmount * realizedProfitRate,
           baseAmount,
+          realizedProfitRate,
           tradeCount: 1
         });
       }
@@ -669,6 +681,7 @@ function combinePeriodSummaries(strategyTypes) {
         currency: value.currency,
         profitAmount: value.profitAmount,
         baseAmount: value.baseAmount,
+        realizedProfitRate: value.returnRate,
         tradeCount: value.tradeCount
       });
     }
@@ -688,15 +701,22 @@ export function summarizeByCurrency(records) {
   for (const record of records || []) {
     const currency = record.currency || 'KRW';
     if (!byCurrency[currency]) {
-      byCurrency[currency] = { currency, profitAmount: 0, baseAmount: 0, returnRate: 0, tradeCount: 0 };
+      byCurrency[currency] = { currency, profitAmount: 0, baseAmount: 0, returnRate: 0, tradeCount: 0, realizedReturnNumerator: 0 };
     }
-    byCurrency[currency].profitAmount += Number(record.profitAmount || 0);
-    byCurrency[currency].baseAmount += Number(record.baseAmount || 0);
+    const profitAmount = Number(record.profitAmount || 0);
+    const baseAmount = Number(record.baseAmount || 0);
+    const realizedProfitRate = Number(record.realizedProfitRate);
+    byCurrency[currency].profitAmount += profitAmount;
+    byCurrency[currency].baseAmount += baseAmount;
+    byCurrency[currency].realizedReturnNumerator += Number.isFinite(realizedProfitRate)
+      ? realizedProfitRate * baseAmount
+      : profitAmount;
     byCurrency[currency].tradeCount += Number(record.tradeCount || 1);
   }
   for (const value of Object.values(byCurrency)) {
-    value.returnRate = value.baseAmount > 0 ? value.profitAmount / value.baseAmount : 0;
+    value.returnRate = value.baseAmount > 0 ? value.realizedReturnNumerator / value.baseAmount : 0;
     value.status = value.baseAmount > 0 ? 'available' : 'insufficient';
+    delete value.realizedReturnNumerator;
   }
   return byCurrency;
 }
