@@ -259,12 +259,19 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     currentPrice, averagePrice, targetProfitRate, stopLossRate,
     liquidateTime, nowMinutes: kstNowMinutes()
   });
+  const activeTargetOrder = repo.getActiveSellOrder({
+    strategyId: strategy.id,
+    entryWindow,
+    symbol,
+    sellReason: 'TARGET'
+  });
   let entryFailureReason = null;
   if (sell.decision === 'HOLD') {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
       const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
-      const failure = evaluateFastStopLoss(candles, { profitRate });
+      const holdingMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
+      const failure = evaluateFastStopLoss(candles, { profitRate, holdingMinutes });
       if (failure.failed) {
         entryFailureReason = failure.reason;
         sell = {
@@ -304,12 +311,6 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       : sell.sellReason === 'ENTRY_FAILED'
         ? `빠른 손절${entryFailureReason ? ` (${entryFailureReason})` : ''}`
       : `청산 시각 도달 (${liquidateTime} KST)`;
-  const activeTargetOrder = repo.getActiveSellOrder({
-    strategyId: strategy.id,
-    entryWindow,
-    symbol,
-    sellReason: 'TARGET'
-  });
   if (activeTargetOrder) {
     if (sell.sellReason === 'TARGET') {
       if (!activeTargetOrder.liveOrderEnabled || activeTargetOrder.status === 'DECIDED' || activeTargetOrder.status === 'DRY_RUN') {
@@ -1274,6 +1275,14 @@ function kstToday() {
 
 function fmt(value) {
   return Number(value || 0).toLocaleString('ko-KR', { maximumFractionDigits: 0 });
+}
+
+function minutesSinceSqliteTimestamp(value, now = new Date()) {
+  if (!value) return null;
+  const normalized = String(value).trim().replace(' ', 'T');
+  const time = Date.parse(normalized.endsWith('Z') ? normalized : `${normalized}Z`);
+  if (!Number.isFinite(time)) return null;
+  return Math.max(0, (now.getTime() - time) / 60000);
 }
 
 function badRequest(message) {
