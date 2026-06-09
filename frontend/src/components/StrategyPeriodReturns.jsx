@@ -2,7 +2,7 @@ import React from 'react';
 
 // 자동매매 화면에서 한 전략 종류(국장/미국장/라오어)의 기간별 손익만 보여주는 패널.
 // 데이터는 대시보드 응답의 periodReturns[].strategyTypes 를 그대로 재사용한다.
-const PERIOD_NOTE = '매도까지 끝난 실주문 손익만 최근 기간별로 누적합니다. 오늘 체결된 실거래만 있으면 1일·7일·30일 값이 같을 수 있습니다. 체결가가 아직 확인되지 않은 주문과 모의 기록은 제외합니다.';
+const PERIOD_NOTE = '매도까지 끝난 실주문 손익만 최근 기간별로 누적합니다. 랭킹 전략은 KIS가 돌려준 실현 손익률 기준이며, 체결가 또는 실현 손익률이 아직 확인되지 않은 주문과 모의 기록은 제외합니다.';
 
 export function StrategyPeriodReturns({ periods, strategyType }) {
   const rows = (periods || []).map((period) => ({

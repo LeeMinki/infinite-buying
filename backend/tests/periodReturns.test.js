@@ -63,6 +63,51 @@ test('기간 수익률: DRY_RUN(모의)·FAILED·매수없는 매도는 손익�
   assert.deepEqual(summarizeByCurrency(records), {});
 });
 
+test('기간 수익률: KR 랭킹은 KIS 실현손익률이 동기화된 거래만 집계한다', async () => {
+  const { collectRankRealizedRecords } = await import('../src/services/autoTradingService.js');
+  const strategy = { id: 77, currency: 'KRW' };
+  const service = {
+    listRoundTripOrders() {
+      return {
+        items: [
+          {
+            sellTime: '2026-06-09 09:10:25',
+            buyPrice: 54500,
+            sellPrice: 55500,
+            buyQuantity: 2,
+            currency: 'KRW',
+            buyStatus: 'FILLED',
+            sellStatus: 'FILLED',
+            profitRate: 0.0183486238,
+            realizedProfitRate: 0.0161,
+            realizedProfitAmount: 1755
+          },
+          {
+            sellTime: '2026-06-09 10:00:00',
+            buyPrice: 10000,
+            sellPrice: 10200,
+            buyQuantity: 1,
+            currency: 'KRW',
+            buyStatus: 'FILLED',
+            sellStatus: 'FILLED',
+            profitRate: 0.02,
+            realizedProfitRate: null,
+            realizedProfitAmount: null
+          }
+        ]
+      };
+    }
+  };
+
+  const records = collectRankRealizedRecords(1, [strategy], service);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].profitAmount, 1755);
+  assert.equal(records[0].baseAmount, 109000);
+  assert.equal(records[0].realizedProfitRate, 0.0161);
+  const byCurrency = summarizeByCurrency(records);
+  assert.ok(Math.abs(byCurrency.KRW.returnRate - 0.0161) < 1e-9);
+});
+
 test('기간 수익률: 기록이 없으면 빈 집계를 돌려준다', () => {
   assert.deepEqual(summarizeByCurrency([]), {});
   assert.deepEqual(buildLaorRealizedRecords([]), []);

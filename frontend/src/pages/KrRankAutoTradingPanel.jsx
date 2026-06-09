@@ -594,7 +594,7 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
           <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 아직 보유 중이면 매도 정보는 진행 중으로 표시됩니다.</p>
         </div>
         <button type="button" className="ghost sm" disabled={syncing} onClick={onSync}>
-          {syncing ? '확인 중…' : 'KIS 체결가 새로 확인'}
+          {syncing ? '확인 중…' : 'KIS 체결·실현손익 새로 확인'}
         </button>
       </div>
       <div className="table-wrap">
@@ -607,7 +607,8 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
               <th>매도 시각</th>
               <th>매도가</th>
               <th>사유</th>
-              <th>손익</th>
+              <th>평가 손익률</th>
+              <th>실현 손익률</th>
               <th>복기</th>
             </tr>
           </thead>
@@ -615,6 +616,8 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
             {orders.map((order) => {
               const profit = Number(order.profitRate);
               const hasProfit = Number.isFinite(profit);
+              const realizedProfit = Number(order.realizedProfitRate);
+              const hasRealizedProfit = Number.isFinite(realizedProfit);
               const replayOpen = replay?.buyOrderId === order.buyOrderId;
               return (
                 <React.Fragment key={`${order.buyOrderId}-${order.sellOrderId || 'open'}`}>
@@ -627,6 +630,9 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
                     <td>{rankOrderReasonText(order)}</td>
                     <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
                       {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : (order.sellTime ? '체결 확인 중' : '-')}
+                    </td>
+                    <td className={hasRealizedProfit ? (realizedProfit >= 0 ? 'positive' : 'negative') : 'neutral'}>
+                      {hasRealizedProfit ? `${realizedProfit >= 0 ? '+' : ''}${(realizedProfit * 100).toFixed(2)}%` : (order.sellTime ? 'KIS 확인 중' : '-')}
                     </td>
                     <td>
                       <button
@@ -641,7 +647,7 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
                   </tr>
                   {replayOpen && (
                     <tr className="replay-result-row">
-                      <td colSpan="8">
+                      <td colSpan="9">
                         <ReplayPanel replay={replay} />
                       </td>
                     </tr>
@@ -649,7 +655,7 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
                 </React.Fragment>
               );
             })}
-            {orders.length === 0 && <tr><td className="empty-row" colSpan="8">아직 주문 이력이 없습니다.</td></tr>}
+            {orders.length === 0 && <tr><td className="empty-row" colSpan="9">아직 주문 이력이 없습니다.</td></tr>}
           </tbody>
         </table>
       </div>

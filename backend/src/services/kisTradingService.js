@@ -43,6 +43,13 @@ export class KisTradingService {
     return this.getOverseasOrderHistory(context, symbol, options);
   }
 
+  async getRealizedProfits(options = {}) {
+    const context = await this.requireAccountContext();
+    const market = normalizeMarket(options.market || 'KR', options.symbol || '');
+    if (market !== 'KR') return [];
+    return this.getDomesticRealizedProfits(context, options);
+  }
+
   async placeBuyOrder(order) {
     const context = await this.requireAccountContext();
     if (normalizeMarket(order.market, order.symbol) === 'KR') {
@@ -336,6 +343,28 @@ export class KisTradingService {
     return pickArray(data.output1 || data.output || data).map((row) => normalizeOrderRow(row, 'KR', 'KRW'));
   }
 
+  async getDomesticRealizedProfits(context, options = {}) {
+    const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
+    const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
+    const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-period-trade-profit', {
+      method: 'GET',
+      trId: 'TTTC8715R',
+      context,
+      query: {
+        CANO: context.accountNumber,
+        ACNT_PRDT_CD: context.accountProductCode,
+        SORT_DVSN: '00',
+        PDNO: options.symbol || '',
+        INQR_STRT_DT: startDate,
+        INQR_END_DT: endDate,
+        CBLC_DVSN: '00',
+        CTX_AREA_FK100: '',
+        CTX_AREA_NK100: ''
+      }
+    });
+    return pickArray(data.output1 || data.output || data).map(normalizeRealizedProfitRow);
+  }
+
   async getOverseasOrderHistory(context, symbol, options = {}) {
     const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
     const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
@@ -590,6 +619,24 @@ function normalizeOrderRow(row, market, currency) {
   };
 }
 
+function normalizeRealizedProfitRow(row) {
+  return {
+    tradeDate: String(row.trad_dt ?? row.tr_dt ?? '').trim() || null,
+    symbol: String(row.pdno ?? row.prdt_code ?? '').trim(),
+    symbolName: String(row.prdt_name ?? row.prdt_name1 ?? '').trim() || null,
+    buyQuantity: signedNum(row.buy_qty),
+    buyAmount: signedNum(row.buy_amt),
+    sellPrice: signedNum(row.sll_pric),
+    sellQuantity: signedNum(row.sll_qty),
+    sellAmount: signedNum(row.sll_amt),
+    realizedProfitAmount: signedNum(row.rlzt_pfls),
+    realizedProfitRate: normalizeSignedRate(row.pfls_rt),
+    feeAmount: signedNum(row.fee),
+    taxAmount: signedNum(row.tl_tax),
+    responsePayloadMasked: maskPayload(row)
+  };
+}
+
 function normalizeSide(value) {
   const text = String(value || '').toUpperCase();
   if (text.includes('SELL') || text.includes('매도') || text === '01') return 'SELL';
@@ -667,9 +714,20 @@ function num(value) {
   return Number.isFinite(n) ? Math.abs(n) : 0;
 }
 
+function signedNum(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const n = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
 function normalizeRate(value) {
   const n = num(value);
   return n > 1 ? n / 100 : n;
+}
+
+function normalizeSignedRate(value) {
+  const n = signedNum(value);
+  return Math.abs(n) > 1 ? n / 100 : n;
 }
 
 function todayCompact() {

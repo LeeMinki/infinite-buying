@@ -85,6 +85,22 @@ router.post('/strategies/:id/sync-fills', async (req, res, next) => {
       strategyId: Number(req.params.id),
       limit: 100
     });
+    const realizedUpdated = await service.syncRealizedProfits(req.userId, {
+      strategyId: Number(req.params.id),
+      limit: 100
+    });
+    res.json({ updatedCount: updated.length, updated, realizedUpdatedCount: realizedUpdated.length, realizedUpdated });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/strategies/:id/sync-realized-profits', async (req, res, next) => {
+  try {
+    const updated = await service.syncRealizedProfits(req.userId, {
+      strategyId: Number(req.params.id),
+      limit: 100
+    });
     res.json({ updatedCount: updated.length, updated });
   } catch (error) {
     next(error);

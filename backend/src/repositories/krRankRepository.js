@@ -322,6 +322,26 @@ export function updateOrder(userId, id, input) {
   return getOrder(userId, id);
 }
 
+export function updateOrderRealizedProfit(userId, id, input) {
+  getDb().prepare(`
+    UPDATE kr_rank_orders
+    SET realized_profit_amount = ?, realized_profit_rate = ?,
+        realized_fee_amount = ?, realized_tax_amount = ?,
+        realized_profit_synced_at = datetime('now'), realized_profit_source = ?,
+        updated_at = datetime('now')
+    WHERE user_id = ? AND id = ?
+  `).run(
+    input.realizedProfitAmount ?? null,
+    input.realizedProfitRate ?? null,
+    input.realizedFeeAmount ?? null,
+    input.realizedTaxAmount ?? null,
+    input.realizedProfitSource || 'KIS_TTTC8715R',
+    userId,
+    id
+  );
+  return getOrder(userId, id);
+}
+
 export function getOrder(userId, id) {
   return toOrder(getDb().prepare('SELECT * FROM kr_rank_orders WHERE user_id = ? AND id = ?').get(userId, id));
 }
@@ -345,6 +365,28 @@ export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 }
         )
       )
     )
+  `;
+  if (strategyId) {
+    where += ' AND strategy_id = ?';
+    params.push(strategyId);
+  }
+  params.push(limit);
+  return getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE ${where}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(...params).map(toOrder);
+}
+
+export function listRealizedProfitSyncCandidates(userId, { strategyId = null, limit = 20 } = {}) {
+  const params = [userId];
+  let where = `
+    user_id = ?
+    AND live_order_enabled = 1
+    AND side = 'SELL'
+    AND status = 'FILLED'
+    AND realized_profit_rate IS NULL
   `;
   if (strategyId) {
     where += ' AND strategy_id = ?';
@@ -414,6 +456,11 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
       s.created_at AS sell_time,
       s.status AS sell_status,
       s.sell_reason,
+      s.realized_profit_amount,
+      s.realized_profit_rate,
+      s.realized_fee_amount,
+      s.realized_tax_amount,
+      s.realized_profit_synced_at,
       CASE
         WHEN s.id IS NULL THEN NULL
         WHEN (
@@ -697,6 +744,11 @@ function toRoundTripOrder(row) {
     sellQuantity: row.sell_quantity,
     sellStatus: row.sell_status,
     sellReason: row.sell_reason,
+    realizedProfitAmount: row.realized_profit_amount,
+    realizedProfitRate: row.realized_profit_rate,
+    realizedFeeAmount: row.realized_fee_amount,
+    realizedTaxAmount: row.realized_tax_amount,
+    realizedProfitSyncedAt: row.realized_profit_synced_at,
     profitRate: row.profit_rate
   };
 }
@@ -742,6 +794,12 @@ function toOrder(row) {
     filledQuantity: row.filled_quantity,
     remainingQuantity: row.remaining_quantity,
     averageFilledPrice: row.average_filled_price,
+    realizedProfitAmount: row.realized_profit_amount,
+    realizedProfitRate: row.realized_profit_rate,
+    realizedFeeAmount: row.realized_fee_amount,
+    realizedTaxAmount: row.realized_tax_amount,
+    realizedProfitSyncedAt: row.realized_profit_synced_at,
+    realizedProfitSource: row.realized_profit_source,
     idempotencyKey: row.idempotency_key,
     decisionReason: row.decision_reason,
     liveOrderEnabled: row.live_order_enabled === 1,

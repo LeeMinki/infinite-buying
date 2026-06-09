@@ -36,6 +36,11 @@ function withMockedFetch(state, run) {
       state.historyUrls = [...(state.historyUrls || []), text];
       return json({ rt_cd: '0', output1: state.history || [] });
     }
+    if (text.includes('/uapi/domestic-stock/v1/trading/inquire-period-trade-profit')) {
+      state.realizedCalls = (state.realizedCalls || 0) + 1;
+      state.realizedUrls = [...(state.realizedUrls || []), text];
+      return json({ rt_cd: '0', output1: state.realized || [] });
+    }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl')) {
       // 미체결 폴백 — 본 테스트에서는 사용되지 않으므로 빈 응답.
       return json({ rt_cd: '0', output: [] });
@@ -209,6 +214,50 @@ test('syncOrderFills: 과거 주문은 주문 생성일 기준 날짜 범위로 
     assert.equal(state.historyCalls, 1);
     assert.match(state.historyUrls[0], /INQR_STRT_DT=20260527/);
     assert.match(state.historyUrls[0], /INQR_END_DT=20260529/);
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('syncRealizedProfits: 매도 체결 후 KIS 실현손익·손익률을 매도 주문에 저장한다', async () => {
+  const strategy = createStrategyForUser();
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  createAcceptedBuyOrder(strategy.id, { kisOrderNo: 'R-BUY-1', symbol: '403870', symbolName: 'HPSP', quantity: 2, orderPrice: 54500 });
+  const sell = createAcceptedSellOrder(strategy.id, { kisOrderNo: 'R-SELL-1', symbol: '403870', symbolName: 'HPSP', quantity: 2, orderPrice: 55500 });
+  repo.updateOrder(user.id, sell.id, {
+    status: 'FILLED',
+    filledQuantity: 2,
+    remainingQuantity: 0,
+    averageFilledPrice: 55500
+  });
+  const state = {
+    realized: [{
+      trad_dt: '20260609',
+      pdno: '403870',
+      prdt_name: 'HPSP',
+      buy_qty: '2',
+      buy_amt: '109000',
+      sll_pric: '55500',
+      sll_qty: '2',
+      sll_amt: '111000',
+      rlzt_pfls: '1755',
+      pfls_rt: '1.61000000',
+      fee: '5',
+      tl_tax: '240'
+    }]
+  };
+  try {
+    await withMockedFetch(state, async () => {
+      const updated = await krRankService.syncRealizedProfits(user.id, { strategyId: strategy.id });
+      assert.equal(updated.length, 1);
+      assert.equal(updated[0].realizedProfitAmount, 1755);
+      assert.equal(updated[0].realizedProfitRate, 0.0161);
+    });
+    const after = repo.getOrder(user.id, sell.id);
+    assert.equal(after.realizedProfitAmount, 1755);
+    assert.equal(after.realizedProfitRate, 0.0161);
+    assert.equal(after.realizedFeeAmount, 5);
+    assert.equal(after.realizedTaxAmount, 240);
   } finally {
     autoTradingRepo.updateLiveOrderSetting(user.id, false);
   }

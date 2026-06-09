@@ -260,7 +260,7 @@ function PeriodReturnsPanel({ periods }) {
       <div className="panel-heading">
         <div>
           <h3>기간별 수익률</h3>
-          <p>매도까지 짝지어진 주문 이력 기준 손익입니다. 체결가가 확인되지 않은 주문은 주문가로 근사하며, 모의(실주문 OFF) 기록은 제외합니다. KRW·USD는 통화별로 따로 합산합니다.</p>
+          <p>매도까지 짝지어진 실주문 손익입니다. 랭킹 전략은 KIS 실현 손익률 기준으로 계산하고, 실현 손익률이 아직 비어 있는 주문과 모의(실주문 OFF) 기록은 제외합니다. KRW·USD는 통화별로 따로 합산합니다.</p>
         </div>
       </div>
       <div className="period-return-grid">
