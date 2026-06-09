@@ -727,7 +727,9 @@ function normalizeRate(value) {
 
 function normalizeSignedRate(value) {
   const n = signedNum(value);
-  return Math.abs(n) > 1 ? n / 100 : n;
+  // KIS *_rt fields are percentage values even when their absolute value is below 1
+  // (for example -0.42629179 means -0.42629179%, not -42.629179%).
+  return n / 100;
 }
 
 function todayCompact() {
