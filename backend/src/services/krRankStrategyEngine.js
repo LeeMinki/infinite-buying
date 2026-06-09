@@ -49,7 +49,8 @@ export const BUY_FILTER_DEFAULTS = {
 export const FAST_STOP_LOSS_DEFAULTS = {
   minLossRate: 0.02,
   highPullbackRate: 0.03,
-  openBreakRate: 0.008
+  openBreakRate: 0.008,
+  maxHoldingMinutes: 20
 };
 
 // 진입 구간. 스케줄러 tick 간격(기본 30초)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
@@ -403,6 +404,12 @@ export function evaluateEntryFailure(candles, opts = {}) {
 }
 
 export function evaluateFastStopLoss(candles, { profitRate = 0, ...opts } = {}) {
+  const maxHoldingMinutes = opts.maxHoldingMinutes ?? FAST_STOP_LOSS_DEFAULTS.maxHoldingMinutes;
+  const holdingMinutes = Number(opts.holdingMinutes);
+  if (Number.isFinite(holdingMinutes) && holdingMinutes > maxHoldingMinutes) {
+    return { failed: false, reason: null };
+  }
+
   const minLossRate = opts.minLossRate ?? FAST_STOP_LOSS_DEFAULTS.minLossRate;
   const currentLossRate = -Number(profitRate || 0);
   if (!Number.isFinite(currentLossRate) || currentLossRate < minLossRate) {

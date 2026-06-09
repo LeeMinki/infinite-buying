@@ -606,6 +606,29 @@ test('evaluateFastStopLoss: 흐름 이탈이 있어도 최소 손실 전에는 �
   assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.025, highPullbackRate: 0.02 }).failed, true);
 });
 
+test('evaluateFastStopLoss: 매수 후 20분이 지나면 진입 실패 빠른손절을 하지 않는다', () => {
+  const candles = [
+    candle('123200', 5600, 5600, 5580, 5600, 1000),
+    candle('130100', 5560, 5560, 5520, 5550, 9799),
+    candle('130200', 5520, 5520, 5520, 5520, 191),
+    candle('130400', 5520, 5520, 5500, 5500, 2801),
+    candle('130500', 5500, 5500, 5480, 5490, 489)
+  ];
+
+  assert.equal(evaluateFastStopLoss(candles, {
+    profitRate: -0.0214,
+    holdingMinutes: 95,
+    highPullbackRate: 0.018,
+    openBreakRate: 0.008
+  }).failed, false);
+  assert.equal(evaluateFastStopLoss(candles, {
+    profitRate: -0.0214,
+    holdingMinutes: 15,
+    highPullbackRate: 0.018,
+    openBreakRate: 0.008
+  }).failed, true);
+});
+
 // ── 진입 기록 승격: 레거시 NO_CANDIDATE → SELECTED ──────────────────────
 test('updateEntrySelection은 NO_CANDIDATE 진입 기록을 SELECTED로 승격한다', () => {
   const strategy = repo.createStrategy(user.id, {
