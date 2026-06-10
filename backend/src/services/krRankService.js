@@ -27,6 +27,14 @@ const BUY_FILTER_CANDIDATE_LIMIT = 5;
 const ORDER_RETRY_LIMIT = 5;
 // 상한가를 조회하지 못했을 때 쓰는 보수적 배수 (가격제한폭 상단 = 전일종가 × 1.3 이하).
 const PRICE_LIMIT_MULTIPLIER = 1.3;
+// 진입 슬리피지 가드: 분봉 필터가 승인한 신호가(가장 최근 완성봉 종가)보다 실행 시점 실시간 현재가가
+// 이 비율 넘게 올라 있으면, 신호가 난 사이 이미 급등한 것으로 보고 추격 매수를 보류한다.
+// (거래 마른 봉 직후 시초 급등을 잡던 사고 방지 — 다음 tick에 신호가 안정되면 다시 본다.)
+const ENTRY_MAX_SLIPPAGE_RATE = 0.007;
+// 진입 매수 지정가 버퍼: 시장가 대신 현재가보다 이만큼 위의 지정가로 매수한다. 정상 호가에서는
+// 시장가처럼 즉시 체결되면서도, 순간 급등으로 호가가 위로 갭하면 꼭대기를 잡지 않게 막는다.
+// (미국 랭킹 전략이 지정가로 매수하는 것과 같은 철학. 호가단위 스냅·올림은 주문 빌더가 처리한다.)
+const ENTRY_LIMIT_BUFFER_RATE = 0.004;
 // 판단 로그·주문 이력·진입 목록 페이징 기본/최대 페이지 크기.
 const PAGE_SIZE_DEFAULT = 50;
 const PAGE_SIZE_MAX = 200;
@@ -417,7 +425,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   });
 }
 
-// 무보유일 때: 진입 구간에서 종목을 골라 시장가 매수한다.
+// 무보유일 때: 진입 구간에서 종목을 골라 현재가 근처 지정가로 매수한다.
 // 진입 기록이 없으면 랭킹을 조회해 새로 만들고, 이미 있으면(아직 매수 전) 그 종목으로 매수를
 // 재시도한다 — 매수가 성공할 때까지(재시도 한도 안에서) 같은 진입 구간을 이어 시도한다.
 async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, evaluationSource }) {
@@ -461,7 +469,10 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       // 다음 tick에 랭킹을 다시 보되, 원인 추적을 위해 스케줄러 SKIP도 판단 로그로 남긴다.
       const reason = candidates.length === 0
         ? `${label} 진입: 등락률 ${maxFluctuationRate * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
-        : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`;
+        : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => {
+            const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
+            return `${nameLabel}: ${r.reason}`;
+          }).join(' / ')}`;
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
       });
@@ -606,7 +617,10 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원(자동 예산 모드)`
         : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
       const rejectionNote = filterResult.rejections.length > 0
-        ? ` 다음 후보도 조건을 통과하지 못했습니다. ${filterResult.rejections.map((r) => `${r.symbol}: ${r.reason}`).join(' / ')}`
+        ? ` 다음 후보도 조건을 통과하지 못했습니다. ${filterResult.rejections.map((r) => {
+            const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
+            return `${nameLabel}: ${r.reason}`;
+          }).join(' / ')}`
         : ' 다음 후보가 없습니다.';
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
@@ -616,7 +630,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     }
   }
 
-  const { currentPrice, cashAvailable, quantity, estimatedAmount } = buyPlan;
+  const { currentPrice, cashAvailable, quantity } = buyPlan;
 
   if (quantity <= 0) {
     return saveDecision(userId, strategy, {
@@ -625,6 +639,12 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       reason: `${label} 진입: ${symbol} 매수가능금액으로 1주도 매수할 수 없습니다.`
     });
   }
+
+  // 시장가 대신 현재가보다 약간 위의 지정가로 매수한다(추격 슬리피지 방지). 정상 호가에서는 즉시
+  // 체결되고, 순간 급등으로 호가가 갭하면 캡 위로는 체결되지 않아 꼭대기를 잡지 않는다.
+  // 수량은 상한가(marginPrice) 기준으로 잡혀 있어 캡 지정가로도 매수가능금액을 넘지 않는다.
+  const limitPrice = Math.max(currentPrice, Math.ceil(currentPrice * (1 + ENTRY_LIMIT_BUFFER_RATE)));
+  const estimatedAmount = quantity * limitPrice;
 
   const openOrders = await safeOpenOrders(trading, symbol);
   const guard = checkOrderSafety({ side: 'BUY', quantity, openOrders, idempotencyKey, cashAvailable, estimatedAmount });
@@ -639,10 +659,11 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
 
   const order = await placeOrder(userId, trading, {
     strategyId: strategy.id, entryId: entry.id, symbol, symbolName, side: 'BUY', entryWindow,
-    quantity, orderPrice: currentPrice, estimatedAmount, idempotencyKey, liveOrderEnabled
+    quantity, orderPrice: limitPrice, estimatedAmount, idempotencyKey, liveOrderEnabled,
+    orderType: 'LIMIT'
   }, {
     liveOrderEnabled,
-    decisionReason: `${label} 진입: ${symbol} ${quantity}주 시장가 매수.`
+    decisionReason: `${label} 진입: ${symbol} ${quantity}주 지정가(${fmt(limitPrice)}원) 매수.`
   });
   // 기록 모드(DRY_RUN)는 실제 주문이 없어 즉시 보유로 시뮬레이션한다.
   // 실주문(ACCEPTED 등)은 접수일 뿐 체결이 아니므로 보유 전환을 미루고, 다음 tick의
@@ -658,7 +679,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     currentPrice, cashAvailable,
     expectedQuantity: quantity, expectedPrice: currentPrice, expectedAmount: estimatedAmount,
     rankingSnapshot, liveOrderEnabled, evaluationSource, orderId: order.id,
-    reason: `${label} 진입: ${symbol} ${quantity}주 시장가 매수. ${orderStatusNote(order, liveOrderEnabled)}`
+    reason: `${label} 진입: ${symbol} ${quantity}주 지정가(${fmt(limitPrice)}원) 매수. ${orderStatusNote(order, liveOrderEnabled)}`
   });
 }
 
@@ -882,7 +903,7 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     ...baseOrder,
     market: 'KR',
     currency: 'KRW',
-    // 기본은 시장가다. 목표 수익 선주문만 지정가로 넘긴다.
+    // 진입 매수·목표 수익 선주문 모두 지정가(LIMIT)로 넘긴다. orderType 미지정 시에만 시장가로 호환.
     orderType: baseOrder.orderType || 'MARKET',
     decisionReason
   };
@@ -1078,15 +1099,15 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
     try {
       candles = await getDomesticTodayMinuteCandles(userId, candidate.symbol);
     } catch (error) {
-      rejections.push({ symbol: candidate.symbol, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
+      rejections.push({ symbol: candidate.symbol, name: candidate.name, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
       continue;
     }
     const check = checkBuyCandidate(candles, { candidate, entryWindow });
     if (!check.ok) {
-      rejections.push({ symbol: candidate.symbol, reason: check.reason });
+      rejections.push({ symbol: candidate.symbol, name: candidate.name, reason: check.reason });
       continue;
     }
-    accepted.push({ picked: candidate, score: check.score ?? 0, rejections });
+    accepted.push({ picked: candidate, score: check.score ?? 0, referencePrice: check.referencePrice ?? 0, rejections });
   }
   accepted.sort((a, b) => b.score - a.score);
   if (!trading || !strategy || !entryWindow) {
@@ -1097,7 +1118,7 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
     try {
       buyPlan = await buildKrBuyPlan(trading, strategy, entryWindow, result.picked);
     } catch (error) {
-      rejections.push({ symbol: result.picked.symbol, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
+      rejections.push({ symbol: result.picked.symbol, name: result.picked.name, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
       continue;
     }
     if (buyPlan.quantity <= 0) {
@@ -1106,7 +1127,19 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
         : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
       rejections.push({
         symbol: result.picked.symbol,
+        name: result.picked.name,
         reason: `${budgetNote}으로 ${fmt(buyPlan.marginPrice)}원 기준 1주도 살 수 없음`
+      });
+      continue;
+    }
+    // 진입 슬리피지 가드: 필터가 승인한 신호가 대비 실시간 현재가가 너무 올랐으면 추격하지 않는다.
+    const referencePrice = Number(result.referencePrice) || 0;
+    if (referencePrice > 0 && buyPlan.currentPrice > referencePrice * (1 + ENTRY_MAX_SLIPPAGE_RATE)) {
+      const slippage = (buyPlan.currentPrice - referencePrice) / referencePrice;
+      rejections.push({
+        symbol: result.picked.symbol,
+        name: result.picked.name,
+        reason: `신호가 ${fmt(referencePrice)}원 대비 현재가 ${fmt(buyPlan.currentPrice)}원으로 ${(slippage * 100).toFixed(1)}% 급등해 추격 매수를 보류함`
       });
       continue;
     }

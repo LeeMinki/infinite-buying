@@ -13,6 +13,10 @@ export const ENTRY_MAX_FLUCTUATION_RATES = {
 export const BUY_FILTER_DEFAULTS = {
   // 최근 거래량 추세 판정용. 직전 N봉 합 / 그 이전 N봉 합 비율이 이 값 미만이면 감소 추세로 본다.
   volumeShrinkRatio: 0.5,
+  // 가장 최근 완성봉에 실제 체결이 없으면(거래량 0) 그 종가는 직전가가 그대로 박힌 유령 가격이라
+  // 단기 흐름·VWAP 이격 판단을 신뢰할 수 없다. 거래가 마른 분봉을 신호로 삼아 다음 봉 시초 급등을
+  // 시장가로 추격하던 슬리피지 사고(예: 한빛소프트 047080)를 막기 위해 최소 거래량을 요구한다.
+  minLastCandleVolume: 1,
   // 장대 음봉 판정 — 몸통(시가-종가)이 시가 대비 이 비율 이상이고 거래량이 최근 평균 대비 이 배수 이상이면 거절.
   bearishBodyMinRate: 0.005,
   bearishVolumeMultiplier: 1.2,
@@ -282,6 +286,13 @@ export function checkBuyCandidate(candles, opts = {}) {
     return { ok: false, reason: `현재가 ${fmtPrice(current)}원이 시가 ${fmtPrice(opening)}원 아래라 매수하지 않습니다.` };
   }
 
+  // 가장 최근 완성봉에 체결이 없으면(거래량 0) current=last.close 가 유령 가격이라 진입 신호로 못 쓴다.
+  const minLastCandleVolume = opts.minLastCandleVolume ?? BUY_FILTER_DEFAULTS.minLastCandleVolume;
+  const lastVolume = Math.max(0, Number(last?.volume) || 0);
+  if (lastVolume < minLastCandleVolume) {
+    return { ok: false, reason: `최근 완성봉(${last?.time || '직전'}) 거래량이 ${lastVolume}이라 실제 체결이 없어 매수하지 않습니다.` };
+  }
+
   const vwap = computeVwap(completedCandles);
   const vwapBufferRate = opts.vwapBufferRate ?? BUY_FILTER_DEFAULTS.vwapBufferRate;
   const requiredVwap = vwap * (1 + vwapBufferRate);
@@ -356,6 +367,8 @@ export function checkBuyCandidate(candles, opts = {}) {
     ok: true,
     reason: null,
     candles: completedCandles,
+    // 필터가 승인한 신호가(가장 최근 완성봉 종가). 실행 시점 실시간 현재가와 비교해 추격 매수를 거른다.
+    referencePrice: current,
     score: scoreBuyCandidate(completedCandles, opts.candidate, opts)
   };
 }

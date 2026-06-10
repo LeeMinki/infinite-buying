@@ -446,6 +446,35 @@ test('checkBuyCandidate: 시가 위 + VWAP 위 + 거래량 유지 + 고점 갱�
   assert.equal(result.ok, true, `필터 통과해야 하는데 거절: ${result.reason}`);
 });
 
+test('checkBuyCandidate: 가장 최근 완성봉 거래량이 0이면 거절(유령 분봉 추격 방지)', () => {
+  // 우상향 흐름이지만 마지막 완성봉에 실제 체결이 없다(거래량 0) → 한빛소프트형 슬리피지 사고 방지.
+  const candles = [
+    candle('090100', 100, 101, 100, 101, 1000),
+    candle('090200', 101, 102, 100, 102, 1000),
+    candle('090300', 102, 103, 101, 103, 1000),
+    candle('090400', 103, 104, 102, 104, 1100),
+    candle('090500', 104, 105, 103, 105, 1200),
+    candle('090600', 105, 106, 104, 106, 0)
+  ];
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /거래량이 0/);
+});
+
+test('checkBuyCandidate: 통과 시 신호가(referencePrice)로 마지막 완성봉 종가를 돌려준다', () => {
+  const candles = [
+    candle('090100', 100, 101, 100, 101, 1000),
+    candle('090200', 101, 102, 100, 102, 1000),
+    candle('090300', 102, 103, 101, 103, 1000),
+    candle('090400', 103, 104, 102, 104, 1100),
+    candle('090500', 104, 105, 103, 105, 1200),
+    candle('090600', 105, 106, 104, 106, 1300)
+  ];
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
+  assert.equal(result.ok, true, result.reason);
+  assert.equal(result.referencePrice, 106);
+});
+
 test('checkBuyCandidate: 현재가가 시가 아래면 거절', () => {
   const candles = [
     candle('090100', 100, 105, 95, 95, 1000),
