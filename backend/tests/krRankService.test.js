@@ -81,7 +81,10 @@ function withMockedFetch(state, run) {
       });
     }
     if (text.includes('/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice')) {
-      return json({ rt_cd: '0', output2: passingMinuteCandles() });
+      // 분봉 종가는 같은 종목의 현재가(inquire-price)와 같은 스케일이어야 진입 슬리피지 가드를 통과한다.
+      const symbol = parsed.searchParams.get('FID_INPUT_ISCD');
+      const base = state.prices?.[symbol] ?? 70_000;
+      return json({ rt_cd: '0', output2: passingMinuteCandles(base) });
     }
     if (text.includes('/uapi/domestic-stock/v1/quotations/inquire-price')) {
       const symbol = parsed.searchParams.get('FID_INPUT_ISCD');
@@ -121,17 +124,18 @@ function withMockedFetch(state, run) {
     });
 }
 
-function passingMinuteCandles() {
+function passingMinuteCandles(base = 70_000) {
   const out = [];
   for (let i = 0; i < 10; i += 1) {
-    const close = 100 + i * 0.5;
+    // base 가격대를 중심으로 완만한 우상향. 마지막 완성봉 종가 ≈ base 라 진입 슬리피지 가드를 통과한다.
+    const close = base * (1 - (9 - i) * 0.002);
     const minute = String(i).padStart(2, '0');
     out.push({
       stck_cntg_hour: `09${minute}00`,
-      stck_oprc: String(close - 1),
-      stck_hgpr: String(close),
-      stck_lwpr: String(close - 2),
-      stck_prpr: String(close),
+      stck_oprc: String(Math.round(close * 0.999)),
+      stck_hgpr: String(Math.round(close)),
+      stck_lwpr: String(Math.round(close * 0.98)),
+      stck_prpr: String(Math.round(close)),
       cntg_vol: '100000'
     });
   }
