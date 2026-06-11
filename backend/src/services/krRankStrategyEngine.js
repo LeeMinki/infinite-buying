@@ -50,9 +50,25 @@ export const BUY_FILTER_DEFAULTS = {
 
 // 빠른 손절 기본값. 분봉 흐름이 깨졌다는 신호만으로 바로 팔지 않고,
 // 실제 손실이 일정 수준 이상일 때만 고정 손절률 전에 방어 매도를 시도한다.
+//
+// 모멘텀주는 진입 직후 흔들기(아래꼬리)로 정상적 변동을 보이는데, 단일 봉·절대 고점 기준·고정
+// 저변동 트리거는 이를 추세 붕괴로 오판해 국소 저점에 매도하는 헛손절을 낸다(엠케이전자 033160,
+// 지놈앤컴퍼니 314130 사례). 이를 막기 위해 세 가지 방어를 둔다.
+//   (1) 확인: 마지막 confirmBars개 완성봉이 VWAP 아래에 연속으로 머물고, 직전 봉 종가를 회복(반등)
+//       하지 않을 때만 붕괴로 본다. 한 봉 아래꼬리로는 발동하지 않는다.
+//   (2) 구조 기준: "절대 고점 대비 N% 되돌림"이 아니라 VWAP 지속 이탈 + 최근 스윙 저점(지지) 이탈로
+//       판정한다. 진입 스파이크 꼬리에 휘둘리지 않는다.
+//   (3) 변동성 적응형 트리거: 손실 하한을 고정값과 최근 ATR(평균 봉 범위)의 배수 중 큰 값으로 둔다.
+//       출렁임이 큰 종목은 더 큰 붕괴가 있어야 발동해 노이즈 손절을 줄인다.
 export const FAST_STOP_LOSS_DEFAULTS = {
+  // (3) 손실 하한(노이즈 컷). 실제 손실이 이 값과 atrLossMultiplier×ATR 중 큰 값을 넘어야 발동.
   minLossRate: 0.02,
-  highPullbackRate: 0.03,
+  atrLossMultiplier: 2.5,
+  atrWindow: 10,
+  // (1) 연속 확인 봉 수. 마지막 N개 완성봉이 모두 붕괴 상태여야 발동.
+  confirmBars: 2,
+  // (2) 지지(스윙 저점) 이탈 판정에 볼 최근 봉 수.
+  swingLowWindow: 10,
   openBreakRate: 0.008,
   maxHoldingMinutes: 20
 };
@@ -373,64 +389,122 @@ export function checkBuyCandidate(candles, opts = {}) {
   };
 }
 
+// 최근 봉의 평균 True Range를 현재가 대비 비율(ATR%)로 돌려준다. 변동성 적응형 빠른손절 트리거용.
+export function computeAtrRate(candles, window = FAST_STOP_LOSS_DEFAULTS.atrWindow) {
+  if (!Array.isArray(candles) || candles.length < 2) return 0;
+  const slice = candles.slice(-window);
+  let sumTr = 0;
+  let count = 0;
+  let lastClose = 0;
+  let prevClose = Number(slice[0]?.close) || 0;
+  for (let i = 0; i < slice.length; i += 1) {
+    const high = Number(slice[i]?.high) || 0;
+    const low = Number(slice[i]?.low) || 0;
+    const close = Number(slice[i]?.close) || 0;
+    if (high <= 0 || low <= 0 || close <= 0) continue;
+    const tr = i === 0 || prevClose <= 0
+      ? high - low
+      : Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    if (tr >= 0) { sumTr += tr; count += 1; }
+    prevClose = close;
+    lastClose = close;
+  }
+  if (count === 0 || lastClose <= 0) return 0;
+  return (sumTr / count) / lastClose;
+}
+
+// 진입 후 흐름이 구조적으로 깨졌는지 판정한다(흔들기와 구분).
+// 발동 조건: 마지막 confirmBars개 완성봉이 VWAP 아래 종가로 연속(확인) + 직전 봉 회복(반등) 없음
+//   + (최근 스윙 저점 이탈[지지 붕괴] 또는 거래량 동반 장대 음봉). 장 초반 기준가 이탈은 보강 신호.
 export function evaluateEntryFailure(candles, opts = {}) {
   const minCandles = opts.minimumCandles ?? BUY_FILTER_DEFAULTS.minimumCandles;
   if (!Array.isArray(candles) || candles.length < minCandles) {
     return { failed: false, reason: null };
   }
   const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
   const opening = Number(candles[0]?.open) || 0;
   const current = Number(last?.close) || 0;
   if (opening <= 0 || current <= 0) return { failed: false, reason: null };
 
   const vwap = computeVwap(candles);
-  const priorSlice = candles.slice(0, -1);
-  const recentHigh = Math.max(...priorSlice.map((c) => Number(c?.high) || 0), Number(last?.high) || 0);
-  const highPullbackRate = recentHigh > 0 ? (recentHigh - current) / recentHigh : 0;
-  const highPullbackThreshold = opts.highPullbackRate ?? 0.018;
-  const openBreakRate = opts.openBreakRate ?? 0.003;
-  const vwapBroken = vwap > 0 && current < vwap;
-  const openBroken = current < opening * (1 - openBreakRate);
-  const highPulledBack = highPullbackRate >= highPullbackThreshold;
-  const volumeWeak = isVolumeDecreasing(candles, opts.trendWindow, opts.volumeShrinkRatio);
-  const bearish = findLargeBearishCandle(candles, opts);
+  if (vwap <= 0) return { failed: false, reason: null };
 
-  if (vwapBroken && highPulledBack) {
+  // (1) 흔들기 반등 보류: 마지막 봉이 직전 봉 종가를 회복하면(상승 전환) 붕괴로 보지 않는다.
+  const prevClose = Number(prev?.close) || 0;
+  if (prevClose > 0 && current > prevClose) {
+    return { failed: false, reason: null };
+  }
+  // (1) 확인: 마지막 confirmBars개 완성봉이 모두 VWAP 아래 종가여야 한다(지속 이탈).
+  const confirmBars = Math.max(1, Math.floor(opts.confirmBars ?? FAST_STOP_LOSS_DEFAULTS.confirmBars));
+  const tail = candles.slice(-confirmBars);
+  const sustainedBelowVwap = tail.length >= confirmBars
+    && tail.every((c) => Number(c?.close || 0) > 0 && Number(c?.close) < vwap);
+  if (!sustainedBelowVwap) {
+    return { failed: false, reason: null };
+  }
+
+  // (2) 구조 기준: 마지막 봉을 뺀 최근 스윙 저점(지지) 아래로 내려갔는가.
+  const swingLowWindow = opts.swingLowWindow ?? FAST_STOP_LOSS_DEFAULTS.swingLowWindow;
+  const priorSlice = candles.slice(-Math.min(swingLowWindow + 1, candles.length), -1);
+  const swingLows = priorSlice.map((c) => Number(c?.low) || Infinity).filter((v) => Number.isFinite(v));
+  const swingLow = swingLows.length ? Math.min(...swingLows) : Infinity;
+  const structureBroken = Number.isFinite(swingLow) && current < swingLow;
+
+  const bearish = findLargeBearishCandle(candles, opts);
+  const openBreakRate = opts.openBreakRate ?? FAST_STOP_LOSS_DEFAULTS.openBreakRate;
+  const openBroken = current < opening * (1 - openBreakRate);
+  const volumeWeak = isVolumeDecreasing(candles, opts.trendWindow, opts.volumeShrinkRatio);
+
+  if (structureBroken) {
     return {
       failed: true,
-      reason: `현재가가 VWAP 아래로 내려갔고 최근 고점 대비 ${(highPullbackRate * 100).toFixed(1)}% 밀렸습니다.`
+      reason: `현재가가 VWAP 아래에서 ${confirmBars}봉 연속 머물고 최근 지지(스윙 저점 ${fmtPrice(swingLow)}원)도 이탈했습니다.`
     };
   }
-  if (openBroken && (volumeWeak || bearish)) {
+  if (bearish) {
     return {
       failed: true,
-      reason: `현재가가 장 초반 기준가 아래로 내려갔고 ${volumeWeak ? '거래량이 줄었습니다' : '거래량을 동반한 음봉이 나왔습니다'}.`
+      reason: `현재가가 VWAP 아래에서 ${confirmBars}봉 연속 머물고 거래량을 동반한 장대 음봉이 나왔습니다.`
     };
   }
-  if (bearish && highPulledBack) {
+  if (openBroken && volumeWeak) {
     return {
       failed: true,
-      reason: `거래량을 동반한 음봉 이후 최근 고점 대비 ${(highPullbackRate * 100).toFixed(1)}% 밀렸습니다.`
+      reason: `현재가가 장 초반 기준가·VWAP 아래로 ${confirmBars}봉 연속 내려갔고 거래량도 줄었습니다.`
     };
   }
   return { failed: false, reason: null };
 }
 
-export function evaluateFastStopLoss(candles, { profitRate = 0, ...opts } = {}) {
+export function evaluateFastStopLoss(candles, { profitRate = 0, useCompletedCandles = false, ...opts } = {}) {
   const maxHoldingMinutes = opts.maxHoldingMinutes ?? FAST_STOP_LOSS_DEFAULTS.maxHoldingMinutes;
   const holdingMinutes = Number(opts.holdingMinutes);
   if (Number.isFinite(holdingMinutes) && holdingMinutes > maxHoldingMinutes) {
     return { failed: false, reason: null };
   }
 
+  // 라이브 평가는 진행 중(미완성) 분봉의 일시적 아래꼬리에 반응하지 않도록 마지막 봉을 떼고 본다.
+  // (KST/ET 시간대에 무관하게 안전하도록 시각 비교 대신 마지막 한 봉만 제거한다.)
+  // 복기/테스트는 평가 봉으로 끝나는 창을 그대로 넘기므로 플래그를 켜지 않는다.
+  const rawCandles = Array.isArray(candles) ? candles : [];
+  const evalCandles = useCompletedCandles && rawCandles.length > 0
+    ? rawCandles.slice(0, -1)
+    : rawCandles;
+
+  // (3) 변동성 적응형 손실 하한: 고정값과 최근 ATR 배수 중 큰 값을 넘어야 빠른손절을 검토한다.
   const minLossRate = opts.minLossRate ?? FAST_STOP_LOSS_DEFAULTS.minLossRate;
+  const atrMultiplier = opts.atrLossMultiplier ?? FAST_STOP_LOSS_DEFAULTS.atrLossMultiplier;
+  const atrRate = computeAtrRate(evalCandles, opts.atrWindow ?? FAST_STOP_LOSS_DEFAULTS.atrWindow);
+  const lossThreshold = Math.max(minLossRate, atrMultiplier * atrRate);
   const currentLossRate = -Number(profitRate || 0);
-  if (!Number.isFinite(currentLossRate) || currentLossRate < minLossRate) {
+  if (!Number.isFinite(currentLossRate) || currentLossRate < lossThreshold) {
     return { failed: false, reason: null };
   }
-  return evaluateEntryFailure(candles, {
+  return evaluateEntryFailure(evalCandles, {
     ...opts,
-    highPullbackRate: opts.highPullbackRate ?? FAST_STOP_LOSS_DEFAULTS.highPullbackRate,
+    confirmBars: opts.confirmBars ?? FAST_STOP_LOSS_DEFAULTS.confirmBars,
+    swingLowWindow: opts.swingLowWindow ?? FAST_STOP_LOSS_DEFAULTS.swingLowWindow,
     openBreakRate: opts.openBreakRate ?? FAST_STOP_LOSS_DEFAULTS.openBreakRate
   });
 }

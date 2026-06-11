@@ -614,25 +614,71 @@ test('scoreBuyCandidate: VWAP 이격이 좋고 덜 밀린 후보를 더 높게 �
   );
 });
 
-test('evaluateEntryFailure: VWAP 이탈과 고점 이탈이 겹치면 흐름 이탈로 본다', () => {
+test('evaluateEntryFailure: VWAP 아래 연속 + 스윙 저점(지지) 이탈이면 흐름 이탈로 본다', () => {
   const candles = [
-    candle('091000', 100, 103, 99, 102, 1000),
+    candle('091000', 100, 103, 100, 102, 1000),
     candle('091100', 102, 105, 101, 104, 1200),
-    candle('091200', 104, 104, 99, 100, 1400)
+    candle('091200', 104, 104, 100, 100, 1400), // VWAP 아래 종가
+    candle('091300', 100, 100, 97, 97, 1600)    // 연속 하회 + 지지(스윙 저점 100) 이탈
   ];
-  const result = evaluateEntryFailure(candles, { highPullbackRate: 0.02 });
+  const result = evaluateEntryFailure(candles);
   assert.equal(result.failed, true);
-  assert.match(result.reason, /VWAP|고점/);
+  assert.match(result.reason, /VWAP|지지|스윙/);
 });
 
-test('evaluateFastStopLoss: 흐름 이탈이 있어도 최소 손실 전에는 빠른 손절하지 않는다', () => {
+test('evaluateEntryFailure (확인): 마지막 봉이 직전 종가를 회복하면(흔들기 반등) 손절하지 않는다', () => {
+  // 엠케이전자 09:41형: 한 봉 아래꼬리 후 같은 봉/다음 봉이 종가를 끌어올린 경우.
   const candles = [
-    candle('091000', 100, 103, 99, 102, 1000),
+    candle('091000', 100, 103, 100, 102, 1000),
     candle('091100', 102, 105, 101, 104, 1200),
-    candle('091200', 104, 104, 99, 100, 1400)
+    candle('091200', 104, 104, 100, 100, 1400), // 눌림
+    candle('091300', 100, 103, 100, 103, 1600)  // 직전 종가 100 회복 → 반등
   ];
-  assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.005, highPullbackRate: 0.02 }).failed, false);
-  assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.025, highPullbackRate: 0.02 }).failed, true);
+  assert.equal(evaluateEntryFailure(candles).failed, false);
+});
+
+test('evaluateEntryFailure (확인): 단일 봉만 VWAP 아래면(연속 미충족) 손절하지 않는다', () => {
+  const candles = [
+    candle('091000', 100, 103, 100, 102, 1000),
+    candle('091100', 102, 105, 101, 104, 1200), // VWAP 위
+    candle('091200', 104, 104, 99, 99, 1400)    // 마지막 봉만 VWAP 아래
+  ];
+  assert.equal(evaluateEntryFailure(candles).failed, false);
+});
+
+test('evaluateFastStopLoss (ATR 적응형): 변동성 큰 종목의 -3.5%는 손절하지 않는다', () => {
+  // 엠케이전자형: 분봉 범위가 큰 종목은 -3.5% 정도는 노이즈라 빠른손절 트리거 미달.
+  const volatile = [
+    candle('093900', 24750, 24800, 24450, 24600, 3000),
+    candle('094000', 24600, 24800, 24400, 24450, 4000),
+    candle('094100', 24450, 24650, 24300, 24450, 5000)
+  ];
+  assert.equal(evaluateFastStopLoss(volatile, { profitRate: -0.035 }).failed, false);
+});
+
+test('evaluateFastStopLoss (ATR 적응형): 변동성 작은 종목의 -2.5% 붕괴는 손절한다', () => {
+  const calm = [
+    candle('091000', 5600, 5610, 5595, 5605, 1000),
+    candle('091100', 5605, 5610, 5590, 5595, 1200),
+    candle('091200', 5595, 5600, 5570, 5575, 1400), // VWAP 아래
+    candle('091300', 5575, 5580, 5550, 5555, 1600)  // 연속 하회 + 지지(5570) 이탈
+  ];
+  assert.equal(evaluateFastStopLoss(calm, { profitRate: -0.005 }).failed, false); // 손실 하한 미달
+  assert.equal(evaluateFastStopLoss(calm, { profitRate: -0.025 }).failed, true);
+});
+
+test('evaluateFastStopLoss (완성봉): useCompletedCandles면 마지막(진행 중) 봉을 빼고 판단한다', () => {
+  // 091000~091300 붕괴 뒤, 진행 중 마지막 봉(091400)이 강하게 반등(직전 종가 회복)한 상태.
+  const candles = [
+    candle('091000', 5600, 5610, 5595, 5605, 1000),
+    candle('091100', 5605, 5610, 5590, 5595, 1200),
+    candle('091200', 5595, 5600, 5570, 5575, 1400),
+    candle('091300', 5575, 5580, 5550, 5555, 1600), // 여기까지 붕괴 확정
+    candle('091400', 5555, 5620, 5555, 5615, 2000)  // 진행 중 봉: 강한 반등(직전 5555 회복)
+  ];
+  // 진행 중 반등 봉을 포함하면 '반등 중'이라 미발동, 빼면 091300까지의 붕괴로 발동.
+  assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.025 }).failed, false);
+  assert.equal(evaluateFastStopLoss(candles, { profitRate: -0.025, useCompletedCandles: true }).failed, true);
 });
 
 test('evaluateFastStopLoss: 매수 후 20분이 지나면 진입 실패 빠른손절을 하지 않는다', () => {
