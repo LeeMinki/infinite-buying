@@ -279,7 +279,8 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
       const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
       const holdingMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
-      const failure = evaluateFastStopLoss(candles, { profitRate, holdingMinutes });
+      // 라이브는 진행 중(미완성) 분봉의 일시적 아래꼬리에 반응하지 않도록 완성봉만 본다.
+      const failure = evaluateFastStopLoss(candles, { profitRate, holdingMinutes, useCompletedCandles: true });
       if (failure.failed) {
         entryFailureReason = failure.reason;
         sell = {

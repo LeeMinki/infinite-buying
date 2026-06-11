@@ -432,9 +432,11 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
       const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
       const failure = evaluateFastStopLoss(candles, {
         profitRate,
+        // 미국장은 변동성이 커 손실 하한을 한 단계 높게 둔다(ATR 적응형과 함께 max로 적용).
         minLossRate: 0.03,
-        highPullbackRate: 0.04,
-        openBreakRate: 0.01
+        openBreakRate: 0.01,
+        // 진행 중(미완성) 분봉의 일시적 아래꼬리에 반응하지 않도록 완성봉만 본다.
+        useCompletedCandles: true
       });
       if (failure.failed) {
         entryFailureReason = failure.reason;
