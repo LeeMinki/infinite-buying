@@ -83,6 +83,10 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice')) {
       // 분봉 종가는 같은 종목의 현재가(inquire-price)와 같은 스케일이어야 진입 슬리피지 가드를 통과한다.
       const symbol = parsed.searchParams.get('FID_INPUT_ISCD');
+      const minuteRows = state.minuteRows?.[symbol] || state.minuteRows;
+      if (minuteRows) {
+        return json({ rt_cd: '0', output2: minuteRows });
+      }
       const base = state.prices?.[symbol] ?? 70_000;
       return json({ rt_cd: '0', output2: passingMinuteCandles(base) });
     }
@@ -140,6 +144,29 @@ function passingMinuteCandles(base = 70_000) {
     });
   }
   return out.reverse();
+}
+
+function weakeningMinuteCandles() {
+  return [
+    ['113000', 5000, 5100, 4980, 5070, 12000],
+    ['113100', 5070, 5120, 5050, 5100, 13000],
+    ['113200', 5100, 5110, 5060, 5080, 11000],
+    ['113300', 5080, 5080, 5000, 5030, 9000],
+    ['113400', 5030, 5040, 4970, 4990, 8000],
+    ['113500', 4990, 5000, 4920, 4950, 7000],
+    ['113600', 4950, 4960, 4880, 4910, 5000],
+    ['113700', 4910, 4920, 4840, 4870, 4000],
+    ['113800', 4870, 4880, 4800, 4830, 3000],
+    ['113900', 4830, 4840, 4760, 4790, 2000],
+    ['114000', 4790, 4800, 4720, 4750, 1000]
+  ].map(([time, open, high, low, close, volume]) => ({
+    stck_cntg_hour: time,
+    stck_oprc: String(open),
+    stck_hgpr: String(high),
+    stck_lwpr: String(low),
+    stck_prpr: String(close),
+    cntg_vol: String(volume)
+  })).reverse();
 }
 
 function json(body) {
@@ -322,6 +349,75 @@ test('한국 랭킹: KIS 체결조회도 미체결로 응답하면 SKIP "보유 
   const after = repo.getEntry(strategy.id, '2026-06-08', 'MORNING');
   assert.equal(after.bought, false);
   assert.equal(after.status, 'SELECTED');
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
+
+test('한국 랭킹: 목표가 주문이 오래 미체결이고 흐름이 무너지면 중기 방어 매도하며 entry_id를 연결한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: true,
+    lunchBudget: 1_000_000,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-06-17', entryWindow: 'LUNCH',
+    status: 'BOUGHT',
+    selectedSymbol: '396300', selectedSymbolName: '세아메카닉스',
+    selectedPrice: 5050, selectedFluctuationRate: 0.14,
+    rankingSnapshot: null, bought: true
+  });
+  repo.setHolding(user.id, strategy.id, {
+    symbol: '396300',
+    symbolName: '세아메카닉스',
+    entryWindow: 'LUNCH'
+  });
+  repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '396300', symbolName: '세아메카닉스',
+    side: 'BUY', entryWindow: 'LUNCH', quantity: 20, orderPrice: 5050, estimatedAmount: 101_000,
+    status: 'FILLED', filledQuantity: 20, remainingQuantity: 0, averageFilledPrice: 5050,
+    idempotencyKey: '20260617-' + strategy.id + '-LUNCH-BUY',
+    decisionReason: '단위 테스트', liveOrderEnabled: false
+  });
+  const target = repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '396300', symbolName: '세아메카닉스',
+    side: 'SELL', sellReason: 'TARGET', entryWindow: 'LUNCH', quantity: 20, orderPrice: 5151, estimatedAmount: 103_020,
+    status: 'DECIDED',
+    idempotencyKey: '20260617-' + strategy.id + '-LUNCH-SELL-TARGET',
+    decisionReason: '단위 테스트', liveOrderEnabled: false
+  });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-06-17 02:30:00', updated_at = '2026-06-17 02:30:00' WHERE id = ?")
+    .run(target.id);
+
+  await withMockedFetch({
+    prices: { '396300': 4880 },
+    minuteRows: { '396300': weakeningMinuteCandles() },
+    holdings: [{
+      pdno: '396300',
+      hldg_qty: '20',
+      pchs_avg_pric: '5050',
+      prpr: '4880'
+    }]
+  }, async () => {
+    await withMockedDate('2026-06-17T04:00:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision.decision, 'SELL');
+      assert.equal(result.decision.sellReason, 'STOP_LOSS');
+      assert.match(result.decision.reason, /중기 방어 손절/);
+      assert.equal(result.order.entryId, entry.id);
+      assert.equal(result.order.sellReason, 'STOP_LOSS');
+      assert.equal(result.order.status, 'DRY_RUN');
+    });
+  });
+
+  const canceledTarget = repo.getOrder(user.id, target.id);
+  assert.equal(canceledTarget.status, 'CANCELED');
 
   autoTradingRepo.updateLiveOrderSetting(user.id, false);
 });
