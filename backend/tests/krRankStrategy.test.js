@@ -22,6 +22,7 @@ import {
   excludedKrRankIssueReason,
   evaluateEntryFailure,
   evaluateFastStopLoss,
+  evaluateMidTradeDefense,
   MAX_FLUCTUATION_RATE,
   maxFluctuationRateForEntryWindow
 } from '../src/services/krRankStrategyEngine.js';
@@ -702,6 +703,50 @@ test('evaluateFastStopLoss: 매수 후 20분이 지나면 진입 실패 빠른�
     highPullbackRate: 0.018,
     openBreakRate: 0.008
   }).failed, true);
+});
+
+test('evaluateMidTradeDefense: 오래 미체결된 목표 주문이 VWAP 아래 약세로 굳으면 방어 손절한다', () => {
+  const candles = [
+    candle('113000', 100, 103, 99, 102, 1200),
+    candle('113100', 102, 104, 101, 103, 1300),
+    candle('113200', 103, 104, 102, 103, 1200),
+    candle('113300', 103, 103, 100, 101, 1000),
+    candle('113400', 101, 102, 99, 100, 900),
+    candle('113500', 100, 101, 98, 99, 800),
+    candle('113600', 99, 100, 97, 98, 700),
+    candle('113700', 98, 99, 96, 97, 600),
+    candle('113800', 97, 98, 95, 96, 500),
+    candle('113900', 96, 97, 94, 95, 400),
+    candle('114000', 95, 96, 93, 94, 300)
+  ];
+  const result = evaluateMidTradeDefense(candles, {
+    profitRate: -0.035,
+    holdingMinutes: 70,
+    targetOrderAgeMinutes: 70
+  });
+  assert.equal(result.defensive, true);
+  assert.match(result.reason, /목표가 주문/);
+});
+
+test('evaluateMidTradeDefense: 목표 주문이 오래되지 않았거나 손실이 작으면 방어 손절하지 않는다', () => {
+  const candles = [
+    candle('113000', 100, 103, 99, 102, 1200),
+    candle('113100', 102, 103, 100, 101, 1100),
+    candle('113200', 101, 102, 98, 99, 900),
+    candle('113300', 99, 100, 97, 98, 800),
+    candle('113400', 98, 99, 96, 97, 700),
+    candle('113500', 97, 98, 95, 96, 600)
+  ];
+  assert.equal(evaluateMidTradeDefense(candles, {
+    profitRate: -0.035,
+    holdingMinutes: 30,
+    targetOrderAgeMinutes: 30
+  }).defensive, false);
+  assert.equal(evaluateMidTradeDefense(candles, {
+    profitRate: -0.015,
+    holdingMinutes: 70,
+    targetOrderAgeMinutes: 70
+  }).defensive, false);
 });
 
 // ── 진입 기록 승격: 레거시 NO_CANDIDATE → SELECTED ──────────────────────

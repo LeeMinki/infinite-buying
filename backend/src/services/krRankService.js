@@ -10,6 +10,7 @@ import {
   selectRankingCandidates,
   computeBuyQuantity,
   evaluateFastStopLoss,
+  evaluateMidTradeDefense,
   evaluateSell,
   kstNowMinutes,
   parseHhmmMinutes,
@@ -38,6 +39,11 @@ const ENTRY_LIMIT_BUFFER_RATE = 0.004;
 // 판단 로그·주문 이력·진입 목록 페이징 기본/최대 페이지 크기.
 const PAGE_SIZE_DEFAULT = 50;
 const PAGE_SIZE_MAX = 200;
+const KIS_CALL_MIN_INTERVAL_MS = 80;
+const KIS_RATE_LIMIT_BACKOFF_MS = 1_500;
+const KIS_BUYING_POWER_CACHE_TTL_MS = 20_000;
+
+const krKisCallStates = new Map();
 
 function normalizePaging({ limit, offset } = {}) {
   const limitNum = Math.min(Math.max(Math.trunc(Number(limit)) || PAGE_SIZE_DEFAULT, 1), PAGE_SIZE_MAX);
@@ -236,8 +242,12 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
 async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, evaluationSource }) {
   const symbol = strategy.holdingSymbol;
   const entryWindow = strategy.holdingEntryWindow || 'MORNING';
-  const price = await trading.getCurrentPrice(symbol, { market: 'KR' });
-  const balance = await trading.getBalance(symbol, { market: 'KR', currency: 'KRW' });
+  const price = await limitedKisCall(userId, `kr-current-price:${symbol}`, () => (
+    trading.getCurrentPrice(symbol, { market: 'KR' })
+  ));
+  const balance = await limitedKisCall(userId, `kr-balance:${symbol}`, () => (
+    trading.getBalance(symbol, { market: 'KR', currency: 'KRW' })
+  ));
   const holdingQuantity = Math.floor(Number(balance.quantity || 0));
   const averagePrice = Number(balance.averagePrice || 0);
   const currentPrice = Number(price.price || 0);
@@ -274,6 +284,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     sellReason: 'TARGET'
   });
   let entryFailureReason = null;
+  let defensiveExitReason = null;
   if (sell.decision === 'HOLD') {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
@@ -288,6 +299,21 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
           sellReason: 'ENTRY_FAILED',
           profitRate: averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0
         };
+      } else {
+        const defense = evaluateMidTradeDefense(candles, {
+          profitRate,
+          holdingMinutes,
+          targetOrderAgeMinutes: holdingMinutes,
+          useCompletedCandles: true
+        });
+        if (defense.defensive) {
+          defensiveExitReason = defense.reason;
+          sell = {
+            decision: 'SELL',
+            sellReason: 'STOP_LOSS',
+            profitRate
+          };
+        }
       }
     } catch {
       // 분봉 확인 실패는 기존 목표/손절 판단에 맡긴다.
@@ -316,7 +342,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   const reasonLabel = sell.sellReason === 'TARGET'
     ? '목표 수익 도달'
     : sell.sellReason === 'STOP_LOSS'
-      ? '손절 기준 도달'
+      ? (defensiveExitReason ? `중기 방어 손절 (${defensiveExitReason})` : '손절 기준 도달')
       : sell.sellReason === 'ENTRY_FAILED'
         ? `빠른 손절${entryFailureReason ? ` (${entryFailureReason})` : ''}`
       : `청산 시각 도달 (${liquidateTime} KST)`;
@@ -380,13 +406,14 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       reason: `${symbol} 매도가 ${ORDER_RETRY_LIMIT}회 실패해 더 시도하지 않습니다. 계좌를 직접 확인하세요.`
     });
   }
-  const openOrders = await safeOpenOrders(trading, symbol);
+  const openOrders = await safeOpenOrders(userId, trading, symbol);
   const guard = checkOrderSafety({
     side: 'SELL', quantity: holdingQuantity, openOrders, idempotencyKey, holdingQuantity
   });
 
   const baseOrder = {
     strategyId: strategy.id,
+    entryId: activeTargetOrder?.entryId ?? findCurrentEntryId(strategy, entryWindow, symbol),
     symbol,
     symbolName: strategy.holdingSymbolName,
     side: 'SELL',
@@ -647,7 +674,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   const limitPrice = Math.max(currentPrice, Math.ceil(currentPrice * (1 + ENTRY_LIMIT_BUFFER_RATE)));
   const estimatedAmount = quantity * limitPrice;
 
-  const openOrders = await safeOpenOrders(trading, symbol);
+  const openOrders = await safeOpenOrders(userId, trading, symbol);
   const guard = checkOrderSafety({ side: 'BUY', quantity, openOrders, idempotencyKey, cashAvailable, estimatedAmount });
   if (!guard.ok) {
     // 안전 검증 미통과 = "지금은 못 함". 주문 행을 만들지 않고 진입 기록은 SELECTED 유지 → 다음 tick 재시도.
@@ -717,10 +744,12 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
       let history = historyCache.get(cacheKey);
       if (history == null) {
         try {
-          history = await trading.getOrderHistory(order.symbol, {
-            market: 'KR',
-            ...dateWindow
-          });
+          history = await limitedKisCall(userId, `kr-order-history:${order.symbol}:${dateWindow.startDate}:${dateWindow.endDate}`, () => (
+            trading.getOrderHistory(order.symbol, {
+              market: 'KR',
+              ...dateWindow
+            })
+          ));
         } catch {
           history = [];
         }
@@ -786,7 +815,9 @@ export async function syncRealizedProfits(userId, { strategyId = null, limit = 2
       let rows = profitCache.get(cacheKey);
       if (rows == null) {
         try {
-          rows = await trading.getRealizedProfits({ market: 'KR', symbol: order.symbol, ...dateWindow });
+          rows = await limitedKisCall(userId, `kr-realized-profit:${order.symbol}:${dateWindow.startDate}:${dateWindow.endDate}`, () => (
+            trading.getRealizedProfits({ market: 'KR', symbol: order.symbol, ...dateWindow })
+          ));
         } catch {
           rows = [];
         }
@@ -829,10 +860,12 @@ async function tryRefreshBuyOrderState(userId, trading, buyOrder) {
   if (!buyOrder?.kisOrderNo) return null;
   try {
     const dateWindow = orderHistoryDateWindow(buyOrder);
-    const history = await trading.getOrderHistory(buyOrder.symbol, {
-      market: 'KR',
-      ...dateWindow
-    });
+    const history = await limitedKisCall(userId, `kr-order-history:${buyOrder.symbol}:${dateWindow.startDate}:${dateWindow.endDate}`, () => (
+      trading.getOrderHistory(buyOrder.symbol, {
+        market: 'KR',
+        ...dateWindow
+      })
+    ));
     const matched = (Array.isArray(history) ? history : []).find((row) => (
       (buyOrder.kisOrderNo && row.orderNo === buyOrder.kisOrderNo)
       || (buyOrder.kisOriginalOrderNo && row.originalOrderNo === buyOrder.kisOriginalOrderNo)
@@ -916,9 +949,11 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     });
   }
   try {
-    const result = baseOrder.side === 'BUY'
-      ? await trading.placeBuyOrder({ ...orderInput })
-      : await trading.placeSellOrder({ ...orderInput });
+    const result = await limitedKisCall(userId, `kr-place-order:${baseOrder.side}:${baseOrder.symbol}`, () => (
+      baseOrder.side === 'BUY'
+        ? trading.placeBuyOrder({ ...orderInput })
+        : trading.placeSellOrder({ ...orderInput })
+    ));
     const created = repo.createOrder(userId, {
       ...orderInput,
       status: result.status || 'ACCEPTED',
@@ -1012,14 +1047,16 @@ async function cancelTargetBeforeDefensiveSell(userId, trading, order) {
     return { ok: false, reason: 'KIS 주문번호가 없어 목표가 주문 취소를 확인할 수 없습니다.' };
   }
   try {
-    await trading.cancelOpenOrder({
-      market: 'KR',
-      symbol: order.symbol,
-      kisOrderNo: order.kisOrderNo,
-      kisOriginalOrderNo: order.kisOriginalOrderNo,
-      quantity: order.quantity,
-      remainingQuantity: order.remainingQuantity ?? order.quantity
-    });
+    await limitedKisCall(userId, `kr-cancel-order:${order.symbol}:${order.kisOrderNo}`, () => (
+      trading.cancelOpenOrder({
+        market: 'KR',
+        symbol: order.symbol,
+        kisOrderNo: order.kisOrderNo,
+        kisOriginalOrderNo: order.kisOriginalOrderNo,
+        quantity: order.quantity,
+        remainingQuantity: order.remainingQuantity ?? order.quantity
+      })
+    ));
     repo.updateOrder(userId, order.id, { status: 'CANCELED' });
     return { ok: true, reason: '기존 목표가 주문을 취소했습니다.' };
   } catch (error) {
@@ -1081,9 +1118,75 @@ function saveSkip(userId, strategy, reason, evaluationSource, { noLog = false } 
   return saveDecision(userId, strategy, { decision: 'SKIP', liveOrderEnabled, evaluationSource, reason, noLog });
 }
 
-async function safeOpenOrders(trading, symbol) {
+async function limitedKisCall(userId, cacheKey, fn, { cacheTtlMs = 0 } = {}) {
+  const state = kisCallState(userId);
+  const effectiveCacheTtlMs = isDateMockedForTest() ? 0 : cacheTtlMs;
+  const now = Date.now();
+  const cached = effectiveCacheTtlMs > 0 ? state.cache.get(cacheKey) : null;
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const run = async () => {
+    const rerunNow = Date.now();
+    const rerunCached = effectiveCacheTtlMs > 0 ? state.cache.get(cacheKey) : null;
+    if (rerunCached && rerunCached.expiresAt > rerunNow) return rerunCached.value;
+
+    const dateMocked = isDateMockedForTest();
+    const minIntervalMs = dateMocked ? 0 : KIS_CALL_MIN_INTERVAL_MS;
+    const waitMs = dateMocked ? 0 : Math.max(0, state.nextAvailableAt - rerunNow, state.backoffUntil - rerunNow);
+    if (waitMs > 0) await sleep(waitMs);
+    state.nextAvailableAt = dateMocked ? 0 : Date.now() + minIntervalMs;
+
+    try {
+      const value = await fn();
+      if (effectiveCacheTtlMs > 0) {
+        state.cache.set(cacheKey, { value, expiresAt: Date.now() + effectiveCacheTtlMs });
+      }
+      return value;
+    } catch (error) {
+      if (isKisRateLimitError(error)) {
+        state.backoffUntil = Date.now() + KIS_RATE_LIMIT_BACKOFF_MS;
+      }
+      throw error;
+    }
+  };
+
+  const queued = state.queue.then(run, run);
+  state.queue = queued.catch(() => {});
+  return queued;
+}
+
+function kisCallState(userId) {
+  const key = String(userId);
+  let state = krKisCallStates.get(key);
+  if (!state) {
+    state = {
+      queue: Promise.resolve(),
+      nextAvailableAt: 0,
+      backoffUntil: 0,
+      cache: new Map()
+    };
+    krKisCallStates.set(key, state);
+  }
+  return state;
+}
+
+function isKisRateLimitError(error) {
+  return /EGW00215|초당 거래건수|rate limit/i.test(String(error?.message || error || ''));
+}
+
+function isDateMockedForTest() {
+  return globalThis.Date?.name === 'FakeDate';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function safeOpenOrders(userId, trading, symbol) {
   try {
-    return await trading.getOpenOrders(symbol, { market: 'KR', currency: 'KRW' });
+    return await limitedKisCall(userId, `kr-open-orders:${symbol}`, () => (
+      trading.getOpenOrders(symbol, { market: 'KR', currency: 'KRW' })
+    ));
   } catch {
     return [];
   }
@@ -1151,8 +1254,12 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
 
 async function buildKrBuyPlan(trading, strategy, entryWindow, candidate) {
   const [priceQuote, buyingPower] = await Promise.all([
-    trading.getCurrentPrice(candidate.symbol, { market: 'KR' }),
-    trading.getBuyingPower(candidate.symbol, { market: 'KR', currency: 'KRW', price: candidate.price })
+    limitedKisCall(strategy.userId, `kr-current-price:${candidate.symbol}`, () => (
+      trading.getCurrentPrice(candidate.symbol, { market: 'KR' })
+    )),
+    limitedKisCall(strategy.userId, `kr-buying-power:${candidate.symbol}:${Math.round(Number(candidate.price) || 0)}`, () => (
+      trading.getBuyingPower(candidate.symbol, { market: 'KR', currency: 'KRW', price: candidate.price })
+    ), { cacheTtlMs: KIS_BUYING_POWER_CACHE_TTL_MS })
   ]);
   const currentPrice = Number(priceQuote.price) || Number(candidate.price) || 0;
   const marginPrice = Number(priceQuote.upperLimitPrice) > 0
@@ -1185,6 +1292,12 @@ function describeBlockedEntryWindow(strategy, holdingEntryWindow, symbol) {
   const currentLabel = ENTRY_WINDOWS[currentWindow].label;
   const holdingLabel = ENTRY_WINDOWS[holdingEntryWindow].label;
   return ` 지금은 ${currentLabel} 진입 구간이지만 ${holdingLabel} 매수분(${symbol}) 보유 중이라 ${currentLabel} 진입을 건너뜁니다.`;
+}
+
+function findCurrentEntryId(strategy, entryWindow, symbol) {
+  const entry = repo.getEntry(strategy.id, kstToday(), entryWindow);
+  if (!entry || entry.selectedSymbol !== symbol) return null;
+  return entry.id;
 }
 
 function orderStatusNote(order, liveOrderEnabled) {

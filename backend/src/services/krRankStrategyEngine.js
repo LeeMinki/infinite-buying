@@ -73,6 +73,17 @@ export const FAST_STOP_LOSS_DEFAULTS = {
   maxHoldingMinutes: 20
 };
 
+// 빠른 손절 시간대를 지난 뒤 천천히 무너지는 보유분을 방어한다.
+// 일반 손절(-5%)까지 기다리기 전에, 목표가 주문이 오래 미체결이고 분봉 흐름이 VWAP 아래로
+// 굳어진 경우에만 방어 매도를 검토한다. 진입 직후 흔들기는 FAST_STOP_LOSS_DEFAULTS가 담당한다.
+export const MID_TRADE_DEFENSE_DEFAULTS = {
+  minHoldingMinutes: 20,
+  minTargetOrderAgeMinutes: 45,
+  minLossRate: 0.03,
+  belowVwapBars: 3,
+  swingLowWindow: 12
+};
+
 // 진입 구간. 스케줄러 tick 간격(기본 30초)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {
   MORNING: { label: '오전', startMinutes: 9 * 60 + 10, endMinutes: 10 * 60 },
@@ -507,6 +518,84 @@ export function evaluateFastStopLoss(candles, { profitRate = 0, useCompletedCand
     swingLowWindow: opts.swingLowWindow ?? FAST_STOP_LOSS_DEFAULTS.swingLowWindow,
     openBreakRate: opts.openBreakRate ?? FAST_STOP_LOSS_DEFAULTS.openBreakRate
   });
+}
+
+export function evaluateMidTradeDefense(candles, {
+  profitRate = 0,
+  holdingMinutes = null,
+  targetOrderAgeMinutes = null,
+  useCompletedCandles = false,
+  ...opts
+} = {}) {
+  const minHoldingMinutes = opts.minHoldingMinutes ?? MID_TRADE_DEFENSE_DEFAULTS.minHoldingMinutes;
+  const held = Number(holdingMinutes);
+  if (!Number.isFinite(held) || held < minHoldingMinutes) {
+    return { defensive: false, reason: null };
+  }
+
+  const minTargetOrderAgeMinutes = opts.minTargetOrderAgeMinutes ?? MID_TRADE_DEFENSE_DEFAULTS.minTargetOrderAgeMinutes;
+  const targetAge = Number(targetOrderAgeMinutes);
+  if (!Number.isFinite(targetAge) || targetAge < minTargetOrderAgeMinutes) {
+    return { defensive: false, reason: null };
+  }
+
+  const minLossRate = opts.minLossRate ?? MID_TRADE_DEFENSE_DEFAULTS.minLossRate;
+  const currentLossRate = -Number(profitRate || 0);
+  if (!Number.isFinite(currentLossRate) || currentLossRate < minLossRate) {
+    return { defensive: false, reason: null };
+  }
+
+  const rawCandles = Array.isArray(candles) ? candles : [];
+  const evalCandles = useCompletedCandles && rawCandles.length > 0
+    ? rawCandles.slice(0, -1)
+    : rawCandles;
+  const minCandles = Math.max(
+    opts.minimumCandles ?? BUY_FILTER_DEFAULTS.minimumCandles,
+    opts.belowVwapBars ?? MID_TRADE_DEFENSE_DEFAULTS.belowVwapBars
+  );
+  if (evalCandles.length < minCandles) {
+    return { defensive: false, reason: null };
+  }
+
+  const vwap = computeVwap(evalCandles);
+  if (vwap <= 0) return { defensive: false, reason: null };
+
+  const belowVwapBars = Math.max(1, Math.floor(opts.belowVwapBars ?? MID_TRADE_DEFENSE_DEFAULTS.belowVwapBars));
+  const tail = evalCandles.slice(-belowVwapBars);
+  const stayedBelowVwap = tail.length >= belowVwapBars
+    && tail.every((c) => Number(c?.close || 0) > 0 && Number(c?.close) < vwap);
+  if (!stayedBelowVwap) {
+    return { defensive: false, reason: null };
+  }
+
+  const last = evalCandles[evalCandles.length - 1];
+  const prev = evalCandles[evalCandles.length - 2];
+  const current = Number(last?.close) || 0;
+  const prevClose = Number(prev?.close) || 0;
+  if (current <= 0) return { defensive: false, reason: null };
+  if (prevClose > 0 && current > prevClose) {
+    return { defensive: false, reason: null };
+  }
+
+  const swingLowWindow = opts.swingLowWindow ?? MID_TRADE_DEFENSE_DEFAULTS.swingLowWindow;
+  const priorSlice = evalCandles.slice(-Math.min(swingLowWindow + 1, evalCandles.length), -1);
+  const swingLows = priorSlice.map((c) => Number(c?.low) || Infinity).filter((v) => Number.isFinite(v));
+  const swingLow = swingLows.length ? Math.min(...swingLows) : Infinity;
+  const structureBroken = Number.isFinite(swingLow) && current < swingLow;
+  const volumeWeak = isVolumeDecreasing(evalCandles, opts.trendWindow, opts.volumeShrinkRatio);
+  const bearish = findLargeBearishCandle(evalCandles, opts);
+
+  if (!structureBroken && !volumeWeak && !bearish) {
+    return { defensive: false, reason: null };
+  }
+
+  const structureNote = structureBroken
+    ? `최근 지지(스윙 저점 ${fmtPrice(swingLow)}원)를 이탈`
+    : (bearish ? '거래량을 동반한 장대 음봉 발생' : '최근 거래량 약화');
+  return {
+    defensive: true,
+    reason: `목표가 주문이 ${Math.floor(targetAge)}분째 미체결이고 손실이 ${(currentLossRate * 100).toFixed(2)}%까지 커진 상태에서, 최근 ${belowVwapBars}개 완성봉이 VWAP 아래에 머물며 ${structureNote}했습니다.`
+  };
 }
 
 function fmtPrice(value) {
