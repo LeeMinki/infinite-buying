@@ -68,9 +68,9 @@ test('모든 종목이 21% 이상이면 후보가 없다', () => {
   assert.equal(selectRankingCandidate(ranking), null);
 });
 
-test('진입 구간별 등락률 상한은 오전·점심 모두 21%를 쓴다', () => {
+test('진입 구간별 등락률 상한은 오전 21%, 점심은 되돌림 위험으로 16%를 쓴다', () => {
   assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.21);
-  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.21);
+  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.16);
   assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
 });
 
@@ -782,7 +782,7 @@ test('evaluateStopLossDeferral: 관찰 한도를 넘는 급락은 유예하지 �
     candle('091200', 96, 96, 90, 91, 2000)
   ];
   const result = evaluateStopLossDeferral(candles, {
-    profitRate: -0.085,
+    profitRate: -0.105,
     stopLossRate: 0.05,
     holdingMinutes: 2
   });
@@ -804,6 +804,41 @@ test('evaluateStopLossDeferral: 관찰 시간이 지난 뒤 구조 붕괴가 확
     holdingMinutes: 7
   });
   assert.equal(result.defer, false);
+});
+
+test('evaluateStopLossDeferral: 직전 분봉이 ATR을 크게 넘는 칼낙이면 시간·구조와 무관하게 손절한다', () => {
+  // 잔잔하던 흐름(저변동성) 뒤 한 봉에서 -6% 칼낙 → 유예하지 않는다.
+  const knife = [
+    candle('091000', 1000, 1002, 999, 1001, 1000),
+    candle('091100', 1001, 1003, 1000, 1002, 1100),
+    candle('091200', 1002, 1003, 1001, 1002, 900),
+    candle('091300', 1002, 1003, 1000, 1001, 1200),
+    candle('091400', 1001, 1001, 940, 942, 3000)
+  ];
+  const result = evaluateStopLossDeferral(knife, {
+    profitRate: -0.055,
+    stopLossRate: 0.05,
+    holdingMinutes: 1
+  });
+  assert.equal(result.defer, false);
+  assert.match(result.reason, /칼낙/);
+});
+
+test('evaluateStopLossDeferral: 하락봉 거래량이 상승봉을 크게 웃도는 분출 매도면 손절한다', () => {
+  // 하락은 완만(칼낙 아님)하지만 하락봉 거래량이 상승봉 평균의 2배 이상 → 분출 매도로 손절.
+  const distribution = [
+    candle('091000', 1000, 1006, 999, 1005, 1000),
+    candle('091100', 1005, 1010, 1004, 1009, 1100),
+    candle('091200', 1009, 1010, 1000, 1001, 9000),
+    candle('091300', 1001, 1002, 994, 995, 9500)
+  ];
+  const result = evaluateStopLossDeferral(distribution, {
+    profitRate: -0.055,
+    stopLossRate: 0.05,
+    holdingMinutes: 1
+  });
+  assert.equal(result.defer, false);
+  assert.match(result.reason, /분출 매도/);
 });
 
 test('evaluateMidTradeDefense: 오래 미체결된 목표 주문이 VWAP 아래 약세로 굳으면 방어 손절한다', () => {

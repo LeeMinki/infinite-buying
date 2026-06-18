@@ -2,11 +2,11 @@
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
 // 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
-// 운영 기준: "상승률 21% 미만"만 매수 후보로 본다.
+// 오전은 21%, 점심은 오전 급등 뒤 되돌림 위험을 줄이기 위해 더 낮은 16%를 쓴다.
 export const MAX_FLUCTUATION_RATE = 0.21;
 export const ENTRY_MAX_FLUCTUATION_RATES = {
   MORNING: 0.21,
-  LUNCH: 0.21
+  LUNCH: 0.16
 };
 
 // 매수 필터 기본값 — 단기 흐름 검사용. krRankBuyFilter 절을 참고.
@@ -94,10 +94,17 @@ export const MID_TRADE_DEFENSE_DEFAULTS = {
 // 다만 실제 폭락을 방치하지 않도록 유예 가능한 최대 손실과 최대 시간은 제한한다.
 export const STOP_LOSS_DEFERRAL_DEFAULTS = {
   maxHoldingMinutes: 10,
-  minObservationMinutes: 6,
-  maxDeferrableLossRate: 0.08,
+  maxDeferrableLossRate: 0.10,
   confirmBars: 3,
-  swingLowWindow: 10
+  swingLowWindow: 10,
+  // 과감한 손절 ①(속도): 직전 완성봉 하락률이 ATR%의 이 배수를 넘고, 절대 하락도 minVelocityCutRate
+  // 이상이면 흔들기가 아니라 칼낙(추세 붕괴)으로 보고 즉시 손절한다.
+  velocityCutAtrMultiplier: 2.5,
+  minVelocityCutRate: 0.025,
+  // 과감한 손절 ②(거래량): 최근 구간 하락봉 평균 거래량이 상승봉 평균의 이 배수 이상이면
+  // 손바뀜이 큰 분출 매도로 보고 즉시 손절한다.
+  climaxVolumeMultiplier: 2.0,
+  volumeWindow: 6
 };
 
 // 진입 구간. 스케줄러 tick 간격(기본 30초)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
@@ -309,6 +316,39 @@ export function computeTurnoverAmount(candles) {
   }, 0);
 }
 
+// 직전 완성봉의 하락률 (이전 종가 대비). 양수면 하락, 0 이하면 보합/상승.
+export function recentBarDropRate(candles) {
+  if (!Array.isArray(candles) || candles.length < 2) return 0;
+  const prevClose = Number(candles[candles.length - 2]?.close) || 0;
+  const lastClose = Number(candles[candles.length - 1]?.close) || 0;
+  if (prevClose <= 0 || lastClose <= 0) return 0;
+  return (prevClose - lastClose) / prevClose;
+}
+
+// 최근 구간 하락봉/상승봉의 평균 거래량 비율. 분출 매도(손바뀜) 판단용.
+// 상승봉 또는 하락봉이 하나도 없으면 비교 불가로 null.
+export function downUpVolumeRatio(candles, window = STOP_LOSS_DEFERRAL_DEFAULTS.volumeWindow) {
+  if (!Array.isArray(candles) || candles.length === 0) return null;
+  const slice = candles.slice(-window);
+  let downVol = 0;
+  let downN = 0;
+  let upVol = 0;
+  let upN = 0;
+  for (const c of slice) {
+    const open = Number(c?.open) || 0;
+    const close = Number(c?.close) || 0;
+    const volume = Math.max(0, Number(c?.volume) || 0);
+    if (open <= 0 || close <= 0 || volume <= 0) continue;
+    if (close < open) { downVol += volume; downN += 1; }
+    else { upVol += volume; upN += 1; }
+  }
+  if (downN === 0 || upN === 0) return null;
+  const downAvg = downVol / downN;
+  const upAvg = upVol / upN;
+  if (upAvg <= 0) return null;
+  return { ratio: downAvg / upAvg, downBars: downN, upBars: upN };
+}
+
 export function scoreBuyCandidate(candles, candidate = {}, opts = {}) {
   const vwap = computeVwap(candles);
   const last = Array.isArray(candles) ? candles[candles.length - 1] : null;
@@ -500,8 +540,12 @@ export function aggregateRankingCandidates(snapshots = [], opts = {}) {
   });
 
   const requireRepeatedAppearance = normalized.length >= minSnapshotsForStability;
-  return Array.from(stats.values())
-    .filter((s) => !requireRepeatedAppearance || s.appearances >= minAppearancesWhenStable)
+  const all = Array.from(stats.values());
+  const repeated = all.filter((s) => s.appearances >= minAppearancesWhenStable);
+  // 평소엔 반복 출현(지속성)한 종목만 후보로 본다. 단, 모든 종목이 1회만 깜빡이고 사라지는
+  // 난조장에서는 반복 후보가 0이 되어 진입 자체가 막힐 수 있으므로, 그때는 1회 출현 후보도 허용한다.
+  const eligible = requireRepeatedAppearance && repeated.length > 0 ? repeated : all;
+  return eligible
     .map((s) => {
       const averageRank = s.rankSum / s.appearances;
       const appearanceRate = normalized.length > 0 ? s.appearances / normalized.length : 0;
@@ -747,7 +791,9 @@ export function evaluateStopLossDeferral(candles, {
 
   const maxHoldingMinutes = opts.maxHoldingMinutes ?? STOP_LOSS_DEFERRAL_DEFAULTS.maxHoldingMinutes;
   const holding = Number(holdingMinutes);
-  if (!Number.isFinite(holding) || holding > maxHoldingMinutes) {
+  // 보유시간을 모르면(매도 대상 주문이 없거나 타임스탬프 누락) "방금 샀다"고 가정하지 않는다.
+  // 유예는 갓 매수했음을 확신할 때만 하는 공격적 선택이라, 알 수 없으면 손절을 그대로 진행한다.
+  if (holdingMinutes == null || !Number.isFinite(holding) || holding > maxHoldingMinutes) {
     return { defer: false, reason: null };
   }
 
@@ -770,27 +816,50 @@ export function evaluateStopLossDeferral(candles, {
     };
   }
 
-  const minObservationMinutes = opts.minObservationMinutes ?? STOP_LOSS_DEFERRAL_DEFAULTS.minObservationMinutes;
-  if (holding < minObservationMinutes) {
+  // 경과 시간(매직넘버 6분)으로 무조건 유예하지 않는다. 유예/손절은 "시계"가 아니라
+  // "시장 성격"(속도·거래량·구조)으로 판단한다. 인내는 손실 한도(maxDeferrableLossRate)와
+  // 보유시간 상한(maxHoldingMinutes)으로만 제한한다.
+
+  // 과감한 손절 ①(속도): 직전 완성봉 하락이 변동성(ATR%)을 크게 초과하는 칼낙이면 즉시 손절.
+  const atrRate = computeAtrRate(evalCandles);
+  const dropRate = recentBarDropRate(evalCandles);
+  const velocityMultiplier = opts.velocityCutAtrMultiplier ?? STOP_LOSS_DEFERRAL_DEFAULTS.velocityCutAtrMultiplier;
+  const minVelocityCutRate = opts.minVelocityCutRate ?? STOP_LOSS_DEFERRAL_DEFAULTS.minVelocityCutRate;
+  if (atrRate > 0 && dropRate >= atrRate * velocityMultiplier && dropRate >= minVelocityCutRate) {
     return {
-      defer: true,
-      reason: `매수 후 ${Math.max(0, Math.floor(holding))}분째라 초기 흔들기 여부를 ${minObservationMinutes}분까지 확인합니다.`
+      defer: false,
+      reason: `직전 분봉 하락률 ${(dropRate * 100).toFixed(2)}%가 변동성(ATR ${(atrRate * 100).toFixed(2)}%)의 ${velocityMultiplier}배를 넘는 칼낙이라 흔들기가 아닌 붕괴로 보고 손절합니다.`
     };
   }
 
+  // 과감한 손절 ②(거래량): 하락봉 평균 거래량이 상승봉 평균을 크게 웃돌면 분출 매도로 보고 즉시 손절.
+  const climaxMultiplier = opts.climaxVolumeMultiplier ?? STOP_LOSS_DEFERRAL_DEFAULTS.climaxVolumeMultiplier;
+  const volProfile = downUpVolumeRatio(evalCandles, opts.volumeWindow ?? STOP_LOSS_DEFERRAL_DEFAULTS.volumeWindow);
+  if (volProfile && volProfile.ratio >= climaxMultiplier) {
+    return {
+      defer: false,
+      reason: `하락봉 평균 거래량이 상승봉 평균의 ${volProfile.ratio.toFixed(2)}배라 분출 매도로 보고 손절합니다.`
+    };
+  }
+
+  // 구조 붕괴 확인: VWAP 아래 지속 이탈 + 지지 붕괴가 확인되면 손절(단일 아래꼬리는 통과).
   const failure = evaluateEntryFailure(evalCandles, {
     ...opts,
     confirmBars: opts.confirmBars ?? STOP_LOSS_DEFERRAL_DEFAULTS.confirmBars,
     swingLowWindow: opts.swingLowWindow ?? STOP_LOSS_DEFERRAL_DEFAULTS.swingLowWindow
   });
-  if (!failure.failed) {
-    return {
-      defer: true,
-      reason: `손실은 ${(currentLossRate * 100).toFixed(2)}%지만 VWAP 아래 지속 이탈과 지지 붕괴가 아직 확인되지 않았습니다.`
-    };
+  if (failure.failed) {
+    return { defer: false, reason: failure.reason };
   }
 
-  return { defer: false, reason: failure.reason };
+  // 칼낙·분출 매도·구조 붕괴 모두 아님 → 초기 흔들기로 보고 유예. 하락봉이 저거래량이면 근거를 덧붙인다.
+  const lowVolumeNote = volProfile && volProfile.ratio < 1
+    ? ` 하락봉 거래량은 상승봉의 ${volProfile.ratio.toFixed(2)}배로 작아 흔들기 가능성이 큽니다.`
+    : '';
+  return {
+    defer: true,
+    reason: `손실은 ${(currentLossRate * 100).toFixed(2)}%지만 칼낙·분출 매도·구조 붕괴가 아직 확인되지 않아 초기 흔들기로 보고 관찰합니다.${lowVolumeNote}`
+  };
 }
 
 function fmtPrice(value) {
