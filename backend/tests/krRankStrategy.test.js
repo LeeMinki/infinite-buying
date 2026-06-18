@@ -7,10 +7,12 @@ import {
   computeBuyQuantity,
   evaluateSell,
   resolveEntryWindow,
+  resolveEntryObservationWindow,
   parseHhmmMinutes,
   kstNowMinutes,
   makeKrRankIdempotencyKey,
   computeVwap,
+  computeTurnoverAmount,
   getCompletedMinuteCandles,
   isVolumeDecreasing,
   findLargeBearishCandle,
@@ -19,6 +21,7 @@ import {
   recentCloseRiseRate,
   scoreBuyCandidate,
   checkBuyCandidate,
+  aggregateRankingCandidates,
   excludedKrRankIssueReason,
   evaluateEntryFailure,
   evaluateFastStopLoss,
@@ -36,37 +39,37 @@ const user = createUser(db, 'kr-rank@example.com');
 
 test.after(() => tmp.cleanup());
 
-// ── 등락률 20% 이상 제외 · 첫 종목 선택 ──────────────────────────────────
+// ── 등락률 21% 이상 제외 · 첫 종목 선택 ──────────────────────────────────
 
-test('등락률 20% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
+test('등락률 21% 이상 종목을 제외하고 남은 첫 종목을 선택한다', () => {
   const ranking = [
     { symbol: '000001', name: '과열', price: 1000, fluctuationRate: 0.25 },
-    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.18 },
+    { symbol: '000002', name: '둘째', price: 2000, fluctuationRate: 0.205 },
     { symbol: '000003', name: '셋째', price: 3000, fluctuationRate: 0.15 }
   ];
   const picked = selectRankingCandidate(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE });
   assert.equal(picked.symbol, '000002');
 });
 
-test('등락률 정확히 20%는 제외한다', () => {
+test('등락률 정확히 21%는 제외한다', () => {
   const ranking = [
-    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.20 },
-    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.199 }
+    { symbol: '000001', name: '경계', price: 1000, fluctuationRate: 0.21 },
+    { symbol: '000002', name: '통과', price: 2000, fluctuationRate: 0.209 }
   ];
   assert.equal(selectRankingCandidate(ranking).symbol, '000002');
 });
 
-test('모든 종목이 20% 이상이면 후보가 없다', () => {
+test('모든 종목이 21% 이상이면 후보가 없다', () => {
   const ranking = [
     { symbol: '000001', name: 'a', price: 1000, fluctuationRate: 0.45 },
-    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.22 }
+    { symbol: '000002', name: 'b', price: 2000, fluctuationRate: 0.21 }
   ];
   assert.equal(selectRankingCandidate(ranking), null);
 });
 
-test('진입 구간별 등락률 상한은 오전 20%, 점심 16%를 쓴다', () => {
-  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.20);
-  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.16);
+test('진입 구간별 등락률 상한은 오전·점심 모두 21%를 쓴다', () => {
+  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.21);
+  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.21);
   assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
 });
 
@@ -365,7 +368,7 @@ test('같은 멱등키 주문은 중복으로 감지된다 (DRY_RUN 기록도 �
 // ── 매수 필터: 단기 흐름 검사 헬퍼 ────────────────────────────────────────
 
 function candle(time, open, high, low, close, volume) {
-  return { time, open, high, low, close, volume };
+  return { time, open, high, low, close, volume: volume === 0 ? 0 : volume * 1_000_000 };
 }
 
 test('selectRankingCandidates는 상한 미만 후보를 순서대로 반환한다', () => {
@@ -390,6 +393,35 @@ test('selectRankingCandidates는 우선주와 상장지수·파생형 상품을 
   assert.deepEqual(selectRankingCandidates(ranking).map((c) => c.symbol), ['000660']);
 });
 
+test('resolveEntryObservationWindow: 09:00~09:10, 11:20~11:30 관찰 구간을 판정한다', () => {
+  assert.equal(resolveEntryObservationWindow(new Date('2026-05-18T00:05:00Z'), { lunchEntryEnabled: false }), 'MORNING');
+  assert.equal(resolveEntryObservationWindow(new Date('2026-05-18T00:10:00Z'), { lunchEntryEnabled: false }), null);
+  assert.equal(resolveEntryObservationWindow(new Date('2026-05-18T02:25:00Z'), { lunchEntryEnabled: false }), null);
+  assert.equal(resolveEntryObservationWindow(new Date('2026-05-18T02:25:00Z'), { lunchEntryEnabled: true }), 'LUNCH');
+  assert.equal(resolveEntryObservationWindow(new Date('2026-05-18T02:30:00Z'), { lunchEntryEnabled: true }), null);
+});
+
+test('aggregateRankingCandidates: 반복 관찰된 후보를 우선한다', () => {
+  const snapshots = [
+    [
+      { symbol: 'AAA', name: '일회성', price: 1000, fluctuationRate: 0.18 },
+      { symbol: 'BBB', name: '지속', price: 2000, fluctuationRate: 0.12 }
+    ],
+    [
+      { symbol: 'CCC', name: '교체', price: 1500, fluctuationRate: 0.16 },
+      { symbol: 'BBB', name: '지속', price: 2100, fluctuationRate: 0.13 }
+    ],
+    [
+      { symbol: 'BBB', name: '지속', price: 2200, fluctuationRate: 0.14 },
+      { symbol: 'DDD', name: '후발', price: 3000, fluctuationRate: 0.10 }
+    ]
+  ];
+  const candidates = aggregateRankingCandidates(snapshots, { maxFluctuationRate: 0.21, candidateLimit: 5 });
+  assert.equal(candidates[0].symbol, 'BBB');
+  assert.equal(candidates.some((c) => c.symbol === 'AAA'), false);
+  assert.equal(candidates[0].observationCount, 3);
+});
+
 test('VWAP은 (고+저+종)/3 가중 평균으로 계산된다', () => {
   const candles = [
     candle('090100', 100, 105, 99, 102, 1000),
@@ -398,6 +430,14 @@ test('VWAP은 (고+저+종)/3 가중 평균으로 계산된다', () => {
   const expected = ((105 + 99 + 102) / 3 * 1000 + (108 + 101 + 107) / 3 * 2000) / 3000;
   const vwap = computeVwap(candles);
   assert.ok(Math.abs(vwap - expected) < 0.0001, `vwap=${vwap} expected=${expected}`);
+});
+
+test('거래대금은 종가×거래량 합으로 계산한다', () => {
+  const turnover = computeTurnoverAmount([
+    { close: 1000, volume: 10 },
+    { close: 1200, volume: 20 }
+  ]);
+  assert.equal(turnover, 34_000);
 });
 
 test('거래량이 직전 구간 대비 크게 줄면 감소 추세로 본다', () => {
@@ -460,6 +500,18 @@ test('checkBuyCandidate: 가장 최근 완성봉 거래량이 0이면 거절(유
   const result = checkBuyCandidate(candles, { useCompletedCandles: false });
   assert.equal(result.ok, false);
   assert.match(result.reason, /거래량이 0/);
+});
+
+test('checkBuyCandidate: 관찰 구간 거래대금이 부족하면 저유동성으로 거절한다', () => {
+  const candles = [
+    { time: '090100', open: 1000, high: 1010, low: 1000, close: 1010, volume: 1000 },
+    { time: '090200', open: 1010, high: 1020, low: 1005, close: 1020, volume: 1000 },
+    { time: '090300', open: 1020, high: 1030, low: 1010, close: 1030, volume: 1000 },
+    { time: '090400', open: 1030, high: 1040, low: 1020, close: 1040, volume: 1000 }
+  ];
+  const result = checkBuyCandidate(candles, { useCompletedCandles: false });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /거래대금|저유동성/);
 });
 
 test('checkBuyCandidate: 통과 시 신호가(referencePrice)로 마지막 완성봉 종가를 돌려준다', () => {

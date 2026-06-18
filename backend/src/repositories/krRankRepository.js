@@ -259,6 +259,36 @@ export function countEntries(userId, strategyId) {
   ).get(userId, strategyId).n;
 }
 
+// ── 진입 전 랭킹 관찰 ─────────────────────────────────────────────────────
+
+export function createObservation(userId, input) {
+  const result = getDb().prepare(`
+    INSERT INTO kr_rank_observations (
+      user_id, strategy_id, trade_date, entry_window, ranking_snapshot
+    ) VALUES (?, ?, ?, ?, ?)
+  `).run(
+    userId,
+    input.strategyId,
+    input.tradeDate,
+    input.entryWindow,
+    JSON.stringify(input.rankingSnapshot || [])
+  );
+  return getObservationById(result.lastInsertRowid);
+}
+
+export function listObservations(strategyId, tradeDate, entryWindow, { limit = 30 } = {}) {
+  return getDb().prepare(`
+    SELECT * FROM kr_rank_observations
+    WHERE strategy_id = ? AND trade_date = ? AND entry_window = ?
+    ORDER BY observed_at DESC, id DESC
+    LIMIT ?
+  `).all(strategyId, tradeDate, entryWindow, limit).reverse().map(toObservation);
+}
+
+export function getObservationById(id) {
+  return toObservation(getDb().prepare('SELECT * FROM kr_rank_observations WHERE id = ?').get(id));
+}
+
 // ── 주문 ──────────────────────────────────────────────────────────────────
 
 export function createOrder(userId, input) {
@@ -769,6 +799,19 @@ function toEntry(row) {
     bought: row.bought === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function toObservation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    strategyId: row.strategy_id,
+    tradeDate: row.trade_date,
+    entryWindow: row.entry_window,
+    rankingSnapshot: parseJson(row.ranking_snapshot) || [],
+    observedAt: row.observed_at,
+    createdAt: row.created_at
   };
 }
 
