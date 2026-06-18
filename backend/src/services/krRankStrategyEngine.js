@@ -90,6 +90,16 @@ export const MID_TRADE_DEFENSE_DEFAULTS = {
   swingLowWindow: 12
 };
 
+// 고정 손절선에 닿았더라도 매수 직후 흔들기 가능성이 높으면 즉시 매도하지 않고 확인한다.
+// 다만 실제 폭락을 방치하지 않도록 유예 가능한 최대 손실과 최대 시간은 제한한다.
+export const STOP_LOSS_DEFERRAL_DEFAULTS = {
+  maxHoldingMinutes: 10,
+  minObservationMinutes: 6,
+  maxDeferrableLossRate: 0.08,
+  confirmBars: 3,
+  swingLowWindow: 10
+};
+
 // 진입 구간. 스케줄러 tick 간격(기본 30초)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {
   MORNING: { label: '오전', startMinutes: 9 * 60 + 10, endMinutes: 10 * 60 },
@@ -719,6 +729,68 @@ export function evaluateMidTradeDefense(candles, {
     defensive: true,
     reason: `목표가 주문이 ${Math.floor(targetAge)}분째 미체결이고 손실이 ${(currentLossRate * 100).toFixed(2)}%까지 커진 상태에서, 최근 ${belowVwapBars}개 완성봉이 VWAP 아래에 머물며 ${structureNote}했습니다.`
   };
+}
+
+export function evaluateStopLossDeferral(candles, {
+  profitRate = 0,
+  stopLossRate = 0.05,
+  holdingMinutes = null,
+  useCompletedCandles = false,
+  ...opts
+} = {}) {
+  const currentLossRate = -Number(profitRate || 0);
+  const configuredStopLossRate = Number(stopLossRate);
+  if (!Number.isFinite(currentLossRate) || currentLossRate <= 0) return { defer: false, reason: null };
+  if (Number.isFinite(configuredStopLossRate) && currentLossRate < configuredStopLossRate) {
+    return { defer: false, reason: null };
+  }
+
+  const maxHoldingMinutes = opts.maxHoldingMinutes ?? STOP_LOSS_DEFERRAL_DEFAULTS.maxHoldingMinutes;
+  const holding = Number(holdingMinutes);
+  if (!Number.isFinite(holding) || holding > maxHoldingMinutes) {
+    return { defer: false, reason: null };
+  }
+
+  const maxDeferrableLossRate = opts.maxDeferrableLossRate ?? STOP_LOSS_DEFERRAL_DEFAULTS.maxDeferrableLossRate;
+  if (currentLossRate >= maxDeferrableLossRate) {
+    return {
+      defer: false,
+      reason: `손실이 ${(currentLossRate * 100).toFixed(2)}%로 흔들기 관찰 한도 ${(maxDeferrableLossRate * 100).toFixed(1)}%를 넘었습니다.`
+    };
+  }
+
+  const rawCandles = Array.isArray(candles) ? candles : [];
+  const evalCandles = useCompletedCandles && rawCandles.length > 0
+    ? rawCandles.slice(0, -1)
+    : rawCandles;
+  if (evalCandles.length < BUY_FILTER_DEFAULTS.minimumCandles) {
+    return {
+      defer: true,
+      reason: '완성 분봉이 부족해 손절선 이탈이 실제 추세 붕괴인지 아직 확인되지 않았습니다.'
+    };
+  }
+
+  const minObservationMinutes = opts.minObservationMinutes ?? STOP_LOSS_DEFERRAL_DEFAULTS.minObservationMinutes;
+  if (holding < minObservationMinutes) {
+    return {
+      defer: true,
+      reason: `매수 후 ${Math.max(0, Math.floor(holding))}분째라 초기 흔들기 여부를 ${minObservationMinutes}분까지 확인합니다.`
+    };
+  }
+
+  const failure = evaluateEntryFailure(evalCandles, {
+    ...opts,
+    confirmBars: opts.confirmBars ?? STOP_LOSS_DEFERRAL_DEFAULTS.confirmBars,
+    swingLowWindow: opts.swingLowWindow ?? STOP_LOSS_DEFERRAL_DEFAULTS.swingLowWindow
+  });
+  if (!failure.failed) {
+    return {
+      defer: true,
+      reason: `손실은 ${(currentLossRate * 100).toFixed(2)}%지만 VWAP 아래 지속 이탈과 지지 붕괴가 아직 확인되지 않았습니다.`
+    };
+  }
+
+  return { defer: false, reason: failure.reason };
 }
 
 function fmtPrice(value) {

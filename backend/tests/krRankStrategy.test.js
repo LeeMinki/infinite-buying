@@ -26,6 +26,7 @@ import {
   evaluateEntryFailure,
   evaluateFastStopLoss,
   evaluateMidTradeDefense,
+  evaluateStopLossDeferral,
   MAX_FLUCTUATION_RATE,
   maxFluctuationRateForEntryWindow
 } from '../src/services/krRankStrategyEngine.js';
@@ -755,6 +756,54 @@ test('evaluateFastStopLoss: 매수 후 20분이 지나면 진입 실패 빠른�
     highPullbackRate: 0.018,
     openBreakRate: 0.008
   }).failed, true);
+});
+
+test('evaluateStopLossDeferral: 매수 직후 손절선 터치는 초기 흔들기로 보고 유예한다', () => {
+  const vcLike = [
+    candle('090000', 2360, 2410, 2360, 2410, 893),
+    candle('090100', 2425, 2580, 2425, 2580, 2919),
+    candle('091000', 2540, 2600, 2530, 2575, 2638),
+    candle('091100', 2565, 2575, 2560, 2575, 126),
+    candle('091200', 2575, 2575, 2415, 2420, 960)
+  ];
+  const result = evaluateStopLossDeferral(vcLike, {
+    profitRate: -0.0613,
+    stopLossRate: 0.05,
+    holdingMinutes: 1
+  });
+  assert.equal(result.defer, true);
+  assert.match(result.reason, /초기 흔들기|확인/);
+});
+
+test('evaluateStopLossDeferral: 관찰 한도를 넘는 급락은 유예하지 않는다', () => {
+  const candles = [
+    candle('091000', 100, 101, 99, 100, 1000),
+    candle('091100', 100, 101, 95, 96, 1200),
+    candle('091200', 96, 96, 90, 91, 2000)
+  ];
+  const result = evaluateStopLossDeferral(candles, {
+    profitRate: -0.085,
+    stopLossRate: 0.05,
+    holdingMinutes: 2
+  });
+  assert.equal(result.defer, false);
+  assert.match(result.reason, /한도/);
+});
+
+test('evaluateStopLossDeferral: 관찰 시간이 지난 뒤 구조 붕괴가 확인되면 유예하지 않는다', () => {
+  const broken = [
+    candle('091000', 100, 104, 99, 103, 5000),
+    candle('091100', 103, 104, 101, 102, 5000),
+    candle('091200', 96, 97, 94, 95, 2000),
+    candle('091300', 95, 95, 92, 93, 2200),
+    candle('091400', 93, 93, 89, 90, 2400)
+  ];
+  const result = evaluateStopLossDeferral(broken, {
+    profitRate: -0.06,
+    stopLossRate: 0.05,
+    holdingMinutes: 7
+  });
+  assert.equal(result.defer, false);
 });
 
 test('evaluateMidTradeDefense: 오래 미체결된 목표 주문이 VWAP 아래 약세로 굳으면 방어 손절한다', () => {

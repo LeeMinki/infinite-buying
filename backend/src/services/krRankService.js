@@ -13,6 +13,7 @@ import {
   computeBuyQuantity,
   evaluateFastStopLoss,
   evaluateMidTradeDefense,
+  evaluateStopLossDeferral,
   evaluateSell,
   kstNowMinutes,
   parseHhmmMinutes,
@@ -311,6 +312,36 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   });
   let entryFailureReason = null;
   let defensiveExitReason = null;
+  if (sell.decision === 'SELL' && sell.sellReason === 'STOP_LOSS') {
+    try {
+      const candles = await getDomesticTodayMinuteCandles(userId, symbol);
+      const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
+      const holdingMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
+      const deferral = evaluateStopLossDeferral(candles, {
+        profitRate,
+        stopLossRate,
+        holdingMinutes,
+        useCompletedCandles: true
+      });
+      if (deferral.defer) {
+        const profitPct = (profitRate * 100).toFixed(2);
+        return saveDecision(userId, strategy, {
+          decision: 'HOLD',
+          entryWindow,
+          selectedSymbol: symbol,
+          selectedSymbolName: strategy.holdingSymbolName,
+          currentPrice,
+          averagePrice,
+          holdingQuantity,
+          liveOrderEnabled,
+          evaluationSource,
+          reason: `${symbol} 손절 기준에 닿았지만(수익률 ${profitPct}%) ${deferral.reason} 목표가 주문은 유지하고 다음 평가에서 다시 확인합니다.`
+        });
+      }
+    } catch {
+      // 분봉 확인 실패는 기존 고정 손절 판단에 맡긴다.
+    }
+  }
   if (sell.decision === 'HOLD') {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
