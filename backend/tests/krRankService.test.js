@@ -495,7 +495,7 @@ test('한국 랭킹: 매수 직후 손절선 터치가 초기 흔들기면 고�
       const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
       assert.equal(result.decision.decision, 'HOLD');
       assert.match(result.decision.reason, /손절 기준에 닿았지만/);
-      assert.match(result.decision.reason, /초기 흔들기/);
+      assert.match(result.decision.reason, /초기 흔들기로 보고 관찰/);
       assert.equal(result.order, null);
     });
   });

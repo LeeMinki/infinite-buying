@@ -28,6 +28,8 @@ const RANKING_SNAPSHOT_SIZE = 30;
 // 상위 후보들을 점수화해 고르되, 너무 크면 KIS 호출이 늘어 rate limit 위험이 있어 제한한다.
 const BUY_FILTER_CANDIDATE_LIMIT = 5;
 const RANKING_OBSERVATION_LIMIT = 30;
+// 진입 전 랭킹 관찰 스냅샷 보존 기간(일). 지속성 백테스트용으로 충분히 남기되 무한 증가는 막는다.
+const OBSERVATION_RETENTION_DAYS = 30;
 // 같은 (날짜·전략·구간·방향) 주문이 실패로 누적되면 더 시도하지 않는 한도.
 const ORDER_RETRY_LIMIT = 5;
 // 상한가를 조회하지 못했을 때 쓰는 보수적 배수 (가격제한폭 상단 = 전일종가 × 1.3 이하).
@@ -191,6 +193,7 @@ export async function evaluateRunningStrategies() {
 
 async function evaluateUnlocked(userId, strategy, evaluationSource) {
   const liveOrderEnabled = resolveLiveOrderEnabled(userId);
+  pruneOldObservationsOncePerDay();
   // 1분 폴링이라 할 일이 없는 tick은 KIS 호출 없이 일찍 끝낸다.
   // 무보유이고 진입 구간이 아니거나, 이미 그 구간 진입을 마쳤으면 바로 종료한다.
   const noLogIfScheduled = evaluationSource !== 'MANUAL';
@@ -1492,6 +1495,29 @@ function kstToday() {
   const m = String(kst.getMonth() + 1).padStart(2, '0');
   const d = String(kst.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+// KST 기준 오늘로부터 days일 이전 날짜(YYYY-MM-DD).
+function kstDateBefore(days) {
+  const kst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  kst.setDate(kst.getDate() - days);
+  const y = kst.getFullYear();
+  const m = String(kst.getMonth() + 1).padStart(2, '0');
+  const d = String(kst.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// 관찰 스냅샷 보존 정리. 매 tick 호출되지만 하루 한 번만 실제로 DELETE 한다.
+let lastObservationPruneDate = null;
+function pruneOldObservationsOncePerDay() {
+  const today = kstToday();
+  if (lastObservationPruneDate === today) return;
+  lastObservationPruneDate = today;
+  try {
+    repo.deleteObservationsBefore(kstDateBefore(OBSERVATION_RETENTION_DAYS));
+  } catch {
+    // 정리 실패는 매매에 영향을 주지 않으므로 무시한다(다음 날 다시 시도).
+  }
 }
 
 function fmt(value) {

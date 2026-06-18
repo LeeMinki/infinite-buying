@@ -289,6 +289,13 @@ export function getObservationById(id) {
   return toObservation(getDb().prepare('SELECT * FROM kr_rank_observations WHERE id = ?').get(id));
 }
 
+// 보존 기간이 지난 관찰 스냅샷을 삭제한다. trade_date 가 cutoff(YYYY-MM-DD) 미만이면 제거.
+export function deleteObservationsBefore(cutoffTradeDate) {
+  return getDb()
+    .prepare('DELETE FROM kr_rank_observations WHERE trade_date < ?')
+    .run(cutoffTradeDate).changes;
+}
+
 // ── 주문 ──────────────────────────────────────────────────────────────────
 
 export function createOrder(userId, input) {
