@@ -169,6 +169,23 @@ function weakeningMinuteCandles() {
   })).reverse();
 }
 
+function shakeoutMinuteCandles() {
+  return [
+    ['090000', 2360, 2410, 2360, 2410, 893],
+    ['090100', 2425, 2580, 2425, 2580, 2919],
+    ['091000', 2540, 2600, 2530, 2575, 2638],
+    ['091100', 2565, 2575, 2560, 2575, 126],
+    ['091200', 2575, 2575, 2415, 2420, 960]
+  ].map(([time, open, high, low, close, volume]) => ({
+    stck_cntg_hour: time,
+    stck_oprc: String(open),
+    stck_hgpr: String(high),
+    stck_lwpr: String(low),
+    stck_prpr: String(close),
+    cntg_vol: String(volume)
+  })).reverse();
+}
+
 function json(body) {
   return { ok: true, status: 200, json: async () => body };
 }
@@ -422,6 +439,76 @@ test('한국 랭킹: 목표가 주문이 오래 미체결이고 흐름이 무너
   autoTradingRepo.updateLiveOrderSetting(user.id, false);
 });
 
+test('한국 랭킹: 매수 직후 손절선 터치가 초기 흔들기면 고정 손절을 유예한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-06-18', entryWindow: 'MORNING',
+    status: 'BOUGHT',
+    selectedSymbol: '365900', selectedSymbolName: '브이씨',
+    selectedPrice: 2575, selectedFluctuationRate: 0.0962,
+    rankingSnapshot: null, bought: true
+  });
+  repo.setHolding(user.id, strategy.id, {
+    symbol: '365900',
+    symbolName: '브이씨',
+    entryWindow: 'MORNING'
+  });
+  repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '365900', symbolName: '브이씨',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 43, orderPrice: 2576, estimatedAmount: 110_768,
+    status: 'FILLED', filledQuantity: 43, remainingQuantity: 0, averageFilledPrice: 2572,
+    idempotencyKey: '20260618-' + strategy.id + '-MORNING-BUY',
+    decisionReason: '단위 테스트', liveOrderEnabled: false
+  });
+  const target = repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '365900', symbolName: '브이씨',
+    side: 'SELL', sellReason: 'TARGET', entryWindow: 'MORNING', quantity: 43, orderPrice: 2624, estimatedAmount: 112_832,
+    status: 'DECIDED',
+    idempotencyKey: '20260618-' + strategy.id + '-MORNING-SELL-TARGET',
+    decisionReason: '단위 테스트', liveOrderEnabled: false
+  });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-06-18 00:11:29', updated_at = '2026-06-18 00:11:29' WHERE id = ?")
+    .run(target.id);
+
+  await withMockedFetch({
+    prices: { '365900': 2415 },
+    minuteRows: { '365900': shakeoutMinuteCandles() },
+    holdings: [{
+      pdno: '365900',
+      hldg_qty: '43',
+      pchs_avg_pric: '2572',
+      prpr: '2415'
+    }]
+  }, async () => {
+    await withMockedDate('2026-06-18T00:12:56Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision.decision, 'HOLD');
+      assert.match(result.decision.reason, /손절 기준에 닿았지만/);
+      assert.match(result.decision.reason, /초기 흔들기/);
+      assert.equal(result.order, null);
+    });
+  });
+
+  const refreshedTarget = repo.getOrder(user.id, target.id);
+  assert.equal(refreshedTarget.status, 'DECIDED');
+  const stopLossOrder = repo.listOrders(user.id, { strategyId: strategy.id })
+    .find((order) => order.side === 'SELL' && order.sellReason === 'STOP_LOSS');
+  assert.equal(stopLossOrder, undefined);
+
+  autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
+
 test('한국 랭킹은 매수가능금액으로 1주도 못 사는 후보를 건너뛰고 다음 후보를 산다', async () => {
   await withMockedFetch({
     cash: 158_105,
@@ -473,6 +560,85 @@ test('한국 랭킹 스케줄러: 진입 구간 밖 idle SKIP은 판단 로그�
 
   const after = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
   assert.equal(after, before);
+});
+
+test('한국 랭킹 스케줄러: 09:00~09:10 사전 관찰 구간에는 매수하지 않고 랭킹만 저장한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  const beforeLogs = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+  const state = { cash: 1_000_000, prices: { '005930': 70_000 } };
+
+  await withMockedFetch(state, async () => {
+    await withMockedDate('2026-06-08T00:05:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision, null);
+      assert.equal(state.orderCalls || 0, 0);
+    });
+  });
+
+  const observations = repo.listObservations(strategy.id, '2026-06-08', 'MORNING');
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].rankingSnapshot[0].symbol, '018260');
+  const afterLogs = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 }).length;
+  assert.equal(afterLogs, beforeLogs);
+});
+
+test('한국 랭킹: 사전 관찰에 반복 등장한 후보를 진입 시점에 매수한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  repo.createObservation(user.id, {
+    strategyId: strategy.id,
+    tradeDate: '2026-06-08',
+    entryWindow: 'MORNING',
+    rankingSnapshot: [
+      { symbol: '111111', name: '일회성', price: 10_000, fluctuationRate: 0.18 },
+      { symbol: '005930', name: '삼성전자', price: 70_000, fluctuationRate: 0.10 }
+    ]
+  });
+  repo.createObservation(user.id, {
+    strategyId: strategy.id,
+    tradeDate: '2026-06-08',
+    entryWindow: 'MORNING',
+    rankingSnapshot: [
+      { symbol: '222222', name: '교체', price: 12_000, fluctuationRate: 0.17 },
+      { symbol: '005930', name: '삼성전자', price: 70_000, fluctuationRate: 0.11 }
+    ]
+  });
+  const state = {
+    cash: 1_000_000,
+    prices: { '005930': 70_000, '333333': 10_000 },
+    rankingRows: [
+      { stck_shrn_iscd: '333333', hts_kor_isnm: '최신급등', stck_prpr: '10000', prdy_ctrt: '18.0' },
+      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '12.0' }
+    ]
+  };
+
+  await withMockedFetch(state, async () => {
+    await withMockedDate('2026-06-08T00:10:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision.decision, 'BUY');
+      assert.equal(result.decision.selectedSymbol, '005930');
+      assert.equal(result.order.symbol, '005930');
+    });
+  });
 });
 
 test('한국 랭킹 수동 평가: 진입 구간 밖 SKIP은 판단 로그를 남긴다', async () => {

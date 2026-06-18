@@ -6,11 +6,14 @@ import { getValidAccessToken } from './kisTokenManager.js';
 import { getDomesticFluctuationRanking, getDomesticTodayMinuteCandles, getDomesticHolidays } from './marketDataService.js';
 import {
   ENTRY_WINDOWS,
+  aggregateRankingCandidates,
   resolveEntryWindow,
+  resolveEntryObservationWindow,
   selectRankingCandidates,
   computeBuyQuantity,
   evaluateFastStopLoss,
   evaluateMidTradeDefense,
+  evaluateStopLossDeferral,
   evaluateSell,
   kstNowMinutes,
   parseHhmmMinutes,
@@ -24,6 +27,7 @@ const RANKING_SNAPSHOT_SIZE = 30;
 // 매수 필터(분봉 단기 흐름 검사)에서 검사할 상위 후보 개수.
 // 상위 후보들을 점수화해 고르되, 너무 크면 KIS 호출이 늘어 rate limit 위험이 있어 제한한다.
 const BUY_FILTER_CANDIDATE_LIMIT = 5;
+const RANKING_OBSERVATION_LIMIT = 30;
 // 같은 (날짜·전략·구간·방향) 주문이 실패로 누적되면 더 시도하지 않는 한도.
 const ORDER_RETRY_LIMIT = 5;
 // 상한가를 조회하지 못했을 때 쓰는 보수적 배수 (가격제한폭 상단 = 전일종가 × 1.3 이하).
@@ -191,6 +195,29 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   // 무보유이고 진입 구간이 아니거나, 이미 그 구간 진입을 마쳤으면 바로 종료한다.
   const noLogIfScheduled = evaluationSource !== 'MANUAL';
   if (!strategy.holdingSymbol) {
+    const observationWindow = resolveEntryObservationWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
+    if (observationWindow) {
+      const existing = repo.getEntry(strategy.id, kstToday(), observationWindow);
+      if (!existing?.bought) {
+        const ranking = await getDomesticFluctuationRanking(userId);
+        const rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+        repo.createObservation(userId, {
+          strategyId: strategy.id,
+          tradeDate: kstToday(),
+          entryWindow: observationWindow,
+          rankingSnapshot
+        });
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP',
+          entryWindow: observationWindow,
+          liveOrderEnabled,
+          evaluationSource,
+          rankingSnapshot,
+          reason: `${ENTRY_WINDOWS[observationWindow].label} 진입 전 관찰: ${ENTRY_WINDOWS[observationWindow].startMinutes === 9 * 60 + 10 ? '09:10' : '11:30'} 매수 판단을 위해 상승률 랭킹 스냅샷을 저장했습니다.`,
+          noLog: noLogIfScheduled
+        });
+      }
+    }
     const window = resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
     if (!window) {
       return saveDecision(userId, strategy, {
@@ -285,6 +312,36 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   });
   let entryFailureReason = null;
   let defensiveExitReason = null;
+  if (sell.decision === 'SELL' && sell.sellReason === 'STOP_LOSS') {
+    try {
+      const candles = await getDomesticTodayMinuteCandles(userId, symbol);
+      const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
+      const holdingMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
+      const deferral = evaluateStopLossDeferral(candles, {
+        profitRate,
+        stopLossRate,
+        holdingMinutes,
+        useCompletedCandles: true
+      });
+      if (deferral.defer) {
+        const profitPct = (profitRate * 100).toFixed(2);
+        return saveDecision(userId, strategy, {
+          decision: 'HOLD',
+          entryWindow,
+          selectedSymbol: symbol,
+          selectedSymbolName: strategy.holdingSymbolName,
+          currentPrice,
+          averagePrice,
+          holdingQuantity,
+          liveOrderEnabled,
+          evaluationSource,
+          reason: `${symbol} 손절 기준에 닿았지만(수익률 ${profitPct}%) ${deferral.reason} 목표가 주문은 유지하고 다음 평가에서 다시 확인합니다.`
+        });
+      }
+    } catch {
+      // 분봉 확인 실패는 기존 고정 손절 판단에 맡긴다.
+    }
+  }
   if (sell.decision === 'HOLD') {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
@@ -484,10 +541,21 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     // 랭킹 조회 실패 시 예외가 상위로 전파되어 ERROR로 기록된다(진입 기록 미생성 → 다음 tick 재시도).
     const ranking = await getDomesticFluctuationRanking(userId);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
-    // 구간별 등락률 상한 미만 후보를 모은 뒤, 매수 필터(분봉 단기 흐름)와 점수로 한 번 더 거른다.
+    repo.createObservation(userId, {
+      strategyId: strategy.id,
+      tradeDate,
+      entryWindow,
+      rankingSnapshot
+    });
+    const observations = repo.listObservations(strategy.id, tradeDate, entryWindow, { limit: RANKING_OBSERVATION_LIMIT });
+    const observationSnapshots = observations.map((row) => row.rankingSnapshot).filter(Boolean);
+    // 구간별 등락률 상한 미만 후보를 사전 관찰 스냅샷과 현재 랭킹으로 종합한 뒤,
+    // 매수 필터(분봉 단기 흐름·거래대금)와 점수로 한 번 더 거른다.
     const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
-    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate })
-      .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
+    const candidates = aggregateRankingCandidates(observationSnapshots, {
+      maxFluctuationRate,
+      candidateLimit: BUY_FILTER_CANDIDATE_LIMIT
+    });
     const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
     const picked = filterResult.picked;
     let preparedBuyPlan = filterResult.buyPlan || null;
@@ -496,8 +564,8 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       // 후보 없음/전원 거절: 진입 기록을 만들지 않고(또는 레거시 기록을 SELECTED로 굳히지 않고) SKIP만 한다.
       // 다음 tick에 랭킹을 다시 보되, 원인 추적을 위해 스케줄러 SKIP도 판단 로그로 남긴다.
       const reason = candidates.length === 0
-        ? `${label} 진입: 등락률 ${maxFluctuationRate * 100}% 미만 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
-        : `${label} 진입: 상위 ${candidates.length}개 후보가 단기 흐름·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => {
+        ? `${label} 진입: 최근 관찰 랭킹에서 등락률 ${(maxFluctuationRate * 100).toFixed(0)}% 미만이고 반복 확인된 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
+        : `${label} 진입: 관찰 랭킹 종합 후보 ${candidates.length}개가 단기 흐름·거래대금·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => {
             const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
             return `${nameLabel}: ${r.reason}`;
           }).join(' / ')}`;
@@ -624,7 +692,8 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     // 예전 배포에서 이미 고가 종목이 SELECTED로 고정된 경우를 풀고, 같은 tick에서 다음 후보를 찾는다.
     const ranking = await getDomesticFluctuationRanking(userId);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
-    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate: MAX_FLUCTUATION_RATE })
+    const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
+    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate })
       .filter((candidate) => candidate.symbol !== symbol)
       .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
     const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
@@ -1211,7 +1280,12 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
       rejections.push({ symbol: candidate.symbol, name: candidate.name, reason: check.reason });
       continue;
     }
-    accepted.push({ picked: candidate, score: check.score ?? 0, referencePrice: check.referencePrice ?? 0, rejections });
+    accepted.push({
+      picked: candidate,
+      score: (check.score ?? 0) + (Number(candidate.observationScore) || 0),
+      referencePrice: check.referencePrice ?? 0,
+      rejections
+    });
   }
   accepted.sort((a, b) => b.score - a.score);
   if (!trading || !strategy || !entryWindow) {

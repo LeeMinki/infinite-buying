@@ -2,11 +2,11 @@
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
 // 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
-// 오전은 20%, 점심은 오전 급등 뒤 되돌림 위험을 줄이기 위해 더 낮은 16%를 쓴다.
-export const MAX_FLUCTUATION_RATE = 0.20;
+// 운영 기준: "상승률 21% 미만"만 매수 후보로 본다.
+export const MAX_FLUCTUATION_RATE = 0.21;
 export const ENTRY_MAX_FLUCTUATION_RATES = {
-  MORNING: 0.20,
-  LUNCH: 0.16
+  MORNING: 0.21,
+  LUNCH: 0.21
 };
 
 // 매수 필터 기본값 — 단기 흐름 검사용. krRankBuyFilter 절을 참고.
@@ -17,6 +17,12 @@ export const BUY_FILTER_DEFAULTS = {
   // 단기 흐름·VWAP 이격 판단을 신뢰할 수 없다. 거래가 마른 분봉을 신호로 삼아 다음 봉 시초 급등을
   // 시장가로 추격하던 슬리피지 사고(예: 한빛소프트 047080)를 막기 위해 최소 거래량을 요구한다.
   minLastCandleVolume: 1,
+  // 저유동성 급등주는 한두 체결로도 손절선을 훑을 수 있어 거래대금 하한을 둔다.
+  // KIS 국내 당일 분봉은 최근 최대 30봉 중심으로 오므로, 오전 09:10에는 09:00~09:10 누적,
+  // 점심 11:30에는 직전 약 30분 누적 거래대금을 검사하는 효과가 있다.
+  minTurnoverAmount: 300_000_000,
+  recentTurnoverWindow: 3,
+  minRecentTurnoverAmount: 30_000_000,
   // 장대 음봉 판정 — 몸통(시가-종가)이 시가 대비 이 비율 이상이고 거래량이 최근 평균 대비 이 배수 이상이면 거절.
   bearishBodyMinRate: 0.005,
   bearishVolumeMultiplier: 1.2,
@@ -84,10 +90,32 @@ export const MID_TRADE_DEFENSE_DEFAULTS = {
   swingLowWindow: 12
 };
 
+// 고정 손절선에 닿았더라도 매수 직후 흔들기 가능성이 높으면 즉시 매도하지 않고 확인한다.
+// 다만 실제 폭락을 방치하지 않도록 유예 가능한 최대 손실과 최대 시간은 제한한다.
+export const STOP_LOSS_DEFERRAL_DEFAULTS = {
+  maxHoldingMinutes: 10,
+  minObservationMinutes: 6,
+  maxDeferrableLossRate: 0.08,
+  confirmBars: 3,
+  swingLowWindow: 10
+};
+
 // 진입 구간. 스케줄러 tick 간격(기본 30초)보다 넉넉히 잡아 한 구간을 반드시 한 번은 포착한다.
 export const ENTRY_WINDOWS = {
   MORNING: { label: '오전', startMinutes: 9 * 60 + 10, endMinutes: 10 * 60 },
   LUNCH: { label: '점심', startMinutes: 11 * 60 + 30, endMinutes: 12 * 60 + 20 }
+};
+
+export const ENTRY_OBSERVATION_WINDOWS = {
+  MORNING: { label: '오전 관찰', startMinutes: 9 * 60, endMinutes: ENTRY_WINDOWS.MORNING.startMinutes },
+  LUNCH: { label: '점심 관찰', startMinutes: 11 * 60 + 20, endMinutes: ENTRY_WINDOWS.LUNCH.startMinutes }
+};
+
+export const RANKING_OBSERVATION_DEFAULTS = {
+  candidateLimit: 5,
+  minSnapshotsForStability: 3,
+  minAppearancesWhenStable: 2,
+  perSnapshotCandidateLimit: 10
 };
 
 // 현재 시각(KST)이 어느 진입 구간에 속하는지 판정한다. 구간 밖이면 null.
@@ -100,6 +128,17 @@ export function resolveEntryWindow(now = new Date(), { lunchEntryEnabled = false
   const inWindow = (w) => minutes >= w.startMinutes && minutes < w.endMinutes;
   if (inWindow(ENTRY_WINDOWS.MORNING)) return 'MORNING';
   if (lunchEntryEnabled && inWindow(ENTRY_WINDOWS.LUNCH)) return 'LUNCH';
+  return null;
+}
+
+export function resolveEntryObservationWindow(now = new Date(), { lunchEntryEnabled = false } = {}) {
+  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const day = kst.getDay();
+  if (day === 0 || day === 6) return null;
+  const minutes = kst.getHours() * 60 + kst.getMinutes();
+  const inWindow = (w) => minutes >= w.startMinutes && minutes < w.endMinutes;
+  if (inWindow(ENTRY_OBSERVATION_WINDOWS.MORNING)) return 'MORNING';
+  if (lunchEntryEnabled && inWindow(ENTRY_OBSERVATION_WINDOWS.LUNCH)) return 'LUNCH';
   return null;
 }
 
@@ -261,6 +300,15 @@ export function recentCloseRiseRate(candles, window = BUY_FILTER_DEFAULTS.rapidR
   return (close - baseClose) / baseClose;
 }
 
+export function computeTurnoverAmount(candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return 0;
+  return candles.reduce((sum, c) => {
+    const close = Number(c?.close) || 0;
+    const volume = Math.max(0, Number(c?.volume) || 0);
+    return close > 0 ? sum + close * volume : sum;
+  }, 0);
+}
+
 export function scoreBuyCandidate(candles, candidate = {}, opts = {}) {
   const vwap = computeVwap(candles);
   const last = Array.isArray(candles) ? candles[candles.length - 1] : null;
@@ -318,6 +366,18 @@ export function checkBuyCandidate(candles, opts = {}) {
   const lastVolume = Math.max(0, Number(last?.volume) || 0);
   if (lastVolume < minLastCandleVolume) {
     return { ok: false, reason: `최근 완성봉(${last?.time || '직전'}) 거래량이 ${lastVolume}이라 실제 체결이 없어 매수하지 않습니다.` };
+  }
+
+  const minTurnoverAmount = opts.minTurnoverAmount ?? BUY_FILTER_DEFAULTS.minTurnoverAmount;
+  const turnoverAmount = computeTurnoverAmount(completedCandles);
+  if (minTurnoverAmount > 0 && turnoverAmount < minTurnoverAmount) {
+    return { ok: false, reason: `관찰 구간 거래대금이 ${fmtAmount(turnoverAmount)}원으로 ${fmtAmount(minTurnoverAmount)}원 미만이라 저유동성으로 보고 매수하지 않습니다.` };
+  }
+  const recentTurnoverWindow = opts.recentTurnoverWindow ?? BUY_FILTER_DEFAULTS.recentTurnoverWindow;
+  const minRecentTurnoverAmount = opts.minRecentTurnoverAmount ?? BUY_FILTER_DEFAULTS.minRecentTurnoverAmount;
+  const recentTurnoverAmount = computeTurnoverAmount(completedCandles.slice(-recentTurnoverWindow));
+  if (minRecentTurnoverAmount > 0 && recentTurnoverAmount < minRecentTurnoverAmount) {
+    return { ok: false, reason: `최근 ${recentTurnoverWindow}분 거래대금이 ${fmtAmount(recentTurnoverAmount)}원으로 ${fmtAmount(minRecentTurnoverAmount)}원 미만이라 저유동성으로 보고 매수하지 않습니다.` };
   }
 
   const vwap = computeVwap(completedCandles);
@@ -398,6 +458,79 @@ export function checkBuyCandidate(candles, opts = {}) {
     referencePrice: current,
     score: scoreBuyCandidate(completedCandles, opts.candidate, opts)
   };
+}
+
+export function aggregateRankingCandidates(snapshots = [], opts = {}) {
+  const maxFluctuationRate = opts.maxFluctuationRate ?? MAX_FLUCTUATION_RATE;
+  const candidateLimit = opts.candidateLimit ?? RANKING_OBSERVATION_DEFAULTS.candidateLimit;
+  const perSnapshotCandidateLimit = opts.perSnapshotCandidateLimit ?? RANKING_OBSERVATION_DEFAULTS.perSnapshotCandidateLimit;
+  const minSnapshotsForStability = opts.minSnapshotsForStability ?? RANKING_OBSERVATION_DEFAULTS.minSnapshotsForStability;
+  const minAppearancesWhenStable = opts.minAppearancesWhenStable ?? RANKING_OBSERVATION_DEFAULTS.minAppearancesWhenStable;
+  const normalized = Array.isArray(snapshots)
+    ? snapshots.map((s) => Array.isArray(s) ? s : s?.rankingSnapshot).filter((s) => Array.isArray(s) && s.length > 0)
+    : [];
+  const stats = new Map();
+  normalized.forEach((snapshot, snapshotIndex) => {
+    const candidates = selectRankingCandidates(snapshot, { maxFluctuationRate }).slice(0, perSnapshotCandidateLimit);
+    candidates.forEach((candidate, rankIndex) => {
+      const rank = rankIndex + 1;
+      const existing = stats.get(candidate.symbol) || {
+        symbol: candidate.symbol,
+        name: candidate.name,
+        price: candidate.price,
+        fluctuationRate: candidate.fluctuationRate,
+        appearances: 0,
+        rankSum: 0,
+        bestRank: rank,
+        latestRank: rank,
+        latestSnapshotIndex: snapshotIndex,
+        fluctuationSum: 0
+      };
+      existing.name = candidate.name || existing.name;
+      existing.price = candidate.price;
+      existing.fluctuationRate = candidate.fluctuationRate;
+      existing.appearances += 1;
+      existing.rankSum += rank;
+      existing.bestRank = Math.min(existing.bestRank, rank);
+      existing.latestRank = rank;
+      existing.latestSnapshotIndex = snapshotIndex;
+      existing.fluctuationSum += candidate.fluctuationRate;
+      stats.set(candidate.symbol, existing);
+    });
+  });
+
+  const requireRepeatedAppearance = normalized.length >= minSnapshotsForStability;
+  return Array.from(stats.values())
+    .filter((s) => !requireRepeatedAppearance || s.appearances >= minAppearancesWhenStable)
+    .map((s) => {
+      const averageRank = s.rankSum / s.appearances;
+      const appearanceRate = normalized.length > 0 ? s.appearances / normalized.length : 0;
+      const recencyBonus = normalized.length > 0 ? (s.latestSnapshotIndex + 1) / normalized.length : 0;
+      const observationScore = appearanceRate * 20
+        + Math.max(0, 11 - averageRank) * 1.5
+        + Math.max(0, 11 - s.bestRank) * 0.7
+        + recencyBonus * 8
+        + Math.min(Math.max(s.fluctuationSum / s.appearances, 0), 0.21) * 20;
+      return {
+        symbol: s.symbol,
+        name: s.name || s.symbol,
+        price: s.price,
+        fluctuationRate: s.fluctuationRate,
+        observationCount: s.appearances,
+        observationSnapshots: normalized.length,
+        averageRank,
+        bestRank: s.bestRank,
+        latestRank: s.latestRank,
+        observationScore
+      };
+    })
+    .sort((a, b) => (
+      b.observationScore - a.observationScore
+      || a.averageRank - b.averageRank
+      || b.fluctuationRate - a.fluctuationRate
+      || a.symbol.localeCompare(b.symbol)
+    ))
+    .slice(0, candidateLimit);
 }
 
 // 최근 봉의 평균 True Range를 현재가 대비 비율(ATR%)로 돌려준다. 변동성 적응형 빠른손절 트리거용.
@@ -598,7 +731,73 @@ export function evaluateMidTradeDefense(candles, {
   };
 }
 
+export function evaluateStopLossDeferral(candles, {
+  profitRate = 0,
+  stopLossRate = 0.05,
+  holdingMinutes = null,
+  useCompletedCandles = false,
+  ...opts
+} = {}) {
+  const currentLossRate = -Number(profitRate || 0);
+  const configuredStopLossRate = Number(stopLossRate);
+  if (!Number.isFinite(currentLossRate) || currentLossRate <= 0) return { defer: false, reason: null };
+  if (Number.isFinite(configuredStopLossRate) && currentLossRate < configuredStopLossRate) {
+    return { defer: false, reason: null };
+  }
+
+  const maxHoldingMinutes = opts.maxHoldingMinutes ?? STOP_LOSS_DEFERRAL_DEFAULTS.maxHoldingMinutes;
+  const holding = Number(holdingMinutes);
+  if (!Number.isFinite(holding) || holding > maxHoldingMinutes) {
+    return { defer: false, reason: null };
+  }
+
+  const maxDeferrableLossRate = opts.maxDeferrableLossRate ?? STOP_LOSS_DEFERRAL_DEFAULTS.maxDeferrableLossRate;
+  if (currentLossRate >= maxDeferrableLossRate) {
+    return {
+      defer: false,
+      reason: `손실이 ${(currentLossRate * 100).toFixed(2)}%로 흔들기 관찰 한도 ${(maxDeferrableLossRate * 100).toFixed(1)}%를 넘었습니다.`
+    };
+  }
+
+  const rawCandles = Array.isArray(candles) ? candles : [];
+  const evalCandles = useCompletedCandles && rawCandles.length > 0
+    ? rawCandles.slice(0, -1)
+    : rawCandles;
+  if (evalCandles.length < BUY_FILTER_DEFAULTS.minimumCandles) {
+    return {
+      defer: true,
+      reason: '완성 분봉이 부족해 손절선 이탈이 실제 추세 붕괴인지 아직 확인되지 않았습니다.'
+    };
+  }
+
+  const minObservationMinutes = opts.minObservationMinutes ?? STOP_LOSS_DEFERRAL_DEFAULTS.minObservationMinutes;
+  if (holding < minObservationMinutes) {
+    return {
+      defer: true,
+      reason: `매수 후 ${Math.max(0, Math.floor(holding))}분째라 초기 흔들기 여부를 ${minObservationMinutes}분까지 확인합니다.`
+    };
+  }
+
+  const failure = evaluateEntryFailure(evalCandles, {
+    ...opts,
+    confirmBars: opts.confirmBars ?? STOP_LOSS_DEFERRAL_DEFAULTS.confirmBars,
+    swingLowWindow: opts.swingLowWindow ?? STOP_LOSS_DEFERRAL_DEFAULTS.swingLowWindow
+  });
+  if (!failure.failed) {
+    return {
+      defer: true,
+      reason: `손실은 ${(currentLossRate * 100).toFixed(2)}%지만 VWAP 아래 지속 이탈과 지지 붕괴가 아직 확인되지 않았습니다.`
+    };
+  }
+
+  return { defer: false, reason: failure.reason };
+}
+
 function fmtPrice(value) {
+  return Math.round(Number(value) || 0).toLocaleString('ko-KR');
+}
+
+function fmtAmount(value) {
   return Math.round(Number(value) || 0).toLocaleString('ko-KR');
 }
 
