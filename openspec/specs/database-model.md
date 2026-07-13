@@ -46,7 +46,7 @@ SQLite (`better-sqlite3`). `npm run migrate`는 먼저 `backend/src/db/schema.sq
 
 - `kr_rank_strategies` — 한국 국장 상승률 랭킹 전략(`KR_RANK_MOMENTUM`). status (`CREATED`/`RUNNING`/`STOPPED`/`ERROR`), 진입 구간별 매수 금액·목표 수익률·손절률(`morning_*`/`lunch_*`), 점심 진입 사용 여부, 진입 구간별 청산 시각(`morning_liquidate_time`/`lunch_liquidate_time`), 매수가능금액 전액 사용 여부(`auto_budget_enabled`), 현재 보유 종목(`holding_symbol`/`holding_symbol_name`/`holding_entry_window`, 무보유면 NULL), soft delete(`deleted_at`), started/stopped/last_evaluated_at, last_decision, last_error_message.
 - `kr_rank_entries` — 일자별·진입 구간별 진입 기록. `(strategy_id, trade_date, entry_window) UNIQUE`로 "하루 1회·진입 구간당 1회" 보장. 상태(`NO_CANDIDATE`/`SELECTED`/`BOUGHT`/`SKIPPED`), 선택 종목·등락률·랭킹 스냅샷·`bought` 플래그.
-- `kr_rank_orders` — 주문 라이프사이클. `idempotency_key` 인덱스, side, entry_window, sell_reason(`TARGET`/`STOP_LOSS`/`TIME_LIQUIDATE`/`ENTRY_FAILED`) 포함. `ENTRY_FAILED`는 화면에서 "빠른 손절"로 표시한다. 매수 체결 후 목표가 주문은 `TARGET` 매도 주문으로 추적하며, 실주문 OFF의 목표가 예정 기록은 KIS 주문 없이 저장된다.
+- `kr_rank_orders` — 주문 라이프사이클. `idempotency_key` 인덱스, side, entry_window, sell_reason(`TARGET`/`STOP_LOSS`/`TIME_LIQUIDATE`/`ENTRY_FAILED`) 포함. `filled_at`(`0036`)은 주문 접수 시각과 분리된 최초 체결 확인 시각이며 이후 실현손익 동기화가 덮어쓰지 않는다. `ENTRY_FAILED`는 화면에서 "빠른 손절"로 표시한다. 매수 체결 후 목표가 주문은 `TARGET` 매도 주문으로 추적하며, 실주문 OFF의 목표가 예정 기록은 KIS 주문 없이 저장된다.
 - `kr_rank_decision_logs` — 매 평가의 결정·진입 구간·선택 종목·매도 사유·랭킹 스냅샷·평가 출처·order_id·reason.
 - `kr_rank_locks` — `(strategy_id, lock_key) UNIQUE`. 동시 평가 방지.
 

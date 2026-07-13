@@ -518,36 +518,11 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
         reason: `${symbol} 목표 수익 조건입니다. 이미 걸어 둔 목표가 주문의 체결을 확인합니다.`
       });
     }
-    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
-    if (!cancelResult.ok) {
-      return saveDecision(userId, strategy, {
-        decision: 'SKIP',
-        sellReason: sell.sellReason,
-        tradeId: trade.id,
-        tradeDate,
-        tradeSeq: trade.tradeSeq,
-        selectedSymbol: symbol,
-        selectedSymbolName: strategy.holdingSymbolName,
-        selectedExchange: exchange,
-        currentPrice,
-        averagePrice,
-        holdingQuantity,
-        cashAvailable,
-        profitRate: sell.profitRate,
-        liveOrderEnabled,
-        evaluationSource,
-        orderId: activeTargetOrder.id,
-      reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 조건이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
-      });
-    }
   }
 
-  // 첫 방어 청산 결정이면 trade에 exitReason을 새겨, 다음 tick부터 "청산 진행 중"으로 인식하게 한다.
-  // 목표가 주문은 이미 별도 주문으로 걸려 있으므로, 접수 상태만으로 TARGET 청산 진행 중으로 고정하지 않는다.
-  if (!committedReason) {
-    trade = repo.updateTradeOutcome(trade.id, { exitReason: sell.sellReason }) || trade;
-  }
-
+  // 기존 TARGET을 취소하기 전에 실패 한도·멱등성·KIS 미체결을 모두 먼저 확인한다.
+  // 미체결 조회가 실패했거나 TARGET 외의 주문이 있는데 TARGET을 먼저 취소하면,
+  // 새 방어 매도도 내지 못한 채 보호 주문만 사라질 수 있다.
   if (repo.countFailedSellOrders(trade.id) >= ORDER_RETRY_LIMIT) {
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
@@ -573,8 +548,11 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
   const baseKey = makeUsRankIdempotencyKey({ tradeDate, strategyId: strategy.id, tradeSeq: trade.tradeSeq, side: 'SELL' });
   const idempotencyKey = attempt === 0 ? baseKey : `${baseKey}-R${attempt}`;
 
-  const openOrders = await safeOpenOrders(trading, symbol, exchange);
-  const guard = checkOrderSafety({ side: 'SELL', quantity: holdingQuantity, openOrders, idempotencyKey, holdingQuantity });
+  const openOrders = liveOrderEnabled ? await safeOpenOrders(trading, symbol, exchange) : [];
+  const blockingOpenOrders = excludeKnownTargetOrder(openOrders, activeTargetOrder);
+  const guard = checkOrderSafety({
+    side: 'SELL', quantity: holdingQuantity, openOrders: blockingOpenOrders, idempotencyKey, holdingQuantity
+  });
   if (!guard.ok) {
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
@@ -593,6 +571,37 @@ async function evaluateSellPath(userId, strategy, { trading, tradeDate, liveOrde
       evaluationSource,
       reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 조건이나 ${guard.reason} 다음 평가에서 다시 시도합니다.`
     });
+  }
+
+  if (activeTargetOrder) {
+    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
+    if (!cancelResult.ok) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP',
+        sellReason: sell.sellReason,
+        tradeId: trade.id,
+        tradeDate,
+        tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol,
+        selectedSymbolName: strategy.holdingSymbolName,
+        selectedExchange: exchange,
+        currentPrice,
+        averagePrice,
+        holdingQuantity,
+        cashAvailable,
+        profitRate: sell.profitRate,
+        liveOrderEnabled,
+        evaluationSource,
+        orderId: activeTargetOrder.id,
+        reason: `${symbol} ${sellReasonLabel(sell.sellReason)} 조건이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
+      });
+    }
+  }
+
+  // 첫 방어 청산 결정이면 trade에 exitReason을 새겨, 다음 tick부터 "청산 진행 중"으로 인식하게 한다.
+  // 목표가 주문은 이미 별도 주문으로 걸려 있으므로, 접수 상태만으로 TARGET 청산 진행 중으로 고정하지 않는다.
+  if (!committedReason) {
+    trade = repo.updateTradeOutcome(trade.id, { exitReason: sell.sellReason }) || trade;
   }
 
   // 체결 보장을 위해 호가를 가로지르는(현재가보다 낮은) 지정가로 매도한다. 재호가일수록 더 깊게.
@@ -1190,7 +1199,7 @@ async function evaluateEntryPath(userId, strategy, { trading, tradeDate, liveOrd
     });
   }
 
-  const openOrders = await safeOpenOrders(trading, symbol, exchange);
+  const openOrders = liveOrderEnabled ? await safeOpenOrders(trading, symbol, exchange) : [];
   const guard = checkOrderSafety({ side: 'BUY', quantity, openOrders, idempotencyKey, cashAvailable, estimatedAmount });
   if (!guard.ok) {
     return saveDecision(userId, strategy, {
@@ -1450,7 +1459,8 @@ function checkOrderSafety({
   cashAvailable = 0, estimatedAmount = 0, holdingQuantity = 0
 }) {
   if (!Number.isFinite(quantity) || quantity <= 0) return { ok: false, reason: '주문 수량이 0이라 주문하지 않습니다.' };
-  if (Array.isArray(openOrders) && openOrders.length > 0) return { ok: false, reason: '미체결 주문이 있어 신규 주문을 만들지 않습니다.' };
+  if (!Array.isArray(openOrders)) return { ok: false, reason: '미체결 주문을 확인하지 못해 안전상 주문하지 않습니다.' };
+  if (openOrders.length > 0) return { ok: false, reason: '미체결 주문이 있어 신규 주문을 만들지 않습니다.' };
   if (repo.hasNonFailedOrder(idempotencyKey)) return { ok: false, reason: '같은 주문이 이미 접수돼 있습니다.' };
   if (side === 'BUY' && cashAvailable < estimatedAmount) {
     return { ok: false, reason: `매수가능금액이 부족합니다. 필요 ${fmt(estimatedAmount)} USD, 가능 ${fmt(cashAvailable)} USD.` };
@@ -1459,6 +1469,20 @@ function checkOrderSafety({
     return { ok: false, reason: `보유 수량이 부족합니다. 필요 ${quantity}주, 보유 ${holdingQuantity}주.` };
   }
   return { ok: true };
+}
+
+function excludeKnownTargetOrder(openOrders, targetOrder) {
+  if (!Array.isArray(openOrders) || !targetOrder) return openOrders;
+  const targetOrderNos = new Set([
+    targetOrder.kisOrderNo,
+    targetOrder.kisOriginalOrderNo
+  ].map((value) => String(value || '').trim()).filter(Boolean));
+  if (targetOrderNos.size === 0) return openOrders;
+  return openOrders.filter((order) => {
+    const orderNo = String(order?.orderNo || '').trim();
+    const originalOrderNo = String(order?.originalOrderNo || '').trim();
+    return !targetOrderNos.has(orderNo) && !targetOrderNos.has(originalOrderNo);
+  });
 }
 
 function saveDecision(userId, strategy, input) {
@@ -1494,7 +1518,8 @@ async function safeOpenOrders(trading, symbol, exchange) {
   try {
     return await trading.getOpenOrders(symbol, { market: 'US', currency: 'USD', exchange });
   } catch {
-    return [];
+    // 조회 실패를 빈 목록으로 간주하면 중복 주문을 보낼 수 있으므로 해당 tick을 fail-closed 한다.
+    return null;
   }
 }
 

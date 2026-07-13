@@ -342,7 +342,12 @@ export function updateOrder(userId, id, input) {
         kis_original_order_no = COALESCE(?, kis_original_order_no),
         filled_quantity = ?, remaining_quantity = ?, average_filled_price = ?,
         response_payload_masked = COALESCE(?, response_payload_masked),
-        error_message = ?, updated_at = datetime('now')
+        error_message = ?,
+        filled_at = CASE
+          WHEN ? = 'FILLED' THEN COALESCE(filled_at, datetime('now'))
+          ELSE filled_at
+        END,
+        updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(
     input.status,
@@ -353,6 +358,7 @@ export function updateOrder(userId, id, input) {
     input.averageFilledPrice ?? null,
     input.responsePayloadMasked || null,
     input.errorMessage || null,
+    input.status,
     userId,
     id
   );
@@ -481,7 +487,10 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
         WHEN b.status = 'DRY_RUN' THEN b.order_price
         ELSE NULL
       END AS buy_price,
-      b.created_at AS buy_time,
+      CASE
+        WHEN b.status = 'FILLED' THEN COALESCE(b.filled_at, b.updated_at, b.created_at)
+        ELSE b.created_at
+      END AS buy_time,
       b.status AS buy_status,
       s.id AS sell_order_id,
       s.quantity AS sell_quantity,
@@ -490,7 +499,10 @@ export function listRoundTripOrders(userId, { strategyId, limit = 50, offset = 0
         WHEN s.status = 'DRY_RUN' THEN s.order_price
         ELSE NULL
       END AS sell_price,
-      s.created_at AS sell_time,
+      CASE
+        WHEN s.status = 'FILLED' THEN COALESCE(s.filled_at, s.updated_at, s.created_at)
+        ELSE s.created_at
+      END AS sell_time,
       s.status AS sell_status,
       s.sell_reason,
       s.realized_profit_amount,
@@ -850,6 +862,7 @@ function toOrder(row) {
     realizedTaxAmount: row.realized_tax_amount,
     realizedProfitSyncedAt: row.realized_profit_synced_at,
     realizedProfitSource: row.realized_profit_source,
+    filledAt: row.filled_at,
     idempotencyKey: row.idempotency_key,
     decisionReason: row.decision_reason,
     liveOrderEnabled: row.live_order_enabled === 1,

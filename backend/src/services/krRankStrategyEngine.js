@@ -2,11 +2,11 @@
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
 // 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
-// 오전은 21%, 점심은 오전 급등 뒤 되돌림 위험을 줄이기 위해 더 낮은 16%를 쓴다.
+// 오전은 21%, 점심은 오전 급등 뒤 되돌림 위험을 줄이기 위해 더 낮은 15%를 쓴다.
 export const MAX_FLUCTUATION_RATE = 0.21;
 export const ENTRY_MAX_FLUCTUATION_RATES = {
   MORNING: 0.21,
-  LUNCH: 0.16
+  LUNCH: 0.15
 };
 
 // 매수 필터 기본값 — 단기 흐름 검사용. krRankBuyFilter 절을 참고.
@@ -542,9 +542,9 @@ export function aggregateRankingCandidates(snapshots = [], opts = {}) {
   const requireRepeatedAppearance = normalized.length >= minSnapshotsForStability;
   const all = Array.from(stats.values());
   const repeated = all.filter((s) => s.appearances >= minAppearancesWhenStable);
-  // 평소엔 반복 출현(지속성)한 종목만 후보로 본다. 단, 모든 종목이 1회만 깜빡이고 사라지는
-  // 난조장에서는 반복 후보가 0이 되어 진입 자체가 막힐 수 있으므로, 그때는 1회 출현 후보도 허용한다.
-  const eligible = requireRepeatedAppearance && repeated.length > 0 ? repeated : all;
+  // 관찰 스냅샷이 충분히 쌓인 뒤에는 반복 출현(지속성)한 종목만 후보로 본다.
+  // 모든 종목이 한 번씩만 나타난 난조장은 단발 후보로 되돌아가지 않고 진입을 건너뛴다.
+  const eligible = requireRepeatedAppearance ? repeated : all;
   return eligible
     .map((s) => {
       const averageRank = s.rankSum / s.appearances;

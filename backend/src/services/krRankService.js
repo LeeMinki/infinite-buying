@@ -434,16 +434,6 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
         reason: `${symbol} 목표 수익 조건입니다. 이미 걸어 둔 목표가 주문의 체결을 기다립니다.`
       });
     }
-    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
-    if (!cancelResult.ok) {
-      return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, sellReason: sell.sellReason,
-        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
-        currentPrice, averagePrice, holdingQuantity, liveOrderEnabled, evaluationSource,
-        orderId: activeTargetOrder.id,
-        reason: `${symbol} ${reasonLabel}(수익률 ${profitPct}%)이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
-      });
-    }
   }
   const idempotencyKey = makeKrRankIdempotencyKey({
     tradeDate: kstToday(), strategyId: strategy.id, entryWindow, side: 'SELL'
@@ -466,7 +456,10 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       reason: `${symbol} 매도가 ${ORDER_RETRY_LIMIT}회 실패해 더 시도하지 않습니다. 계좌를 직접 확인하세요.`
     });
   }
-  const openOrders = await safeOpenOrders(userId, trading, symbol);
+  const allOpenOrders = liveOrderEnabled ? await safeOpenOrders(userId, trading, symbol) : [];
+  // 방어 매도를 위해 취소할 현재 TARGET 주문 자체는 중복 주문으로 보지 않는다.
+  // 단, 조회 실패(null)는 그대로 유지하고 다른 미체결 주문은 남겨 안전 검사가 막도록 한다.
+  const openOrders = excludeKnownTargetOrder(allOpenOrders, activeTargetOrder);
   const guard = checkOrderSafety({
     side: 'SELL', quantity: holdingQuantity, openOrders, idempotencyKey, holdingQuantity
   });
@@ -494,6 +487,21 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       currentPrice, averagePrice, holdingQuantity, liveOrderEnabled, evaluationSource,
       reason: `${symbol} ${reasonLabel}(수익률 ${profitPct}%)이나 ${guard.reason} 다음 평가에서 다시 시도합니다.`
     });
+  }
+
+  // 멱등성·실패 한도·미체결 조회를 포함한 모든 사전 안전 검사가 통과한 뒤에만
+  // 기존 TARGET을 취소한다. 검사 실패 후 TARGET마저 사라져 포지션이 무방비가 되는 경우를 막는다.
+  if (activeTargetOrder) {
+    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
+    if (!cancelResult.ok) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, sellReason: sell.sellReason,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity, liveOrderEnabled, evaluationSource,
+        orderId: activeTargetOrder.id,
+        reason: `${symbol} ${reasonLabel}(수익률 ${profitPct}%)이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
+      });
+    }
   }
 
   const order = await placeOrder(userId, trading, baseOrder, {
@@ -686,10 +694,64 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     });
   }
 
-  let buyPlan = entry._preparedBuyPlan || await buildKrBuyPlan(trading, strategy, entryWindow, {
-    symbol,
-    price: entry.selectedPrice
-  });
+  let buyPlan = entry._preparedBuyPlan || null;
+  if (!buyPlan) {
+    // 이전 tick의 주문 실패 뒤 남은 SELECTED 종목을 그대로 재주문하면, 그 사이 흐름이 꺾였거나
+    // 신호가보다 급등한 종목을 뒤늦게 추격할 수 있다. 재시도 직전에 분봉과 실행가를 다시 확인한다.
+    let latestRanking;
+    let latestCandles;
+    try {
+      latestRanking = await getDomesticFluctuationRanking(userId);
+      latestCandles = await getDomesticTodayMinuteCandles(userId, symbol);
+    } catch (error) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 재시도 전 최신 랭킹·분봉을 확인하지 못해 안전상 주문하지 않습니다. ${error.message || '다음 평가에서 다시 확인합니다.'}`
+      });
+    }
+    rankingSnapshot = (latestRanking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+    const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
+    const retryCandidate = selectRankingCandidates(latestRanking, { maxFluctuationRate })
+      .find((candidate) => candidate.symbol === symbol);
+    const retryCheck = retryCandidate
+      ? checkBuyCandidate(latestCandles, {
+          entryWindow,
+          candidate: retryCandidate
+        })
+      : { ok: false, reason: `최신 랭킹에서 사라졌거나 현재 등락률이 진입 상한 ${(maxFluctuationRate * 100).toFixed(0)}% 이상입니다.` };
+    if (!retryCheck.ok) {
+      repo.clearEntrySelection(entry.id, { rankingSnapshot });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 재시도 전 단기 흐름 재검증에서 제외했습니다. ${retryCheck.reason} 다음 평가에서 새 후보를 확인합니다.`
+      });
+    }
+    try {
+      buyPlan = await buildKrBuyPlan(trading, strategy, entryWindow, {
+        symbol,
+        price: retryCandidate.price
+      });
+    } catch (error) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 재시도 전 매수가능금액을 확인하지 못해 안전상 주문하지 않습니다. ${error.message || '다음 평가에서 다시 확인합니다.'}`
+      });
+    }
+    const referencePrice = Number(retryCheck.referencePrice) || 0;
+    if (referencePrice > 0 && buyPlan.currentPrice > referencePrice * (1 + ENTRY_MAX_SLIPPAGE_RATE)) {
+      const slippage = (buyPlan.currentPrice - referencePrice) / referencePrice;
+      repo.clearEntrySelection(entry.id, { rankingSnapshot });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 재시도 현재가가 새 신호가보다 ${(slippage * 100).toFixed(1)}% 올라 추격 매수를 중단했습니다. 다음 평가에서 새 후보를 확인합니다.`
+      });
+    }
+  }
 
   if (buyPlan.quantity <= 0) {
     // 예전 배포에서 이미 고가 종목이 SELECTED로 고정된 경우를 풀고, 같은 tick에서 다음 후보를 찾는다.
@@ -746,7 +808,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   const limitPrice = Math.max(currentPrice, Math.ceil(currentPrice * (1 + ENTRY_LIMIT_BUFFER_RATE)));
   const estimatedAmount = quantity * limitPrice;
 
-  const openOrders = await safeOpenOrders(userId, trading, symbol);
+  const openOrders = liveOrderEnabled ? await safeOpenOrders(userId, trading, symbol) : [];
   const guard = checkOrderSafety({ side: 'BUY', quantity, openOrders, idempotencyKey, cashAvailable, estimatedAmount });
   if (!guard.ok) {
     // 안전 검증 미통과 = "지금은 못 함". 주문 행을 만들지 않고 진입 기록은 SELECTED 유지 → 다음 tick 재시도.
@@ -1145,7 +1207,10 @@ function checkOrderSafety({
   if (!Number.isFinite(quantity) || quantity <= 0) {
     return { ok: false, reason: '주문 수량이 0이라 주문하지 않습니다.' };
   }
-  if (Array.isArray(openOrders) && openOrders.length > 0) {
+  if (!Array.isArray(openOrders)) {
+    return { ok: false, reason: '미체결 주문을 확인하지 못해 안전상 주문하지 않습니다.' };
+  }
+  if (openOrders.length > 0) {
     // KIS 미체결 목록 기준. DB 주문 상태는 시장가 체결 후에도 ACCEPTED로 남을 수 있어 쓰지 않는다.
     return { ok: false, reason: '미체결 주문이 있어 신규 주문을 만들지 않습니다.' };
   }
@@ -1260,8 +1325,23 @@ async function safeOpenOrders(userId, trading, symbol) {
       trading.getOpenOrders(symbol, { market: 'KR', currency: 'KRW' })
     ));
   } catch {
-    return [];
+    // 조회 실패는 "미체결 없음"이 아니다. 호출부의 안전 검증이 이번 주문을 막도록 null을 돌린다.
+    return null;
   }
+}
+
+function excludeKnownTargetOrder(openOrders, targetOrder) {
+  if (!Array.isArray(openOrders) || !targetOrder) return openOrders;
+  const targetOrderNos = new Set([
+    targetOrder.kisOrderNo,
+    targetOrder.kisOriginalOrderNo
+  ].map((value) => String(value || '').trim()).filter(Boolean));
+  if (targetOrderNos.size === 0) return openOrders;
+  return openOrders.filter((row) => {
+    const rowOrderNo = String(row?.orderNo || '').trim();
+    const rowOriginalOrderNo = String(row?.originalOrderNo || '').trim();
+    return !targetOrderNos.has(rowOrderNo) && !targetOrderNos.has(rowOriginalOrderNo);
+  });
 }
 
 // 상위 후보를 순서대로 보면서 매수 필터(시가·VWAP·거래량·장대 음봉·고점 돌파)를 적용한다.
