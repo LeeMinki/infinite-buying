@@ -81,6 +81,9 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', output: { frcr_ord_psbl_amt1: String(cash), max_ord_psbl_qty: '999' } });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-nccs')) {
+      if (state.openOrdersError) {
+        return json({ rt_cd: '1', msg_cd: 'TEST_OPEN_ORDERS', msg1: '미체결 조회 실패' });
+      }
       return json({ rt_cd: '0', output: state.openOrders || [] });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-ccnl')) {
@@ -133,6 +136,47 @@ function passingMinuteCandles() {
     });
   }
   return out.reverse();
+}
+
+function createHeldTradeWithTarget(userId, strategy, {
+  symbol, symbolName, orderNo, originalOrderNo
+}) {
+  repo.setHolding(userId, strategy.id, {
+    symbol, symbolName, exchange: 'NAS', quantity: 10, averagePrice: 50
+  });
+  let trade = repo.createTrade(userId, {
+    strategyId: strategy.id,
+    tradeDate: '2026-05-21',
+    tradeSeq: 1,
+    symbol,
+    symbolName,
+    exchange: 'NAS',
+    selectedPrice: 50,
+    selectedFluctuationRate: 0.2,
+    status: 'BOUGHT'
+  });
+  trade = repo.updateTradeOutcome(trade.id, {
+    status: 'BOUGHT', entryPrice: 50, entryQuantity: 10
+  });
+  const target = repo.createOrder(userId, {
+    strategyId: strategy.id,
+    tradeId: trade.id,
+    symbol,
+    symbolName,
+    exchange: 'NAS',
+    side: 'SELL',
+    sellReason: 'TARGET',
+    quantity: 10,
+    orderPrice: 51,
+    estimatedAmount: 510,
+    kisOrderNo: orderNo,
+    kisOriginalOrderNo: originalOrderNo,
+    status: 'ACCEPTED',
+    idempotencyKey: `US-${strategy.id}-${symbol}-TARGET`,
+    decisionReason: '목표가 주문',
+    liveOrderEnabled: true
+  });
+  return { trade, target };
 }
 
 test('매수 후보 없음(SCHEDULED)은 trade 행을 만들지 않고 로그도 남기지 않는다', async () => {
@@ -298,6 +342,218 @@ test('미국장 랭킹 매수는 고정 금액 설정이 있어도 매수가능�
       assert.equal(result.decision.expectedAmount, 1000);
     });
   });
+});
+
+test('미국장 랭킹: 미체결 조회에 실패하면 실주문을 보내지 않고 다음 평가를 기다린다', async () => {
+  const state = {
+    price: 50,
+    cash: 1000,
+    balanceQuantity: 0,
+    rankingTopSymbol: 'SAFECHK',
+    symbol: 'SAFECHK',
+    openOrdersError: true
+  };
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(user.id, {
+        autoBudgetEnabled: true,
+        fixedBuyUsdAmount: 0,
+        targetProfitRate: 0.02,
+        stopLossRate: 0.05,
+        forceCloseKst: '04:30',
+        exchange: 'NAS'
+      });
+      await service.startStrategy(user.id, strategy.id);
+
+      await withMockedDate('2026-05-21T14:00:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /미체결 주문을 확인하지 못해 안전상 주문하지 않습니다/);
+        assert.equal(result.order, null);
+        assert.equal(state.orderCalls || 0, 0);
+        assert.equal(repo.getStrategy(user.id, strategy.id).status, 'RUNNING');
+      });
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('미국장 랭킹: 매도 조건에서도 미체결 조회에 실패하면 매도 주문을 전송하지 않는다', async () => {
+  const sellUser = createUser(db, 'us-rank-open-orders-sell@example.com');
+  credentialService.saveSettings(sellUser.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(sellUser.id, true);
+  const state = {
+    price: 47,
+    cash: 0,
+    balanceQuantity: 10,
+    averagePrice: 50,
+    symbol: 'SAFESELL',
+    rankingTopSymbol: 'SAFESELL',
+    openOrdersError: true
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(sellUser.id, {
+        targetProfitRate: 0.02,
+        stopLossRate: 0.05,
+        forceCloseKst: '04:30',
+        exchange: 'NAS'
+      });
+      await service.startStrategy(sellUser.id, strategy.id);
+      const { trade, target } = createHeldTradeWithTarget(sellUser.id, strategy, {
+        symbol: 'SAFESELL',
+        symbolName: 'Safe Sell',
+        orderNo: 'SAFE-TARGET-1',
+        originalOrderNo: 'SAFE-TARGET-ORIG-1'
+      });
+
+      await withMockedDate('2026-05-21T14:00:00Z', async () => {
+        const result = await service.evaluateStrategy(sellUser.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /미체결 주문을 확인하지 못해 안전상 주문하지 않습니다/);
+        assert.equal(result.order, null);
+        assert.equal(state.orderCalls || 0, 0);
+        assert.equal(state.cancelCalls || 0, 0);
+      });
+
+      const sellOrders = repo.listOrders(sellUser.id, { strategyId: strategy.id })
+        .filter((order) => order.side === 'SELL');
+      assert.equal(sellOrders.length, 1);
+      assert.equal(repo.getOrder(sellUser.id, target.id).status, 'ACCEPTED');
+      assert.equal(repo.getTradeById(trade.id).exitReason, null);
+      assert.equal(repo.getStrategy(sellUser.id, strategy.id).holdingSymbol, 'SAFESELL');
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(sellUser.id, false);
+  }
+});
+
+test('미국장 랭킹: 방어 매도 전 미체결 목록에서 자신의 목표가 주문만 제외한다', async () => {
+  const sellUser = createUser(db, 'us-rank-target-exclusion@example.com');
+  credentialService.saveSettings(sellUser.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(sellUser.id, true);
+  const state = {
+    price: 47,
+    cash: 0,
+    balanceQuantity: 10,
+    averagePrice: 50,
+    symbol: 'TARGETSAFE',
+    rankingTopSymbol: 'TARGETSAFE',
+    openOrders: [{
+      odno: 'TARGET-SAFE-1',
+      orgn_odno: 'TARGET-SAFE-ORIG-1',
+      ovrs_pdno: 'TARGETSAFE',
+      ft_ord_qty: '10',
+      ft_ccld_qty: '0',
+      ft_nccs_qty: '10',
+      sll_buy_dvsn_cd: '01'
+    }]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(sellUser.id, {
+        targetProfitRate: 0.02,
+        stopLossRate: 0.05,
+        forceCloseKst: '04:30',
+        exchange: 'NAS'
+      });
+      await service.startStrategy(sellUser.id, strategy.id);
+      const { target } = createHeldTradeWithTarget(sellUser.id, strategy, {
+        symbol: 'TARGETSAFE',
+        symbolName: 'Target Safe',
+        orderNo: 'TARGET-SAFE-1',
+        originalOrderNo: 'TARGET-SAFE-ORIG-1'
+      });
+
+      await withMockedDate('2026-05-21T14:00:00Z', async () => {
+        const result = await service.evaluateStrategy(sellUser.id, strategy.id);
+        assert.equal(result.decision.decision, 'SELL');
+        assert.equal(result.decision.sellReason, 'STOP_LOSS');
+        assert.equal(state.cancelCalls, 1);
+        assert.equal(state.orderCalls, 1);
+      });
+
+      assert.equal(repo.getOrder(sellUser.id, target.id).status, 'CANCELED');
+      const defensive = repo.listOrders(sellUser.id, { strategyId: strategy.id })
+        .find((order) => order.side === 'SELL' && order.sellReason === 'STOP_LOSS');
+      assert.ok(defensive);
+      assert.equal(defensive.status, 'ACCEPTED');
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(sellUser.id, false);
+  }
+});
+
+test('미국장 랭킹: 목표가 외 다른 미체결이 있으면 목표가를 유지하고 방어 매도를 보류한다', async () => {
+  const sellUser = createUser(db, 'us-rank-other-open-order@example.com');
+  credentialService.saveSettings(sellUser.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(sellUser.id, true);
+  const openOrder = (orderNo, originalOrderNo) => ({
+    odno: orderNo,
+    orgn_odno: originalOrderNo,
+    ovrs_pdno: 'TARGETBLOCK',
+    ft_ord_qty: '10',
+    ft_ccld_qty: '0',
+    ft_nccs_qty: '10',
+    sll_buy_dvsn_cd: '01'
+  });
+  const state = {
+    price: 47,
+    cash: 0,
+    balanceQuantity: 10,
+    averagePrice: 50,
+    symbol: 'TARGETBLOCK',
+    rankingTopSymbol: 'TARGETBLOCK',
+    openOrders: [
+      openOrder('TARGET-BLOCK-1', 'TARGET-BLOCK-ORIG-1'),
+      openOrder('OTHER-OPEN-1', 'OTHER-OPEN-ORIG-1')
+    ]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(sellUser.id, {
+        targetProfitRate: 0.02,
+        stopLossRate: 0.05,
+        forceCloseKst: '04:30',
+        exchange: 'NAS'
+      });
+      await service.startStrategy(sellUser.id, strategy.id);
+      const { trade, target } = createHeldTradeWithTarget(sellUser.id, strategy, {
+        symbol: 'TARGETBLOCK',
+        symbolName: 'Target Block',
+        orderNo: 'TARGET-BLOCK-1',
+        originalOrderNo: 'TARGET-BLOCK-ORIG-1'
+      });
+
+      await withMockedDate('2026-05-21T14:00:00Z', async () => {
+        const result = await service.evaluateStrategy(sellUser.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /미체결 주문이 있어 신규 주문을 만들지 않습니다/);
+        assert.equal(state.cancelCalls || 0, 0);
+        assert.equal(state.orderCalls || 0, 0);
+      });
+
+      assert.equal(repo.getOrder(sellUser.id, target.id).status, 'ACCEPTED');
+      assert.equal(repo.getTradeById(trade.id).exitReason, null);
+      assert.equal(repo.getStrategy(sellUser.id, strategy.id).holdingSymbol, 'TARGETBLOCK');
+      const sellOrders = repo.listOrders(sellUser.id, { strategyId: strategy.id })
+        .filter((order) => order.side === 'SELL');
+      assert.equal(sellOrders.length, 1);
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(sellUser.id, false);
+  }
 });
 
 test('단기 흐름 필터를 통과하지 못하면 매수하지 않고 SKIP 한다', async () => {

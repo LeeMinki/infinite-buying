@@ -164,10 +164,12 @@ test('syncOrderFills: KIS 체결조회로 받은 실체결가·수량을 DB에 �
       assert.equal(updated[0].status, 'FILLED');
       assert.equal(Number(updated[0].averageFilledPrice), 1396);
       assert.equal(Number(updated[0].filledQuantity), 102);
+      assert.ok(updated[0].filledAt, '체결 확인 시각을 별도로 기록해야 한다');
     });
     const after = repo.getOrder(user.id, buy.id);
     assert.equal(after.status, 'FILLED');
     assert.equal(Number(after.averageFilledPrice), 1396);
+    assert.ok(after.filledAt);
   } finally {
     autoTradingRepo.updateLiveOrderSetting(user.id, false);
   }
@@ -230,6 +232,8 @@ test('syncRealizedProfits: 매도 체결 후 KIS 실현손익·손익률을 매�
     remainingQuantity: 0,
     averageFilledPrice: 55500
   });
+  const filledAt = repo.getOrder(user.id, sell.id).filledAt;
+  assert.ok(filledAt);
   const state = {
     realized: [{
       trad_dt: '20260609',
@@ -258,6 +262,7 @@ test('syncRealizedProfits: 매도 체결 후 KIS 실현손익·손익률을 매�
     assert.equal(after.realizedProfitRate, 0.0161);
     assert.equal(after.realizedFeeAmount, 5);
     assert.equal(after.realizedTaxAmount, 240);
+    assert.equal(after.filledAt, filledAt, '실현손익 동기화가 최초 체결 확인 시각을 덮으면 안 된다');
   } finally {
     autoTradingRepo.updateLiveOrderSetting(user.id, false);
   }
@@ -379,4 +384,62 @@ test('listRoundTripOrders: 실주문 매수가 체결됐고 매도는 미체결�
   assert.equal(row.sellPrice, null);
   // 매도가 미확정이라 손익률도 NULL.
   assert.equal(row.profitRate, null);
+});
+
+test('listRoundTripOrders: FILLED 주문은 접수 시각이 아니라 체결 확인 시각을 반환한다', () => {
+  const strategy = createStrategyForUser();
+  const buy = createAcceptedBuyOrder(strategy.id, { kisOrderNo: 'TIME-BUY', symbol: '444444', orderPrice: 1000 });
+  const sell = createAcceptedSellOrder(strategy.id, { kisOrderNo: 'TIME-SELL', symbol: '444444', orderPrice: 1020 });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-05-20 00:00:00' WHERE id IN (?, ?)").run(buy.id, sell.id);
+  repo.updateOrder(user.id, buy.id, {
+    status: 'FILLED', filledQuantity: 10, remainingQuantity: 0, averageFilledPrice: 1000
+  });
+  repo.updateOrder(user.id, sell.id, {
+    status: 'FILLED', filledQuantity: 10, remainingQuantity: 0, averageFilledPrice: 1020
+  });
+
+  const filledBuy = repo.getOrder(user.id, buy.id);
+  const filledSell = repo.getOrder(user.id, sell.id);
+  const row = repo.listRoundTripOrders(user.id, { strategyId: strategy.id })
+    .find((item) => item.symbol === '444444');
+
+  assert.ok(row);
+  assert.equal(row.buyTime, filledBuy.filledAt);
+  assert.equal(row.sellTime, filledSell.filledAt);
+  assert.notEqual(row.sellTime, '2026-05-20 00:00:00');
+});
+
+test('0036 마이그레이션: 기존 FILLED 주문의 마지막 갱신 시각을 체결 시각으로 backfill한다', async () => {
+  const migrationName = '0036_kr_rank_order_filled_at.sql';
+
+  // 0035까지 적용된 운영 DB를 재현한다. 이 테스트는 파일의 마지막에 두어 현재 스키마를
+  // 사용하는 앞선 체결 동기화 테스트들과 격리한다.
+  db.prepare('DELETE FROM schema_migrations WHERE name = ?').run(migrationName);
+  db.exec('ALTER TABLE kr_rank_orders DROP COLUMN filled_at');
+
+  const strategy = createStrategyForUser();
+  const filled = repo.createOrder(user.id, {
+    strategyId: strategy.id, symbol: '555551', side: 'BUY', entryWindow: 'MORNING',
+    quantity: 3, orderPrice: 1000, estimatedAmount: 3000, status: 'FILLED',
+    filledQuantity: 3, remainingQuantity: 0, averageFilledPrice: 1000,
+    idempotencyKey: 'LEGACY-FILLED-0036', decisionReason: '0036 업그레이드 테스트', liveOrderEnabled: true
+  });
+  const accepted = createAcceptedBuyOrder(strategy.id, {
+    kisOrderNo: 'LEGACY-ACCEPTED-0036', symbol: '555552', quantity: 1, orderPrice: 2000,
+    idempotencyKey: 'LEGACY-ACCEPTED-0036'
+  });
+  db.prepare(`
+    UPDATE kr_rank_orders
+    SET created_at = '2026-07-01 00:00:00', updated_at = '2026-07-01 00:05:00'
+    WHERE id IN (?, ?)
+  `).run(filled.id, accepted.id);
+
+  const { runMigrations } = await import('../src/db/migrate.js');
+  runMigrations();
+
+  const filledRow = db.prepare('SELECT status, filled_at FROM kr_rank_orders WHERE id = ?').get(filled.id);
+  const acceptedRow = db.prepare('SELECT status, filled_at FROM kr_rank_orders WHERE id = ?').get(accepted.id);
+  assert.deepEqual(filledRow, { status: 'FILLED', filled_at: '2026-07-01 00:05:00' });
+  assert.deepEqual(acceptedRow, { status: 'ACCEPTED', filled_at: null });
+  assert.ok(db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(migrationName));
 });

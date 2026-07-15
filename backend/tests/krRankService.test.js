@@ -106,7 +106,10 @@ function withMockedFetch(state, run) {
       return json({ rt_cd: '0', output: { nrcvb_buy_amt: String(state.cash ?? 158_105), nrcvb_buy_qty: '999' } });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl')) {
-      return json({ rt_cd: '0', output: [] });
+      if (state.openOrdersError) {
+        return json({ rt_cd: '1', msg_cd: 'TEST_OPEN_ORDERS', msg1: '미체결 조회 실패' });
+      }
+      return json({ rt_cd: '0', output: state.openOrders || [] });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-daily-ccld')) {
       state.historyCalls = (state.historyCalls || 0) + 1;
@@ -114,6 +117,10 @@ function withMockedFetch(state, run) {
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-balance')) {
       return json({ rt_cd: '0', output1: state.holdings || [], output2: [{ dnca_tot_amt: String(state.cash ?? 0) }] });
+    }
+    if (options.method === 'POST' && text.includes('/uapi/domestic-stock/v1/trading/order-rvsecncl')) {
+      state.cancelCalls = (state.cancelCalls || 0) + 1;
+      return json({ rt_cd: '0', output: { ODNO: `KRC${state.cancelCalls}` } });
     }
     if (options.method === 'POST' && text.includes('/uapi/domestic-stock/v1/trading/order-cash')) {
       state.orderCalls = (state.orderCalls || 0) + 1;
@@ -639,6 +646,386 @@ test('한국 랭킹: 사전 관찰에 반복 등장한 후보를 진입 시점�
       assert.equal(result.order.symbol, '005930');
     });
   });
+});
+
+test('한국 랭킹: 미체결 조회에 실패하면 실주문을 보내지 않고 다음 평가를 기다린다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    cash: 1_000_000,
+    prices: { '018260': 286_500, '005930': 70_000 },
+    openOrdersError: true
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-10T00:10:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /미체결 주문을 확인하지 못해 안전상 주문하지 않습니다/);
+        assert.equal(result.order, null);
+        assert.equal(state.orderCalls || 0, 0);
+        assert.equal(repo.getStrategy(user.id, strategy.id).status, 'RUNNING');
+      });
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 방어 매도 전 미체결 조회가 실패하면 기존 TARGET을 취소하지 않는다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  repo.setHolding(user.id, strategy.id, {
+    symbol: '005930',
+    symbolName: '삼성전자',
+    entryWindow: 'MORNING'
+  });
+  const target = repo.createOrder(user.id, {
+    strategyId: strategy.id,
+    symbol: '005930',
+    symbolName: '삼성전자',
+    side: 'SELL',
+    sellReason: 'TARGET',
+    entryWindow: 'MORNING',
+    quantity: 10,
+    orderPrice: 71_400,
+    estimatedAmount: 714_000,
+    kisOrderNo: 'TARGET-FAIL-CLOSED',
+    kisOriginalOrderNo: 'TARGET-ORIGINAL',
+    status: 'ACCEPTED',
+    remainingQuantity: 10,
+    idempotencyKey: `20260610-${strategy.id}-MORNING-SELL-TARGET`,
+    decisionReason: '목표가 주문',
+    liveOrderEnabled: true
+  });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-06-10 00:00:00' WHERE id = ?").run(target.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    prices: { '005930': 65_000 },
+    holdings: [{
+      pdno: '005930',
+      hldg_qty: '10',
+      pchs_avg_pric: '70000',
+      prpr: '65000'
+    }],
+    openOrdersError: true
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-10T00:20:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /미체결 주문을 확인하지 못해 안전상 주문하지 않습니다/);
+        assert.equal(result.order, null);
+        assert.equal(state.orderCalls || 0, 0);
+        assert.equal(state.cancelCalls || 0, 0);
+      });
+    });
+
+    const sellOrders = repo.listOrders(user.id, { strategyId: strategy.id })
+      .filter((order) => order.side === 'SELL');
+    assert.equal(sellOrders.filter((order) => order.sellReason !== 'TARGET').length, 0);
+    assert.equal(repo.getOrder(user.id, target.id).status, 'ACCEPTED');
+    assert.equal(repo.getStrategy(user.id, strategy.id).holdingSymbol, '005930');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 미체결 목록의 현재 TARGET만 제외한 뒤 정상 방어 매도를 수행한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  repo.setHolding(user.id, strategy.id, {
+    symbol: '005931',
+    symbolName: '정상방어',
+    entryWindow: 'MORNING'
+  });
+  const target = repo.createOrder(user.id, {
+    strategyId: strategy.id,
+    symbol: '005931',
+    symbolName: '정상방어',
+    side: 'SELL',
+    sellReason: 'TARGET',
+    entryWindow: 'MORNING',
+    quantity: 10,
+    orderPrice: 71_400,
+    estimatedAmount: 714_000,
+    kisOrderNo: 'TARGET-SAFE-REPLACE',
+    kisOriginalOrderNo: 'TARGET-SAFE-ORIGINAL',
+    status: 'ACCEPTED',
+    remainingQuantity: 10,
+    idempotencyKey: `20260610-${strategy.id}-MORNING-SELL-TARGET`,
+    decisionReason: '목표가 주문',
+    liveOrderEnabled: true
+  });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-06-10 00:00:00' WHERE id = ?").run(target.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    prices: { '005931': 65_000 },
+    holdings: [{
+      pdno: '005931', hldg_qty: '10', pchs_avg_pric: '70000', prpr: '65000'
+    }],
+    openOrders: [{
+      pdno: '005931', odno: 'TARGET-SAFE-REPLACE', orgn_odno: 'TARGET-SAFE-ORIGINAL',
+      ord_qty: '10', tot_ccld_qty: '0', nccs_qty: '10', sll_buy_dvsn_cd: '01'
+    }]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-10T00:20:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SELL');
+        assert.equal(result.decision.sellReason, 'STOP_LOSS');
+        assert.equal(result.order.status, 'ACCEPTED');
+        assert.equal(state.cancelCalls, 1);
+        assert.equal(state.orderCalls, 1);
+      });
+    });
+
+    assert.equal(repo.getOrder(user.id, target.id).status, 'CANCELED');
+    const defensiveOrders = repo.listOrders(user.id, { strategyId: strategy.id })
+      .filter((order) => order.side === 'SELL' && order.sellReason === 'STOP_LOSS');
+    assert.equal(defensiveOrders.length, 1);
+    assert.equal(repo.getStrategy(user.id, strategy.id).holdingSymbol, '005931');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: TARGET 외 다른 미체결 주문이 있으면 TARGET을 취소하지 않는다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  repo.setHolding(user.id, strategy.id, {
+    symbol: '005932',
+    symbolName: '중복방어',
+    entryWindow: 'MORNING'
+  });
+  const target = repo.createOrder(user.id, {
+    strategyId: strategy.id,
+    symbol: '005932',
+    symbolName: '중복방어',
+    side: 'SELL',
+    sellReason: 'TARGET',
+    entryWindow: 'MORNING',
+    quantity: 10,
+    orderPrice: 71_400,
+    estimatedAmount: 714_000,
+    kisOrderNo: 'TARGET-WITH-OTHER',
+    kisOriginalOrderNo: 'TARGET-WITH-OTHER-ORIGINAL',
+    status: 'ACCEPTED',
+    remainingQuantity: 10,
+    idempotencyKey: `20260610-${strategy.id}-MORNING-SELL-TARGET`,
+    decisionReason: '목표가 주문',
+    liveOrderEnabled: true
+  });
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-06-10 00:00:00' WHERE id = ?").run(target.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    prices: { '005932': 65_000 },
+    holdings: [{
+      pdno: '005932', hldg_qty: '10', pchs_avg_pric: '70000', prpr: '65000'
+    }],
+    openOrders: [
+      {
+        pdno: '005932', odno: 'TARGET-WITH-OTHER', orgn_odno: 'TARGET-WITH-OTHER-ORIGINAL',
+        ord_qty: '10', tot_ccld_qty: '0', nccs_qty: '10', sll_buy_dvsn_cd: '01'
+      },
+      {
+        pdno: '005932', odno: 'UNRELATED-OPEN-ORDER', orgn_odno: 'UNRELATED-ORIGINAL',
+        ord_qty: '1', tot_ccld_qty: '0', nccs_qty: '1', sll_buy_dvsn_cd: '01'
+      }
+    ]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-10T00:20:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /미체결 주문이 있어 신규 주문을 만들지 않습니다/);
+        assert.equal(result.order, null);
+        assert.equal(state.cancelCalls || 0, 0);
+        assert.equal(state.orderCalls || 0, 0);
+      });
+    });
+
+    assert.equal(repo.getOrder(user.id, target.id).status, 'ACCEPTED');
+    const defensiveOrders = repo.listOrders(user.id, { strategyId: strategy.id })
+      .filter((order) => order.side === 'SELL' && order.sellReason === 'STOP_LOSS');
+    assert.equal(defensiveOrders.length, 0);
+    assert.equal(repo.getStrategy(user.id, strategy.id).holdingSymbol, '005932');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 실패 주문 재시도 전에 분봉 신호와 추격 가격을 다시 검증한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: false,
+    lunchBudget: 0,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id,
+    tradeDate: '2026-06-11',
+    entryWindow: 'MORNING',
+    status: 'SELECTED',
+    selectedSymbol: '005930',
+    selectedSymbolName: '삼성전자',
+    selectedPrice: 70_000,
+    selectedFluctuationRate: 0.10,
+    bought: false
+  });
+  repo.createOrder(user.id, {
+    strategyId: strategy.id,
+    entryId: entry.id,
+    symbol: '005930',
+    symbolName: '삼성전자',
+    side: 'BUY',
+    entryWindow: 'MORNING',
+    quantity: 10,
+    orderPrice: 70_000,
+    estimatedAmount: 700_000,
+    status: 'FAILED',
+    idempotencyKey: `20260611-${strategy.id}-MORNING-BUY`,
+    decisionReason: '첫 주문 실패',
+    liveOrderEnabled: true,
+    errorMessage: '일시적 주문 실패'
+  });
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    cash: 1_000_000,
+    prices: { '005930': 71_000 },
+    minuteRows: passingMinuteCandles(70_000)
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-11T00:11:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /재시도 현재가.*추격 매수를 중단/);
+        assert.equal(result.order, null);
+        assert.equal(state.orderCalls || 0, 0);
+      });
+    });
+    const refreshedEntry = repo.getEntry(strategy.id, '2026-06-11', 'MORNING');
+    assert.equal(refreshedEntry.selectedSymbol, null, '다음 tick에서 새 후보를 고르도록 기존 선택을 해제해야 한다');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 실패 주문 재시도 시 최신 점심 등락률이 15%에 닿으면 후보를 해제한다', async () => {
+  const strategy = repo.createStrategy(user.id, {
+    morningBudget: 1_000_000,
+    morningTargetProfitRate: 0.02,
+    morningStopLossRate: 0.05,
+    lunchEntryEnabled: true,
+    lunchBudget: 1_000_000,
+    lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05,
+    autoBudgetEnabled: false
+  });
+  repo.startStrategy(user.id, strategy.id);
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id,
+    tradeDate: '2026-06-12',
+    entryWindow: 'LUNCH',
+    status: 'SELECTED',
+    selectedSymbol: '005930',
+    selectedSymbolName: '삼성전자',
+    selectedPrice: 70_000,
+    selectedFluctuationRate: 0.149,
+    bought: false
+  });
+  repo.createOrder(user.id, {
+    strategyId: strategy.id,
+    entryId: entry.id,
+    symbol: '005930',
+    symbolName: '삼성전자',
+    side: 'BUY',
+    entryWindow: 'LUNCH',
+    quantity: 10,
+    orderPrice: 70_000,
+    estimatedAmount: 700_000,
+    status: 'FAILED',
+    idempotencyKey: `20260612-${strategy.id}-LUNCH-BUY`,
+    decisionReason: '첫 주문 실패',
+    liveOrderEnabled: true,
+    errorMessage: '일시적 주문 실패'
+  });
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    cash: 1_000_000,
+    prices: { '005930': 70_000 },
+    minuteRows: passingMinuteCandles(70_000),
+    rankingRows: [
+      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '15.0' }
+    ]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-06-12T02:31:00Z', async () => {
+        const result = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(result.decision.decision, 'SKIP');
+        assert.match(result.decision.reason, /최신 랭킹.*진입 상한 15%/);
+        assert.equal(result.order, null);
+        assert.equal(state.orderCalls || 0, 0);
+      });
+    });
+    const refreshedEntry = repo.getEntry(strategy.id, '2026-06-12', 'LUNCH');
+    assert.equal(refreshedEntry.selectedSymbol, null);
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
 });
 
 test('한국 랭킹 수동 평가: 진입 구간 밖 SKIP은 판단 로그를 남긴다', async () => {

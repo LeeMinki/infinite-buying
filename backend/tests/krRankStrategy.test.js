@@ -68,10 +68,21 @@ test('모든 종목이 21% 이상이면 후보가 없다', () => {
   assert.equal(selectRankingCandidate(ranking), null);
 });
 
-test('진입 구간별 등락률 상한은 오전 21%, 점심은 되돌림 위험으로 16%를 쓴다', () => {
+test('진입 구간별 등락률 상한은 오전 21%, 점심은 되돌림 위험으로 15%를 쓴다', () => {
   assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.21);
-  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.16);
+  assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.15);
   assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
+});
+
+test('점심 등락률 상한 15%는 경계값부터 후보에서 제외한다', () => {
+  const ranking = [
+    { symbol: '150000', name: '경계', price: 1000, fluctuationRate: 0.15 },
+    { symbol: '149000', name: '통과', price: 1000, fluctuationRate: 0.149 }
+  ];
+  const candidates = selectRankingCandidates(ranking, {
+    maxFluctuationRate: maxFluctuationRateForEntryWindow('LUNCH')
+  });
+  assert.deepEqual(candidates.map((candidate) => candidate.symbol), ['149000']);
 });
 
 // ── 7.x 매수 수량 계산 ──────────────────────────────────────────────────
@@ -421,6 +432,25 @@ test('aggregateRankingCandidates: 반복 관찰된 후보를 우선한다', () =
   assert.equal(candidates[0].symbol, 'BBB');
   assert.equal(candidates.some((c) => c.symbol === 'AAA'), false);
   assert.equal(candidates[0].observationCount, 3);
+});
+
+test('aggregateRankingCandidates: 관찰이 충분한데 반복 후보가 없으면 단발 후보로 fallback하지 않는다', () => {
+  const snapshots = [
+    [{ symbol: 'AAA', name: '첫 후보', price: 1000, fluctuationRate: 0.12 }],
+    [{ symbol: 'BBB', name: '둘째 후보', price: 1100, fluctuationRate: 0.13 }],
+    [{ symbol: 'CCC', name: '셋째 후보', price: 1200, fluctuationRate: 0.14 }]
+  ];
+  const candidates = aggregateRankingCandidates(snapshots);
+  assert.deepEqual(candidates, []);
+});
+
+test('aggregateRankingCandidates: 관찰이 충분하지 않으면 단발 후보를 유지한다', () => {
+  const snapshots = [
+    [{ symbol: 'AAA', name: '첫 후보', price: 1000, fluctuationRate: 0.12 }],
+    [{ symbol: 'BBB', name: '둘째 후보', price: 1100, fluctuationRate: 0.13 }]
+  ];
+  const candidates = aggregateRankingCandidates(snapshots);
+  assert.deepEqual(new Set(candidates.map((candidate) => candidate.symbol)), new Set(['AAA', 'BBB']));
 });
 
 test('VWAP은 (고+저+종)/3 가중 평균으로 계산된다', () => {
