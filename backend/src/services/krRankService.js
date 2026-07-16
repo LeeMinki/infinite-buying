@@ -1,7 +1,7 @@
 import * as repo from '../repositories/krRankRepository.js';
 import * as autoTradingRepo from '../repositories/autoTradingRepository.js';
 import { env } from '../config/env.js';
-import { KisTradingService, maskPayload } from './kisTradingService.js';
+import { KisTradingService, findOrderHistoryMatch, maskPayload } from './kisTradingService.js';
 import { getValidAccessToken } from './kisTokenManager.js';
 import { getDomesticFluctuationRanking, getDomesticTodayMinuteCandles, getDomesticHolidays } from './marketDataService.js';
 import {
@@ -27,6 +27,9 @@ const RANKING_SNAPSHOT_SIZE = 30;
 // 매수 필터(분봉 단기 흐름 검사)에서 검사할 상위 후보 개수.
 // 상위 후보들을 점수화해 고르되, 너무 크면 KIS 호출이 늘어 rate limit 위험이 있어 제한한다.
 const BUY_FILTER_CANDIDATE_LIMIT = 5;
+// 상승률 원본 랭킹 상위 10위까지만 전략 후보로 인정한다. 상한/상품 제외 후
+// 11위 이하를 backfill하면 실제 하위 종목이 후보로 승격된다.
+const RAW_RANK_CANDIDATE_LIMIT = 10;
 const RANKING_OBSERVATION_LIMIT = 30;
 // 진입 전 랭킹 관찰 스냅샷 보존 기간(일). 지속성 백테스트용으로 충분히 남기되 무한 증가는 막는다.
 const OBSERVATION_RETENTION_DAYS = 30;
@@ -38,6 +41,15 @@ const PRICE_LIMIT_MULTIPLIER = 1.3;
 // 이 비율 넘게 올라 있으면, 신호가 난 사이 이미 급등한 것으로 보고 추격 매수를 보류한다.
 // (거래 마른 봉 직후 시초 급등을 잡던 사고 방지 — 다음 tick에 신호가 안정되면 다시 본다.)
 const ENTRY_MAX_SLIPPAGE_RATE = 0.007;
+// 실패 주문 재확인 중 신호가보다 이 비율 넘게 하락하면 돌파 모멘텀이 무효화된 것으로 본다.
+const ENTRY_MAX_ADVERSE_MOVE_RATE = 0.007;
+// 신규 후보 선택과 주문 확인은 진입 시작 후 3분 안에 끝낸다. ENTRY_WINDOWS 자체는
+// 이미 접수된 주문의 체결 확인을 위해 넓게 유지한다.
+const ENTRY_DECISION_GRACE_MINUTES = 3;
+// 첫 필터 통과 후보는 다음 tick에서 한 번 더 확인하되, 기술 오류로 오래 끌며 늦게 진입하지 않는다.
+const ENTRY_CONFIRMATION_MAX_MINUTES = 3;
+// 확정 손실 청산이 이 횟수 연속이면 신규 진입을 잠그고 수동 stop→start 재개를 요구한다.
+const CONSECUTIVE_LOSS_LOCK_LIMIT = 2;
 // 진입 매수 지정가 버퍼: 시장가 대신 현재가보다 이만큼 위의 지정가로 매수한다. 정상 호가에서는
 // 시장가처럼 즉시 체결되면서도, 순간 급등으로 호가가 위로 갭하면 꼭대기를 잡지 않게 막는다.
 // (미국 랭킹 전략이 지정가로 매수하는 것과 같은 철학. 호가단위 스냅·올림은 주문 빌더가 처리한다.)
@@ -194,14 +206,28 @@ export async function evaluateRunningStrategies() {
 async function evaluateUnlocked(userId, strategy, evaluationSource) {
   const liveOrderEnabled = resolveLiveOrderEnabled(userId);
   pruneOldObservationsOncePerDay();
+  // 진입창 종료 여부와 무관하게 이미 SELECTED/접수된 BUY를 먼저 잔고·매도 상태까지
+  // reconcile한다. 이 경로가 손실 gate나 idle 조기 반환보다 뒤에 있으면 늦게 체결된 실포지션이 고아가 된다.
+  const pendingEntry = !strategy.holdingSymbol
+    ? repo.getPendingEntry(strategy.id, kstToday())
+    : null;
+  const pendingBuyStarted = pendingEntry
+    ? repo.hasStartedBuyForEntry(pendingEntry.id)
+    : false;
+  // 손실 회로 차단기는 무보유일 때만 적용한다. 보유 중에는 어떤 손실 이력이 있어도
+  // 체결 동기화와 청산 평가를 계속해야 포지션이 방치되지 않는다.
+  if (!strategy.holdingSymbol && !pendingBuyStarted) {
+    const riskBlocked = applyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSource });
+    if (riskBlocked) return riskBlocked;
+  }
   // 1분 폴링이라 할 일이 없는 tick은 KIS 호출 없이 일찍 끝낸다.
   // 무보유이고 진입 구간이 아니거나, 이미 그 구간 진입을 마쳤으면 바로 종료한다.
   const noLogIfScheduled = evaluationSource !== 'MANUAL';
-  if (!strategy.holdingSymbol) {
+  if (!strategy.holdingSymbol && !pendingEntry) {
     const observationWindow = resolveEntryObservationWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
     if (observationWindow) {
       const existing = repo.getEntry(strategy.id, kstToday(), observationWindow);
-      if (!existing?.bought) {
+      if (!existing?.bought && !['NO_CANDIDATE', 'SKIPPED'].includes(existing?.status)) {
         const ranking = await getDomesticFluctuationRanking(userId);
         const rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
         repo.createObservation(userId, {
@@ -232,7 +258,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
     // 진입 기록이 종결 상태(매수 완료 / 후보 없음)면 KIS 호출 없이 끝낸다.
     // 종목은 골랐지만 아직 매수가 안 된 상태(SELECTED)면 매수 재시도를 위해 그대로 진행한다.
     const existing = repo.getEntry(strategy.id, kstToday(), window);
-    if (existing && (existing.bought || existing.status === 'NO_CANDIDATE')) {
+    if (existing && (existing.bought || ['NO_CANDIDATE', 'SKIPPED'].includes(existing.status))) {
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow: window, liveOrderEnabled, evaluationSource,
         reason: existing.bought
@@ -250,7 +276,9 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
     if (strategy.holdingSymbol) {
       return await evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, evaluationSource });
     }
-    return await evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, evaluationSource });
+    return await evaluateEntryPath(userId, strategy, {
+      trading, liveOrderEnabled, evaluationSource, pendingEntry
+    });
   } catch (error) {
     const message = contextReady
       ? (error.message || '한국 랭킹 전략 평가에 실패했습니다.')
@@ -268,6 +296,55 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   }
 }
 
+function applyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSource }) {
+  const tradeDate = kstToday();
+  const risk = repo.getLiveLossRiskState(strategy.id, {
+    tradeDate,
+    since: strategy.startedAt || null
+  });
+
+  const consecutiveRiskExits = risk.consecutiveRiskExits ?? risk.consecutiveLossExits;
+  if (consecutiveRiskExits >= CONSECUTIVE_LOSS_LOCK_LIMIT) {
+    // DB상 flat만 믿고 STOPPED로 바꾸면 늦게 반영된 체결/외부 잔고를 관리할 scheduler까지
+    // 끊을 수 있다. RUNNING은 유지하고 신규 진입만 잠가 sync/청산 경로를 계속 살린다.
+    const alreadyLogged = repo.hasLossCircuitBreakerLog(strategy.id, strategy.startedAt || null);
+    const riskSummary = risk.consecutiveUnresolvedExits > 0
+      ? `최근 실주문 청산 ${consecutiveRiskExits}회가 연속 손실이거나 손익 미확정 상태입니다 (이 중 ${risk.consecutiveUnresolvedExits}회는 실현손익 동기화 대기 중).`
+      : `최근 실주문 손실 청산이 ${risk.consecutiveLossExits}회 연속 확정되어`;
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', liveOrderEnabled, evaluationSource,
+      reason: `손실 회로 차단기: ${riskSummary} 신규 진입을 잠갔습니다. 체결 확인과 기존 보유 청산은 계속하며, 재개하려면 계좌를 확인한 뒤 전략을 중지하고 다시 시작하세요.`,
+      noLog: evaluationSource !== 'MANUAL' && alreadyLogged
+    });
+  }
+
+  if (!risk.lossExitToday && !risk.unresolvedExitToday) return null;
+  const entryWindow = resolveEntryObservationWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled })
+    || resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
+  if (!entryWindow) return null;
+
+  let entry = repo.getEntry(strategy.id, tradeDate, entryWindow);
+  let created = false;
+  if (!entry) {
+    entry = repo.createEntry(userId, {
+      strategyId: strategy.id,
+      tradeDate,
+      entryWindow,
+      status: 'SKIPPED',
+      rankingSnapshot: null,
+      bought: false
+    });
+    created = Boolean(entry);
+  }
+  return saveDecision(userId, strategy, {
+    decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
+    reason: risk.unresolvedExitToday
+      ? `오늘 실주문 청산의 손익 확인이 끝나지 않아 ${ENTRY_WINDOWS[entryWindow].label} 신규 진입을 안전상 건너뜁니다. 기존 보유분의 체결 확인과 청산 관리는 계속합니다.`
+      : `오늘 실주문 손실 청산이 확정되어 ${ENTRY_WINDOWS[entryWindow].label} 신규 진입을 건너뜁니다. 기존 보유분의 체결 확인과 청산 관리는 계속합니다.`,
+    noLog: evaluationSource !== 'MANUAL' && !created
+  });
+}
+
 // 보유 종목이 있을 때: 목표 수익/손절 매도 판단.
 async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, evaluationSource }) {
   const symbol = strategy.holdingSymbol;
@@ -278,12 +355,104 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   const balance = await limitedKisCall(userId, `kr-balance:${symbol}`, () => (
     trading.getBalance(symbol, { market: 'KR', currency: 'KRW' })
   ));
-  const holdingQuantity = Math.floor(Number(balance.quantity || 0));
-  const averagePrice = Number(balance.averagePrice || 0);
+  const accountHoldingQuantity = Math.floor(Number(balance.quantity || 0));
+  const accountAveragePrice = Number(balance.averagePrice || 0);
   const currentPrice = Number(price.price || 0);
+  let activeSellOrder = repo.getActiveSellOrder({
+    strategyId: strategy.id,
+    entryWindow,
+    symbol
+  });
+  let activeTargetOrder = activeSellOrder?.sellReason === 'TARGET'
+    ? activeSellOrder
+    : repo.getActiveSellOrder({
+        strategyId: strategy.id,
+        entryWindow,
+        symbol,
+        sellReason: 'TARGET'
+      });
+  const positionEntry = (activeSellOrder?.entryId || activeTargetOrder?.entryId)
+    ? repo.getEntryById(activeSellOrder?.entryId || activeTargetOrder?.entryId)
+    : repo.getLatestBoughtEntry(strategy.id, entryWindow, symbol);
+  const positionBuyOrder = repo.getLatestBuyOrder({
+    strategyId: strategy.id,
+    entryWindow,
+    symbol,
+    entryId: positionEntry?.id ?? activeSellOrder?.entryId ?? activeTargetOrder?.entryId ?? null
+  });
+  // 포지션의 실주문/기록모드 provenance는 현재 사용자 토글이 아니라 실제 BUY 주문이 기준이다.
+  // 사용자 토글 OFF는 이미 live로 산 포지션의 청산을 막지 않지만, 전역 스위치는 모든 KIS 쓰기를 막는다.
+  const positionWasLive = positionBuyOrder?.liveOrderEnabled
+    ?? activeSellOrder?.liveOrderEnabled
+    ?? activeTargetOrder?.liveOrderEnabled
+    ?? liveOrderEnabled;
+  const globalLiveOrderEnabled = isGlobalLiveOrderEnabled();
+  liveOrderEnabled = Boolean(positionWasLive && globalLiveOrderEnabled);
+  let holdingQuantity = accountHoldingQuantity;
+  let averagePrice = accountAveragePrice;
+
+  if (positionWasLive) {
+    const confirmedBuyQuantity = getConfirmedOrderFilledQuantity(positionBuyOrder);
+    if (confirmedBuyQuantity <= 0) {
+      // 계좌 잔고는 수동 보유분이나 다른 전략의 수량일 수 있다. 이 전략의 BUY 체결 수량을
+      // 주문 이력으로 입증하지 못하면 잔고 전체를 포지션으로 채택하거나 매도하지 않는다.
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity: accountHoldingQuantity,
+        liveOrderEnabled, evaluationSource, orderId: activeSellOrder?.id,
+        reason: `보유 종목 ${symbol}의 전략 매수 체결 수량을 확인할 수 없어 계좌 잔고를 자동 매도하지 않습니다. KIS 주문 이력과 계좌를 직접 확인하세요.`
+      });
+    }
+    const managedRemainingQuantity = getKrManagedRemainingQuantity(positionBuyOrder, positionEntry?.id);
+    averagePrice = Number(positionBuyOrder.averageFilledPrice || positionBuyOrder.orderPrice || accountAveragePrice || 0);
+    if (managedRemainingQuantity <= 0) {
+      // 전략 주문으로 산 수량은 모두 매도된 반면 같은 종목의 외부 보유분이 계좌에 남아 있을 수
+      // 있다. 외부 잔고는 건드리지 않고 이 전략의 holding만 해제한다.
+      repo.clearHolding(userId, strategy.id);
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity: 0,
+        liveOrderEnabled, evaluationSource, orderId: activeSellOrder?.id,
+        reason: `${symbol} 전략 매수 수량의 청산이 모두 확인되어 전략 보유 상태를 해제했습니다. 계좌에 남은 동일 종목 ${accountHoldingQuantity}주는 이 전략이 매수한 수량이 아니므로 건드리지 않습니다.`
+      });
+    }
+    holdingQuantity = Math.min(accountHoldingQuantity, managedRemainingQuantity);
+  }
 
   if (holdingQuantity <= 0) {
-    // KIS 잔고에 보유분이 없다 → 외부 매도/미체결 등. 보유 상태를 해제하고 다음 진입을 기다린다.
+    // 살아 있는 실매도 주문이 있는데 잔고만 0이면 접수를 체결로 추정하지 않는다. sync가 일시
+    // 실패했을 수 있으므로 주문 이력을 한 번 더 확인하고, FILLED 증거가 없으면 holding을 유지한다.
+    if (positionWasLive && activeSellOrder) {
+      const refreshed = await tryRefreshKrOrderState(userId, trading, activeSellOrder);
+      if (refreshed?.status !== 'FILLED') {
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP',
+          entryWindow,
+          selectedSymbol: symbol,
+          selectedSymbolName: strategy.holdingSymbolName,
+          currentPrice,
+          averagePrice,
+          holdingQuantity,
+          liveOrderEnabled,
+          evaluationSource,
+          orderId: refreshed?.id || activeSellOrder.id,
+          reason: `보유 종목 ${symbol}의 잔고는 0이지만 매도 주문 체결이 확정되지 않아 보유 상태 해제를 보류합니다. 다음 평가에서 KIS 주문 이력을 다시 확인합니다.`
+        });
+      }
+      activeSellOrder = refreshed;
+    }
+    const filledSellOrder = activeSellOrder?.status === 'FILLED'
+      ? activeSellOrder
+      : repo.getLatestFilledSellOrder({
+          strategyId: strategy.id,
+          entryWindow,
+          symbol,
+          entryId: positionEntry?.id ?? null
+        });
+    // 활성 주문이 없으면 외부 매도일 수 있고, FILLED 매도가 있으면 체결이 확인된 것이다.
+    // 어느 경우든 실제 잔고가 0이므로 holding을 해제하되, 활성 주문은 위에서 반드시 종결 확인했다.
     repo.clearHolding(userId, strategy.id);
     return saveDecision(userId, strategy, {
       decision: 'SKIP',
@@ -295,7 +464,10 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       holdingQuantity,
       liveOrderEnabled,
       evaluationSource,
-      reason: `보유 종목 ${symbol}의 잔고 수량이 0이라 보유 상태를 해제했습니다.`
+      orderId: filledSellOrder?.id,
+      reason: filledSellOrder
+        ? `보유 종목 ${symbol}의 매도 체결과 잔고 0을 확인해 보유 상태를 해제했습니다.`
+        : `보유 종목 ${symbol}의 활성 매도 주문이 없고 실제 잔고 수량이 0이라 외부 청산으로 보고 보유 상태를 해제했습니다.`
     });
   }
 
@@ -307,19 +479,20 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     currentPrice, averagePrice, targetProfitRate, stopLossRate,
     liquidateTime, nowMinutes: kstNowMinutes()
   });
-  const activeTargetOrder = repo.getActiveSellOrder({
-    strategyId: strategy.id,
-    entryWindow,
-    symbol,
-    sellReason: 'TARGET'
-  });
   let entryFailureReason = null;
   let defensiveExitReason = null;
+  // filledAt은 KIS 실제 체결시각이 아니라 우리 sync 발견 시각일 수 있다. 늦게 동기화된
+  // 오래된 포지션을 갓 체결로 오인해 손절을 유예하지 않도록 주문 생성시각을 보수적 하한으로 쓴다.
+  const holdingStartedAt = positionBuyOrder?.createdAt
+    || positionBuyOrder?.filledAt
+    || positionEntry?.createdAt
+    || activeTargetOrder?.createdAt;
+  const holdingMinutes = minutesSinceSqliteTimestamp(holdingStartedAt);
+  const targetOrderAgeMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
   if (sell.decision === 'SELL' && sell.sellReason === 'STOP_LOSS') {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
       const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
-      const holdingMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
       const deferral = evaluateStopLossDeferral(candles, {
         profitRate,
         stopLossRate,
@@ -349,7 +522,6 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
       const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
-      const holdingMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
       // 라이브는 진행 중(미완성) 분봉의 일시적 아래꼬리에 반응하지 않도록 완성봉만 본다.
       const failure = evaluateFastStopLoss(candles, { profitRate, holdingMinutes, useCompletedCandles: true });
       if (failure.failed) {
@@ -363,7 +535,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
         const defense = evaluateMidTradeDefense(candles, {
           profitRate,
           holdingMinutes,
-          targetOrderAgeMinutes: holdingMinutes,
+          targetOrderAgeMinutes,
           useCompletedCandles: true
         });
         if (defense.defensive) {
@@ -380,8 +552,39 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     }
   }
   const profitPct = (sell.profitRate * 100).toFixed(2);
+  const reasonLabel = sell.sellReason === 'TARGET'
+    ? '목표 수익 도달'
+    : sell.sellReason === 'STOP_LOSS'
+      ? (defensiveExitReason ? `중기 방어 손절 (${defensiveExitReason})` : '손절 기준 도달')
+      : sell.sellReason === 'ENTRY_FAILED'
+        ? `빠른 손절${entryFailureReason ? ` (${entryFailureReason})` : ''}`
+        : `청산 시각 도달 (${liquidateTime} KST)`;
 
   if (sell.decision === 'HOLD') {
+    let targetProtectionNote = '';
+    // 청산 판단이 없는 tick에만 누락된 목표가 주문을 복구한다. 이미 손절/시간청산 조건이면
+    // 목표가를 새로 냈다가 곧바로 취소하는 cancel-fill 경합을 만들지 않는다.
+    if (!activeSellOrder && !activeTargetOrder && positionBuyOrder) {
+      if (positionWasLive && !globalLiveOrderEnabled) {
+        targetProtectionNote = ' 전역 실주문 중지 상태라 새 목표가 주문은 만들지 않았습니다.';
+      } else {
+        await ensureKrTargetSellOrder(userId, trading, {
+          ...positionBuyOrder,
+          filledQuantity: positionWasLive ? holdingQuantity : positionBuyOrder.filledQuantity,
+          averageFilledPrice: positionWasLive ? averagePrice : positionBuyOrder.averageFilledPrice
+        });
+        activeTargetOrder = repo.getActiveSellOrder({
+          strategyId: strategy.id,
+          entryWindow,
+          symbol,
+          sellReason: 'TARGET'
+        });
+        activeSellOrder = activeTargetOrder;
+        targetProtectionNote = activeTargetOrder
+          ? ' 누락된 목표가 지정가 주문을 복구했습니다.'
+          : ' 목표가 주문을 만들지 못해 다음 평가에서 다시 확인합니다.';
+      }
+    }
     const liquidateNote = liquidateTime ? `, 청산 시각 ${liquidateTime} KST 미도달` : '';
     const blockedEntryNote = describeBlockedEntryWindow(strategy, entryWindow, symbol);
     return saveDecision(userId, strategy, {
@@ -394,18 +597,28 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       holdingQuantity,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.${blockedEntryNote}`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.${targetProtectionNote}${blockedEntryNote}`
+    });
+  }
+
+  if (positionWasLive && !globalLiveOrderEnabled) {
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP',
+      entryWindow,
+      sellReason: sell.sellReason,
+      selectedSymbol: symbol,
+      selectedSymbolName: strategy.holdingSymbolName,
+      currentPrice,
+      averagePrice,
+      holdingQuantity,
+      liveOrderEnabled: false,
+      evaluationSource,
+      orderId: activeSellOrder?.id,
+      reason: `${symbol} ${reasonLabel}(수익률 ${profitPct}%) 조건이지만 전역 실주문 중지 상태라 KIS 주문·취소를 보내지 않았습니다. 기존 보유와 주문 상태를 유지합니다.`
     });
   }
 
   // SELL — 전량 매도.
-  const reasonLabel = sell.sellReason === 'TARGET'
-    ? '목표 수익 도달'
-    : sell.sellReason === 'STOP_LOSS'
-      ? (defensiveExitReason ? `중기 방어 손절 (${defensiveExitReason})` : '손절 기준 도달')
-      : sell.sellReason === 'ENTRY_FAILED'
-        ? `빠른 손절${entryFailureReason ? ` (${entryFailureReason})` : ''}`
-      : `청산 시각 도달 (${liquidateTime} KST)`;
   if (activeTargetOrder) {
     if (sell.sellReason === 'TARGET') {
       if (!activeTargetOrder.liveOrderEnabled || activeTargetOrder.status === 'DECIDED' || activeTargetOrder.status === 'DRY_RUN') {
@@ -456,28 +669,14 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       reason: `${symbol} 매도가 ${ORDER_RETRY_LIMIT}회 실패해 더 시도하지 않습니다. 계좌를 직접 확인하세요.`
     });
   }
+  let sellQuantity = holdingQuantity;
   const allOpenOrders = liveOrderEnabled ? await safeOpenOrders(userId, trading, symbol) : [];
   // 방어 매도를 위해 취소할 현재 TARGET 주문 자체는 중복 주문으로 보지 않는다.
   // 단, 조회 실패(null)는 그대로 유지하고 다른 미체결 주문은 남겨 안전 검사가 막도록 한다.
   const openOrders = excludeKnownTargetOrder(allOpenOrders, activeTargetOrder);
-  const guard = checkOrderSafety({
-    side: 'SELL', quantity: holdingQuantity, openOrders, idempotencyKey, holdingQuantity
+  let guard = checkOrderSafety({
+    side: 'SELL', quantity: sellQuantity, openOrders, idempotencyKey, holdingQuantity: sellQuantity
   });
-
-  const baseOrder = {
-    strategyId: strategy.id,
-    entryId: activeTargetOrder?.entryId ?? findCurrentEntryId(strategy, entryWindow, symbol),
-    symbol,
-    symbolName: strategy.holdingSymbolName,
-    side: 'SELL',
-    entryWindow,
-    sellReason: sell.sellReason,
-    quantity: holdingQuantity,
-    orderPrice: currentPrice,
-    estimatedAmount: holdingQuantity * currentPrice,
-    idempotencyKey,
-    liveOrderEnabled
-  };
 
   if (!guard.ok) {
     // 안전 검증 미통과 = "지금은 못 함". 주문 행을 만들지 않고 다음 tick에 다시 매도를 시도한다.
@@ -492,7 +691,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   // 멱등성·실패 한도·미체결 조회를 포함한 모든 사전 안전 검사가 통과한 뒤에만
   // 기존 TARGET을 취소한다. 검사 실패 후 TARGET마저 사라져 포지션이 무방비가 되는 경우를 막는다.
   if (activeTargetOrder) {
-    const cancelResult = await cancelTargetBeforeDefensiveSell(userId, trading, activeTargetOrder);
+    const cancelResult = await cancelKrOrderAndConfirm(userId, trading, activeTargetOrder);
     if (!cancelResult.ok) {
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, sellReason: sell.sellReason,
@@ -502,7 +701,58 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
         reason: `${symbol} ${reasonLabel}(수익률 ${profitPct}%)이나 기존 목표가 주문 취소가 확인되지 않아 새 매도 주문을 만들지 않습니다. ${cancelResult.reason}`
       });
     }
+    // 취소-체결 경합 뒤에는 취소 전 수량을 재사용하지 않는다. 잔고와 미체결을 다시 읽어
+    // 실제 남은 수량만 매도하고, 그 사이 목표가가 전량 체결됐으면 새 주문을 만들지 않는다.
+    const refreshedBalance = await limitedKisCall(userId, `kr-balance-after-cancel:${symbol}`, () => (
+      trading.getBalance(symbol, { market: 'KR', currency: 'KRW' })
+    ));
+    const refreshedAccountQuantity = Math.floor(Number(refreshedBalance.quantity || 0));
+    sellQuantity = positionWasLive
+      ? Math.min(
+          refreshedAccountQuantity,
+          getKrManagedRemainingQuantity(positionBuyOrder, positionEntry?.id)
+        )
+      : refreshedAccountQuantity;
+    if (sellQuantity <= 0) {
+      repo.clearHolding(userId, strategy.id);
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, sellReason: sell.sellReason,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity: 0, liveOrderEnabled, evaluationSource,
+        orderId: cancelResult.order?.id || activeTargetOrder.id,
+        reason: `${symbol} 목표가 주문 취소 확인 뒤 잔고가 0이라 새 매도 주문 없이 보유 상태를 해제했습니다.`
+      });
+    }
+    const refreshedOpenOrders = await safeOpenOrders(userId, trading, symbol);
+    guard = checkOrderSafety({
+      side: 'SELL', quantity: sellQuantity, openOrders: refreshedOpenOrders,
+      idempotencyKey, holdingQuantity: sellQuantity
+    });
+    if (!guard.ok) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, sellReason: sell.sellReason,
+        selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
+        currentPrice, averagePrice, holdingQuantity: sellQuantity,
+        liveOrderEnabled, evaluationSource,
+        reason: `${symbol} 목표가 주문 취소 후 ${guard.reason} 새 매도 주문을 만들지 않고 다음 평가에서 다시 확인합니다.`
+      });
+    }
   }
+
+  const baseOrder = {
+    strategyId: strategy.id,
+    entryId: activeTargetOrder?.entryId ?? positionEntry?.id ?? findCurrentEntryId(strategy, entryWindow, symbol),
+    symbol,
+    symbolName: strategy.holdingSymbolName,
+    side: 'SELL',
+    entryWindow,
+    sellReason: sell.sellReason,
+    quantity: sellQuantity,
+    orderPrice: currentPrice,
+    estimatedAmount: sellQuantity * currentPrice,
+    idempotencyKey,
+    liveOrderEnabled
+  };
 
   const order = await placeOrder(userId, trading, baseOrder, {
     liveOrderEnabled,
@@ -513,8 +763,8 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   return saveDecision(userId, strategy, {
     decision: 'SELL', entryWindow, sellReason: sell.sellReason,
     selectedSymbol: symbol, selectedSymbolName: strategy.holdingSymbolName,
-    currentPrice, averagePrice, holdingQuantity,
-    expectedQuantity: holdingQuantity, expectedPrice: currentPrice,
+    currentPrice, averagePrice, holdingQuantity: sellQuantity,
+    expectedQuantity: sellQuantity, expectedPrice: currentPrice,
     expectedAmount: baseOrder.estimatedAmount,
     liveOrderEnabled, evaluationSource, orderId: order.id,
     reason: `${symbol} ${reasonLabel} 전량 매도 (수익률 ${profitPct}%). ${orderStatusNote(order, liveOrderEnabled)}`
@@ -522,34 +772,56 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
 }
 
 // 무보유일 때: 진입 구간에서 종목을 골라 현재가 근처 지정가로 매수한다.
-// 진입 기록이 없으면 랭킹을 조회해 새로 만들고, 이미 있으면(아직 매수 전) 그 종목으로 매수를
-// 재시도한다 — 매수가 성공할 때까지(재시도 한도 안에서) 같은 진입 구간을 이어 시도한다.
-async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, evaluationSource }) {
-  const entryWindow = resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
+// 진입 기록이 없을 때 한 번만 후보를 판정한다. 후보가 없거나 전원 거절이면 해당 구간을
+// NO_CANDIDATE로 종결한다. 후보가 있으면 SELECTED로 저장하고 다음 tick 재검증까지 통과한 뒤 주문한다.
+async function evaluateEntryPath(userId, strategy, {
+  trading, liveOrderEnabled, evaluationSource, pendingEntry = null
+}) {
+  const entryWindow = pendingEntry?.entryWindow
+    || resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
   if (!entryWindow) {
     return saveDecision(userId, strategy, {
       decision: 'SKIP', liveOrderEnabled, evaluationSource,
       reason: '지금은 오전·점심 진입 구간이 아니라 매수 평가를 하지 않습니다.'
     });
   }
-  const tradeDate = kstToday();
+  const tradeDate = pendingEntry?.tradeDate || kstToday();
   const label = ENTRY_WINDOWS[entryWindow].label;
 
-  // 진입 기록: 매수 완료면 종료, 종목이 정해진(SELECTED) 상태면 그 종목으로 매수 재시도.
-  // 종목이 아직 없으면(진입 기록 없음 또는 레거시 NO_CANDIDATE) 랭킹+단기 흐름 필터로 재평가한다.
-  let entry = repo.getEntry(strategy.id, tradeDate, entryWindow);
+  // 진입 기록: 종결 상태면 종료, 종목이 정해진 SELECTED만 확인/주문을 이어 간다.
+  let entry = pendingEntry || repo.getEntry(strategy.id, tradeDate, entryWindow);
   let rankingSnapshot = entry ? entry.rankingSnapshot : null;
-  if (entry?.bought) {
+  if (entry?.bought || ['NO_CANDIDATE', 'SKIPPED'].includes(entry?.status)) {
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
-      reason: `오늘 ${label} 진입 매수를 마쳤습니다.`
+      reason: entry?.bought
+        ? `오늘 ${label} 진입 매수를 마쳤습니다.`
+        : `오늘 ${label} 진입은 매수 없이 종결됐습니다.`,
+      noLog: evaluationSource !== 'MANUAL'
+    });
+  }
+  if (entry && !entry.selectedSymbol) {
+    repo.finalizeEntryWithoutCandidate(entry.id, { rankingSnapshot });
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+      reason: `${label} 진입: 이전 판단에서 선택 후보가 무효화되어 이 구간 매수를 종료합니다.`
     });
   }
 
-  // 매수 대상이 아직 없으면 매 tick 랭킹을 다시 조회·필터링한다.
-  // (예전에는 첫 tick에서 전원 거절되면 NO_CANDIDATE를 박아 그 구간 내내 재평가를 안 했다 — 좋은 셋업을 놓침)
-  if (!entry || !entry.selectedSymbol) {
-    // 랭킹 조회 실패 시 예외가 상위로 전파되어 ERROR로 기록된다(진입 기록 미생성 → 다음 tick 재시도).
+  // 매수 대상이 아직 없으면 이 구간의 최초 유효 평가에서만 랭킹과 분봉을 판정한다.
+  if (!entry) {
+    const minutesAfterWindowStart = kstNowMinutes() - ENTRY_WINDOWS[entryWindow].startMinutes;
+    if (minutesAfterWindowStart >= ENTRY_DECISION_GRACE_MINUTES) {
+      repo.createEntry(userId, {
+        strategyId: strategy.id, tradeDate, entryWindow,
+        status: 'SKIPPED', rankingSnapshot: null, bought: false
+      });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: 시작 후 ${ENTRY_DECISION_GRACE_MINUTES}분 안에 후보를 확정하지 못해 늦은 추격 매수를 막고 이 구간을 종료합니다.`
+      });
+    }
+    // 랭킹 조회 실패는 전략 거절과 구분한다. 진입 기록을 만들지 않아 다음 tick에서 기술 오류만 재시도한다.
     const ranking = await getDomesticFluctuationRanking(userId);
     rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
     repo.createObservation(userId, {
@@ -572,11 +844,15 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     let preparedBuyPlan = filterResult.buyPlan || null;
 
     if (!picked) {
-      // 후보 없음/전원 거절: 진입 기록을 만들지 않고(또는 레거시 기록을 SELECTED로 굳히지 않고) SKIP만 한다.
-      // 다음 tick에 랭킹을 다시 보되, 원인 추적을 위해 스케줄러 SKIP도 판단 로그로 남긴다.
+      // 후보 없음/전원 거절은 전략 판단의 결과다. NO_CANDIDATE를 남겨 50분짜리
+      // 진입창에서 매 30초 optional stopping으로 언젠가 한 번 통과하는 일을 막는다.
+      repo.createEntry(userId, {
+        strategyId: strategy.id, tradeDate, entryWindow,
+        status: 'NO_CANDIDATE', rankingSnapshot, bought: false
+      });
       const reason = candidates.length === 0
-        ? `${label} 진입: 최근 관찰 랭킹에서 등락률 ${(maxFluctuationRate * 100).toFixed(0)}% 미만이고 반복 확인된 매수 대상이 없어 다음 평가에서 다시 확인합니다.`
-        : `${label} 진입: 관찰 랭킹 종합 후보 ${candidates.length}개가 단기 흐름·거래대금·매수가능금액 검사에서 거절되어 다음 평가에서 다시 확인합니다. ${filterResult.rejections.map((r) => {
+        ? `${label} 진입: 원본 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위 안에서 등락률 ${(maxFluctuationRate * 100).toFixed(0)}% 미만이고 지속적으로 확인된 매수 대상이 없어 이 구간 매수를 건너뜁니다.`
+        : `${label} 진입: 관찰 랭킹 종합 후보 ${candidates.length}개가 단기 흐름·거래대금·매수가능금액 검사에서 모두 거절되어 이 구간 매수를 건너뜁니다. ${filterResult.rejections.map((r) => {
             const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
             return `${nameLabel}: ${r.reason}`;
           }).join(' / ')}`;
@@ -585,29 +861,27 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       });
     }
 
-    if (entry) {
-      // 레거시 NO_CANDIDATE 기록을 종목 확정으로 승격.
-      entry = repo.updateEntrySelection(entry.id, {
-        selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
-        selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
-        rankingSnapshot
+    entry = repo.createEntry(userId, {
+      strategyId: strategy.id, tradeDate, entryWindow,
+      status: 'SELECTED',
+      selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
+      selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+      rankingSnapshot, bought: false
+    });
+    if (!entry) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+        reason: `${label} 진입이 이미 기록되어 있어 중복 진입을 막았습니다.`
       });
-    } else {
-      entry = repo.createEntry(userId, {
-        strategyId: strategy.id, tradeDate, entryWindow,
-        status: 'SELECTED',
-        selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
-        selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
-        rankingSnapshot, bought: false
-      });
-      if (!entry) {
-        return saveDecision(userId, strategy, {
-          decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
-          reason: `${label} 진입이 이미 기록되어 있어 중복 진입을 막았습니다.`
-        });
-      }
     }
-    entry._preparedBuyPlan = preparedBuyPlan;
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow,
+      selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
+      currentPrice: preparedBuyPlan?.currentPrice,
+      cashAvailable: preparedBuyPlan?.cashAvailable,
+      rankingSnapshot, liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: ${picked.symbol} 후보를 선택했습니다. 단 한 번의 순간 통과로 주문하지 않고 다음 평가에서 최신 랭킹·분봉·가격을 다시 확인합니다.`
+    });
   }
 
   // 여기서부터 entry는 종목이 정해진 SELECTED 상태다. 매수(또는 재시도)를 진행한다.
@@ -619,45 +893,110 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     // 매수 주문이 이미 접수돼 있다. 접수(ACCEPTED)는 체결이 아니므로 낙관적으로 보유 처리하면
     // 미체결분을 다음 tick에 매도 평가할 수 있다. 실주문은 KIS 잔고로 체결을 확인한 뒤에만 보유로 전환한다.
     // 기록 모드(DRY_RUN)는 실제 주문·잔고가 없으므로 시뮬레이션으로 즉시 보유 전환한다.
-    if (!liveOrderEnabled) {
-      repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
-      repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
-      const buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+    let buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+    const entryWasLive = buyOrder?.liveOrderEnabled ?? liveOrderEnabled;
+    if (!entryWasLive) {
+      repo.confirmEntryHolding(userId, strategy.id, entry.id, { symbol, symbolName, entryWindow });
       if (buyOrder) await ensureKrTargetSellOrder(userId, trading, buyOrder);
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-        liveOrderEnabled, evaluationSource, reason: `${label} 진입: ${symbol} 매수 기록이 이미 있어 보유로 둡니다(기록 모드).`
+        liveOrderEnabled: entryWasLive, evaluationSource, reason: `${label} 진입: ${symbol} 매수 기록이 이미 있어 보유로 둡니다(기록 모드).`
       });
     }
-    const balance = await trading.getBalance(symbol, { market: 'KR', currency: 'KRW' });
-    const filledQuantity = Math.floor(Number(balance.quantity || 0));
+    let balance = await trading.getBalance(symbol, { market: 'KR', currency: 'KRW' });
+    let accountQuantity = Math.floor(Number(balance.quantity || 0));
+    let filledQuantity = Math.min(
+      accountQuantity,
+      getKrManagedRemainingQuantity(buyOrder, entry.id)
+    );
+    let buyRemainderNote = '';
+    // 계좌에 같은 종목이 있어도 이 BUY의 체결 증거가 없으면 수동/다른 전략 보유분일 수 있다.
+    // 주문 이력을 한 번 더 확인하되, 그래도 체결 수량이 없으면 절대 holding/TARGET으로 채택하지 않는다.
+    if (accountQuantity > 0 && filledQuantity <= 0 && buyOrder?.kisOrderNo) {
+      const refreshed = await tryRefreshKrOrderState(userId, trading, buyOrder);
+      if (refreshed) buyOrder = refreshed;
+      filledQuantity = Math.min(
+        accountQuantity,
+        getKrManagedRemainingQuantity(buyOrder, entry.id)
+      );
+    }
+    if (accountQuantity > 0 && filledQuantity <= 0) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        liveOrderEnabled: entryWasLive, evaluationSource, orderId: buyOrder?.id,
+        reason: `${label} 진입: 계좌에 ${symbol} ${accountQuantity}주가 있지만 이 전략의 매수 체결 수량은 확인되지 않아 보유로 전환하거나 매도하지 않습니다. KIS 주문 이력과 기존 보유분을 확인하세요.`
+      });
+    }
+    if (filledQuantity > 0 && buyOrder
+      && !['FILLED', 'CANCELED', 'REJECTED'].includes(buyOrder.status)) {
+      const openOrders = await safeOpenOrders(userId, trading, symbol);
+      if (!Array.isArray(openOrders)) {
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+          liveOrderEnabled: entryWasLive, evaluationSource,
+          reason: `${label} 진입: ${symbol} 일부 체결 잔고가 있지만 미체결 잔량을 확인하지 못해 보유 전환을 보류합니다.`
+        });
+      }
+      const ownBuyStillOpen = openOrders.some((row) => (
+        buyOrder.kisOrderNo
+        && String(row?.orderNo || '').trim() === String(buyOrder.kisOrderNo).trim()
+      ));
+      if (ownBuyStillOpen) {
+        if (!isGlobalLiveOrderEnabled()) {
+          return saveDecision(userId, strategy, {
+            decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+            liveOrderEnabled: false, evaluationSource,
+            reason: `${label} 진입: ${symbol} 일부 체결과 매수 잔량이 확인됐지만 전역 실주문 중지 상태라 취소하지 않고 상태 확정을 보류합니다.`
+          });
+        }
+        const canceled = await cancelKrOrderAndConfirm(userId, trading, buyOrder);
+        if (!canceled.ok) {
+          return saveDecision(userId, strategy, {
+            decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+            liveOrderEnabled: entryWasLive, evaluationSource, orderId: buyOrder.id,
+            reason: `${label} 진입: ${symbol} 일부 체결 후 남은 매수 취소가 확정되지 않아 보유 전환을 보류합니다. ${canceled.reason}`
+          });
+        }
+        buyOrder = canceled.order || buyOrder;
+        balance = await trading.getBalance(symbol, { market: 'KR', currency: 'KRW' });
+        accountQuantity = Math.floor(Number(balance.quantity || 0));
+        filledQuantity = Math.min(
+          accountQuantity,
+          getKrManagedRemainingQuantity(buyOrder, entry.id)
+        );
+        buyRemainderNote = ' 남은 매수 주문의 취소와 잔고 재확인을 마쳤습니다.';
+      }
+    }
     if (filledQuantity > 0) {
-      repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
-      repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
-      const buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
+      repo.confirmEntryHolding(userId, strategy.id, entry.id, { symbol, symbolName, entryWindow });
       if (buyOrder) {
         await ensureKrTargetSellOrder(userId, trading, {
           ...buyOrder,
           status: 'FILLED',
           filledQuantity,
-          averageFilledPrice: Number(balance.averagePrice || buyOrder.averageFilledPrice || buyOrder.orderPrice || 0)
+          averageFilledPrice: Number(buyOrder.averageFilledPrice || buyOrder.orderPrice || balance.averagePrice || 0)
         });
       }
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-        liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} 매수 체결 확인(${filledQuantity}주). 보유로 전환했습니다.`
+        liveOrderEnabled: entryWasLive, evaluationSource,
+        reason: `${label} 진입: ${symbol} 매수 체결 확인(${filledQuantity}주). 보유로 전환했습니다.${buyRemainderNote}`
       });
     }
-    // 잔고는 0인데 매수 주문이 이미 FILLED인 경우는 "매수 체결 → 매도 체결"이 같은 평가 사이 간격
-    // 안에서 끝난 케이스다. 진입 기록을 BOUGHT로 굳혀 다음 tick부터 같은 SKIP을 반복하지 않게 한다.
-    let buyOrder = repo.getActiveOrderByIdempotencyKey?.(idempotencyKey) || null;
-    if (buyOrder?.status === 'FILLED') {
+    // 잔고 0만으로 "매수 후 매도까지 완료"라고 추정하지 않는다. BUY FILLED와 별개로
+    // SELL FILLED 증거가 있어야 진입을 종결한다(취소/거부 오분류나 잔고 일시 불일치 방지).
+    let refreshedBuyOrder = buyOrder;
+    const filledSellOrder = repo.getFilledSellOrderForEntry(entry.id);
+    if (filledSellOrder && (
+      refreshedBuyOrder?.status === 'FILLED'
+      || Number(refreshedBuyOrder?.filledQuantity || 0) > 0
+    )) {
       repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-        liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} 매수 체결 후 매도까지 끝난 상태로 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
+        liveOrderEnabled: entryWasLive, evaluationSource,
+        orderId: filledSellOrder.id,
+        reason: `${label} 진입: ${symbol} 매수와 매도 체결이 모두 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
         noLog: evaluationSource !== 'MANUAL'
       });
     }
@@ -667,23 +1006,28 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     //       실패해 우리 DB 가 뒤처져 있다.
     // (b)를 (a)로 잘못 판단하면 무한 SKIP 노이즈가 다시 생기므로, 이번 케이스에 한정해서
     // KIS 체결조회를 한 번만 콕 찍어 다시 확인한다(주기적 폴링이 아니라 모호한 분기에서만 호출).
-    if (liveOrderEnabled && buyOrder?.kisOrderNo) {
-      const refreshed = await tryRefreshBuyOrderState(userId, trading, buyOrder);
+    if (entryWasLive && refreshedBuyOrder?.kisOrderNo) {
+      const refreshed = await tryRefreshBuyOrderState(userId, trading, refreshedBuyOrder);
       if (refreshed?.status === 'FILLED') {
-        buyOrder = refreshed;
-        repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
-        return saveDecision(userId, strategy, {
-          decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-          liveOrderEnabled, evaluationSource,
-          reason: `${label} 진입: ${symbol} 매수가 KIS 체결조회로 체결 확인됐고 잔고가 0이라 매도까지 끝난 상태로 보고 오늘 ${label} 진입을 마쳤습니다.`,
-          noLog: evaluationSource !== 'MANUAL'
-        });
+        refreshedBuyOrder = refreshed;
+        const refreshedFilledSell = repo.getFilledSellOrderForEntry(entry.id);
+        if (refreshedFilledSell) {
+          repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
+          return saveDecision(userId, strategy, {
+            decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+            liveOrderEnabled: entryWasLive, evaluationSource, orderId: refreshedFilledSell.id,
+            reason: `${label} 진입: ${symbol} 매수와 매도 체결이 모두 확인되어 오늘 ${label} 진입을 마쳤습니다.`,
+            noLog: evaluationSource !== 'MANUAL'
+          });
+        }
       }
     }
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-      liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다.`
+      liveOrderEnabled: entryWasLive, evaluationSource,
+      reason: refreshedBuyOrder?.status === 'FILLED'
+        ? `${label} 진입: ${symbol} 매수 체결은 확인됐지만 잔고가 0이고 매도 체결은 확인되지 않아 상태 확정을 보류합니다.`
+        : `${label} 진입: ${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다.`
     });
   }
   if (repo.countFailedOrders(idempotencyKey) >= ORDER_RETRY_LIMIT) {
@@ -694,7 +1038,36 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     });
   }
 
-  let buyPlan = entry._preparedBuyPlan || null;
+  if (tradeDate !== kstToday()) {
+    repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+      rankingSnapshot, liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: 이전 거래일의 미접수 후보라 새 주문을 만들지 않고 종료합니다.`
+    });
+  }
+
+  const minutesAfterWindowStart = kstNowMinutes() - ENTRY_WINDOWS[entryWindow].startMinutes;
+  if (minutesAfterWindowStart >= ENTRY_DECISION_GRACE_MINUTES) {
+    repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+      rankingSnapshot, liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: 시작 후 ${ENTRY_DECISION_GRACE_MINUTES}분이 지나 늦은 주문을 막고 이 구간을 종료합니다.`
+    });
+  }
+
+  const confirmationAgeMinutes = minutesSinceSqliteTimestamp(entry.createdAt);
+  if (confirmationAgeMinutes != null && confirmationAgeMinutes >= ENTRY_CONFIRMATION_MAX_MINUTES) {
+    repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+      rankingSnapshot, liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: ${symbol} 후보 확인이 ${ENTRY_CONFIRMATION_MAX_MINUTES}분 안에 끝나지 않아 늦은 추격 매수를 막고 이 구간을 종료합니다.`
+    });
+  }
+
+  let buyPlan = null;
   if (!buyPlan) {
     // 이전 tick의 주문 실패 뒤 남은 SELECTED 종목을 그대로 재주문하면, 그 사이 흐름이 꺾였거나
     // 신호가보다 급등한 종목을 뒤늦게 추격할 수 있다. 재시도 직전에 분봉과 실행가를 다시 확인한다.
@@ -712,7 +1085,10 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     }
     rankingSnapshot = (latestRanking || []).slice(0, RANKING_SNAPSHOT_SIZE);
     const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
-    const retryCandidate = selectRankingCandidates(latestRanking, { maxFluctuationRate })
+    const retryCandidate = selectRankingCandidates(
+      (latestRanking || []).slice(0, RAW_RANK_CANDIDATE_LIMIT),
+      { maxFluctuationRate }
+    )
       .find((candidate) => candidate.symbol === symbol);
     const retryCheck = retryCandidate
       ? checkBuyCandidate(latestCandles, {
@@ -721,11 +1097,11 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
         })
       : { ok: false, reason: `최신 랭킹에서 사라졌거나 현재 등락률이 진입 상한 ${(maxFluctuationRate * 100).toFixed(0)}% 이상입니다.` };
     if (!retryCheck.ok) {
-      repo.clearEntrySelection(entry.id, { rankingSnapshot });
+      repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         rankingSnapshot, liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} 재시도 전 단기 흐름 재검증에서 제외했습니다. ${retryCheck.reason} 다음 평가에서 새 후보를 확인합니다.`
+        reason: `${label} 진입: ${symbol} 주문 전 재검증에서 제외했습니다. ${retryCheck.reason} 늦은 대체 후보를 추격하지 않고 이 구간을 종료합니다.`
       });
     }
     try {
@@ -741,55 +1117,50 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
       });
     }
     const referencePrice = Number(retryCheck.referencePrice) || 0;
-    if (referencePrice > 0 && buyPlan.currentPrice > referencePrice * (1 + ENTRY_MAX_SLIPPAGE_RATE)) {
-      const slippage = (buyPlan.currentPrice - referencePrice) / referencePrice;
-      repo.clearEntrySelection(entry.id, { rankingSnapshot });
+    const selectedPrice = Number(entry.selectedPrice) || referencePrice;
+    if (selectedPrice > 0 && buyPlan.currentPrice < selectedPrice * (1 - ENTRY_MAX_ADVERSE_MOVE_RATE)) {
+      const adverseMove = (selectedPrice - buyPlan.currentPrice) / selectedPrice;
+      repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
         currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable,
         rankingSnapshot, liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} 재시도 현재가가 새 신호가보다 ${(slippage * 100).toFixed(1)}% 올라 추격 매수를 중단했습니다. 다음 평가에서 새 후보를 확인합니다.`
+        reason: `${label} 진입: ${symbol} 현재가가 최초 선택가보다 ${(adverseMove * 100).toFixed(1)}% 급락해 모멘텀이 무효화됐습니다. 이 구간을 종료합니다.`
+      });
+    }
+    if (referencePrice > 0 && buyPlan.currentPrice > referencePrice * (1 + ENTRY_MAX_SLIPPAGE_RATE)) {
+      const slippage = (buyPlan.currentPrice - referencePrice) / referencePrice;
+      repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 현재가가 새 신호가보다 ${(slippage * 100).toFixed(1)}% 올라 추격 매수를 중단하고 이 구간을 종료합니다.`
+      });
+    }
+    if (referencePrice > 0 && buyPlan.currentPrice < referencePrice * (1 - ENTRY_MAX_ADVERSE_MOVE_RATE)) {
+      const adverseMove = (referencePrice - buyPlan.currentPrice) / referencePrice;
+      repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 현재가가 새 신호가보다 ${(adverseMove * 100).toFixed(1)}% 급락해 모멘텀이 무효화됐습니다. 이 구간을 종료합니다.`
       });
     }
   }
 
   if (buyPlan.quantity <= 0) {
-    // 예전 배포에서 이미 고가 종목이 SELECTED로 고정된 경우를 풀고, 같은 tick에서 다음 후보를 찾는다.
-    const ranking = await getDomesticFluctuationRanking(userId);
-    rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
-    const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
-    const candidates = selectRankingCandidates(ranking, { maxFluctuationRate })
-      .filter((candidate) => candidate.symbol !== symbol)
-      .slice(0, BUY_FILTER_CANDIDATE_LIMIT);
-    const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
-    if (filterResult.picked) {
-      entry = repo.updateEntrySelection(entry.id, {
-        selectedSymbol: filterResult.picked.symbol,
-        selectedSymbolName: filterResult.picked.name,
-        selectedPrice: filterResult.picked.price,
-        selectedFluctuationRate: filterResult.picked.fluctuationRate,
-        rankingSnapshot
-      });
-      symbol = entry.selectedSymbol;
-      symbolName = entry.selectedSymbolName;
-      buyPlan = filterResult.buyPlan;
-    } else {
-      repo.clearEntrySelection(entry.id, { rankingSnapshot });
-      const budgetNote = strategy.autoBudgetEnabled
-        ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원(자동 예산 모드)`
-        : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
-      const rejectionNote = filterResult.rejections.length > 0
-        ? ` 다음 후보도 조건을 통과하지 못했습니다. ${filterResult.rejections.map((r) => {
-            const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
-            return `${nameLabel}: ${r.reason}`;
-          }).join(' / ')}`
-        : ' 다음 후보가 없습니다.';
-      return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-        currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없어 후보에서 제외했습니다.${rejectionNote}`
-      });
-    }
+    const budgetNote = strategy.autoBudgetEnabled
+      ? `매수가능금액 ${fmt(buyPlan.cashAvailable)}원(자동 예산 모드)`
+      : `매수 금액 한도 ${fmt(buyPlan.entryBudget)}원·매수가능금액 ${fmt(buyPlan.cashAvailable)}원`;
+    repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+    return saveDecision(userId, strategy, {
+      decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+      currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable,
+      rankingSnapshot, liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: ${symbol} ${budgetNote}으로 1주도 매수할 수 없어 늦은 대체 후보를 찾지 않고 이 구간을 종료합니다.`
+    });
   }
 
   const { currentPrice, cashAvailable, quantity } = buyPlan;
@@ -819,6 +1190,25 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
     });
   }
 
+  if (liveOrderEnabled) {
+    // 미체결 안전검사 뒤 실제 POST에 최대한 가깝게 다시 잔고를 확인해, 검사 사이 수동 매수나
+    // 다른 전략 체결이 생기는 TOCTOU 구간을 줄인다.
+    const existingBalance = await limitedKisCall(userId, `kr-pre-buy-balance:${symbol}`, () => (
+      trading.getBalance(symbol, { market: 'KR', currency: 'KRW' })
+    ));
+    const existingQuantity = Math.floor(Number(existingBalance.quantity || 0));
+    if (existingQuantity > 0) {
+      // 동일 종목의 수동/다른 전략 보유분과 이번 전략 체결분을 KIS 잔고만으로 구분할 수 없다.
+      // 주문 전 잔고 0을 강제해 이후 reconciliation과 매도가 외부 보유분을 건드리지 않게 한다.
+      repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        currentPrice, cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: 계좌에 ${symbol} 기존 보유 ${existingQuantity}주가 있어 이번 전략 체결분과 구분할 수 없으므로 매수하지 않고 이 구간을 종료합니다.`
+      });
+    }
+  }
+
   const order = await placeOrder(userId, trading, {
     strategyId: strategy.id, entryId: entry.id, symbol, symbolName, side: 'BUY', entryWindow,
     quantity, orderPrice: limitPrice, estimatedAmount, idempotencyKey, liveOrderEnabled,
@@ -831,8 +1221,7 @@ async function evaluateEntryPath(userId, strategy, { trading, liveOrderEnabled, 
   // 실주문(ACCEPTED 등)은 접수일 뿐 체결이 아니므로 보유 전환을 미루고, 다음 tick의
   // hasNonFailedOrder 분기에서 KIS 잔고로 체결을 확인한 뒤 전환한다(미체결분 오평가 방지).
   if (order.status === 'DRY_RUN') {
-    repo.updateEntryOutcome(entry.id, { status: 'BOUGHT', bought: true });
-    repo.setHolding(userId, strategy.id, { symbol, symbolName, entryWindow });
+    repo.confirmEntryHolding(userId, strategy.id, entry.id, { symbol, symbolName, entryWindow });
     await ensureKrTargetSellOrder(userId, trading, order);
   }
   // 실패면 진입 기록은 SELECTED 그대로 — 다음 tick에 재시도(한도 안에서).
@@ -890,32 +1279,36 @@ export async function syncOrderFills(userId, { strategyId = null, limit = 20 } =
         if (!Array.isArray(history)) history = [];
         historyCache.set(cacheKey, history);
       }
-      const matched = history.find((row) => (
-        (order.kisOrderNo && row.orderNo === order.kisOrderNo)
-        || (order.kisOriginalOrderNo && row.originalOrderNo === order.kisOriginalOrderNo)
-      ));
+      const matched = findOrderHistoryMatch(history, order);
       if (!matched) continue;
       const filledQty = Math.floor(Number(matched.filledQuantity || 0));
       const remaining = matched.remainingQuantity != null && matched.remainingQuantity !== ''
         ? Number(matched.remainingQuantity)
         : null;
       const avgFilledPrice = Number(matched.averageFilledPrice || 0);
-      // 체결 정보가 전혀 없으면(아직 체결 전) 갱신하지 않는다 — 다음 tick에 다시 시도.
-      if (filledQty <= 0 && avgFilledPrice <= 0) continue;
+      const terminalStatus = ['CANCELED', 'REJECTED'].includes(matched.status);
+      // 체결 정보가 없어도 취소/거부/모순(UNKNOWN)은 DB에 전달해야 ACCEPTED로 영구 고착되지 않는다.
+      if (filledQty <= 0 && avgFilledPrice <= 0
+        && !terminalStatus && matched.status !== 'UNKNOWN') continue;
 
-      const status = matched.status === 'FILLED' || (remaining != null && remaining <= 0 && filledQty > 0)
-        ? 'FILLED'
-        : (filledQty > 0 ? 'PARTIALLY_FILLED' : order.status);
+      const status = terminalStatus || matched.status === 'UNKNOWN'
+        ? matched.status
+        : (matched.status === 'FILLED' || (remaining != null && remaining <= 0 && filledQty > 0)
+            ? 'FILLED'
+            : (filledQty > 0 ? 'PARTIALLY_FILLED' : order.status));
 
       const result = repo.updateOrder(userId, order.id, {
         status,
-        // updateOrder는 NULL을 그대로 덮어쓰니, 새 데이터가 없으면 기존 값으로 유지한다.
-        filledQuantity: filledQty > 0 ? filledQty : (order.filledQuantity ?? null),
+        // KIS 후속 조회가 일부 체결량을 더 작게 돌려줘도 이미 확인한 체결을 되돌리지 않는다.
+        // 동시에 잘못된 응답이 주문수량보다 큰 체결을 만들지 못하도록 상한을 둔다.
+        filledQuantity: mergeMonotonicFilledQuantity(order, filledQty),
         remainingQuantity: remaining != null ? remaining : (order.remainingQuantity ?? null),
-        averageFilledPrice: avgFilledPrice > 0 ? avgFilledPrice : (order.averageFilledPrice ?? null)
+        averageFilledPrice: mergeMonotonicAverageFilledPrice(order, filledQty, avgFilledPrice)
       });
       if (result) updated.push(result);
-      if (result?.side === 'BUY' && result.status === 'FILLED') {
+      if (result?.side === 'BUY'
+        && Number(result.filledQuantity || 0) > 0
+        && ['FILLED', 'CANCELED', 'REJECTED'].includes(result.status)) {
         await ensureKrTargetSellOrder(userId, trading, result);
       }
     } catch {
@@ -987,41 +1380,46 @@ function matchesRealizedProfitRow(order, row) {
   return true;
 }
 
+async function tryRefreshKrOrderState(userId, trading, order) {
+  if (!order?.kisOrderNo) return null;
+  try {
+    const refreshed = await limitedKisCall(
+      userId,
+      `kr-refresh-order:${order.symbol}:${order.kisOrderNo}`,
+      () => trading.refreshOrder({
+        symbol: order.symbol,
+        market: 'KR',
+        kisOrderNo: order.kisOrderNo,
+        kisOriginalOrderNo: order.kisOriginalOrderNo,
+        createdAt: order.createdAt
+      })
+    );
+    if (!refreshed || !['ACCEPTED', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'UNKNOWN'].includes(refreshed.status)) {
+      return null;
+    }
+    const filledQuantity = Math.floor(Number(refreshed.filledQuantity || 0));
+    const remainingQuantity = refreshed.remainingQuantity != null && refreshed.remainingQuantity !== ''
+      ? Number(refreshed.remainingQuantity)
+      : order.remainingQuantity;
+    const averageFilledPrice = Number(refreshed.averageFilledPrice || 0);
+    return repo.updateOrder(userId, order.id, {
+      status: refreshed.status,
+      filledQuantity: mergeMonotonicFilledQuantity(order, filledQuantity),
+      remainingQuantity: remainingQuantity ?? null,
+      averageFilledPrice: mergeMonotonicAverageFilledPrice(order, filledQuantity, averageFilledPrice),
+      responsePayloadMasked: refreshed.responsePayloadMasked || null
+    });
+  } catch {
+    return null;
+  }
+}
+
 // 평가 안에서 모호한 분기(잔고=0 + 우리 DB 상의 BUY 상태가 ACCEPTED 등)에 한해 호출해,
 // KIS 체결조회로 단일 매수 주문의 실제 체결 상태를 다시 묻고 DB에 반영한다.
 // 주기적 폴링이 아니라 이번 평가 한 번에만 KIS를 한 번 더 호출하는 보조 안전망이다.
 async function tryRefreshBuyOrderState(userId, trading, buyOrder) {
-  if (!buyOrder?.kisOrderNo) return null;
-  try {
-    const dateWindow = orderHistoryDateWindow(buyOrder);
-    const history = await limitedKisCall(userId, `kr-order-history:${buyOrder.symbol}:${dateWindow.startDate}:${dateWindow.endDate}`, () => (
-      trading.getOrderHistory(buyOrder.symbol, {
-        market: 'KR',
-        ...dateWindow
-      })
-    ));
-    const matched = (Array.isArray(history) ? history : []).find((row) => (
-      (buyOrder.kisOrderNo && row.orderNo === buyOrder.kisOrderNo)
-      || (buyOrder.kisOriginalOrderNo && row.originalOrderNo === buyOrder.kisOriginalOrderNo)
-    ));
-    if (!matched) return null;
-    const filledQty = Math.floor(Number(matched.filledQuantity || 0));
-    const remaining = matched.remainingQuantity != null && matched.remainingQuantity !== ''
-      ? Number(matched.remainingQuantity)
-      : null;
-    const avgFilledPrice = Number(matched.averageFilledPrice || 0);
-    const fullyFilled = matched.status === 'FILLED' || (remaining != null && remaining <= 0 && filledQty > 0);
-    if (!fullyFilled) return null;
-    return repo.updateOrder(userId, buyOrder.id, {
-      status: 'FILLED',
-      filledQuantity: filledQty > 0 ? filledQty : (buyOrder.filledQuantity ?? buyOrder.quantity),
-      remainingQuantity: 0,
-      averageFilledPrice: avgFilledPrice > 0 ? avgFilledPrice : (buyOrder.averageFilledPrice ?? null)
-    });
-  } catch {
-    // KIS 일시 오류면 다음 평가 tick의 syncOrderFills 에 맡긴다.
-    return null;
-  }
+  const refreshed = await tryRefreshKrOrderState(userId, trading, buyOrder);
+  return refreshed?.status === 'FILLED' ? refreshed : null;
 }
 
 // 주문 접수 직후(체결까지 보통 수 초)에 호출해, 다음 30초 tick보다 빠르게 체결가를 갱신한다.
@@ -1082,19 +1480,27 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
       requestPayloadMasked: maskPayload(orderInput)
     });
   }
+  // 실제 POST 전에 intent를 먼저 남긴다. KIS가 주문을 접수했지만 응답 timeout/프로세스 종료가
+  // 발생해도 REQUESTED/UNKNOWN 행이 멱등성 gate를 막아 같은 주문을 재전송하지 않게 한다.
+  const requested = repo.createOrder(userId, {
+    ...orderInput,
+    status: 'REQUESTED',
+    requestPayloadMasked: maskPayload(orderInput)
+  });
   try {
     const result = await limitedKisCall(userId, `kr-place-order:${baseOrder.side}:${baseOrder.symbol}`, () => (
       baseOrder.side === 'BUY'
         ? trading.placeBuyOrder({ ...orderInput })
         : trading.placeSellOrder({ ...orderInput })
     ));
-    const created = repo.createOrder(userId, {
-      ...orderInput,
+    const created = repo.updateOrder(userId, requested.id, {
       status: result.status || 'ACCEPTED',
       kisOrderNo: result.orderNo,
       kisOriginalOrderNo: result.originalOrderNo,
-      requestPayloadMasked: result.requestPayloadMasked || maskPayload(orderInput),
-      responsePayloadMasked: result.responsePayloadMasked
+      filledQuantity: null,
+      remainingQuantity: null,
+      averageFilledPrice: null,
+      responsePayloadMasked: result.responsePayloadMasked || null
     });
     // 시장가는 보통 수 초 내 체결되므로, 다음 30초 tick을 기다리지 않고
     // 3초 뒤 1회 체결조회로 실체결가를 일찍 끌어오게 한다. 실패해도 다음 tick이 재시도.
@@ -1103,10 +1509,13 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     }
     return created;
   } catch (error) {
-    return repo.createOrder(userId, {
-      ...orderInput,
-      status: 'FAILED',
-      requestPayloadMasked: maskPayload(orderInput),
+    return repo.updateOrder(userId, requested.id, {
+      // POST 예외는 HTTP/KIS 오류 payload가 있어도 서버 접수 여부가 확실하지 않다.
+      // UNKNOWN으로 고정해 자동 재전송을 막고 계좌 확인을 요구한다.
+      status: 'UNKNOWN',
+      filledQuantity: null,
+      remainingQuantity: null,
+      averageFilledPrice: null,
       responsePayloadMasked: error.safePayload || null,
       errorMessage: error.message || 'KIS 주문 요청에 실패했습니다.'
     });
@@ -1115,6 +1524,9 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
 
 async function ensureKrTargetSellOrder(userId, trading, buyOrder) {
   if (!buyOrder || buyOrder.side !== 'BUY') return null;
+  // 저장된 BUY provenance가 live여도 배포 환경의 전역 kill switch가 꺼져 있으면
+  // sync/잔고 확인 경로에서 목표가 KIS 주문을 우회 생성하지 않는다.
+  if (buyOrder.liveOrderEnabled && !isGlobalLiveOrderEnabled()) return null;
   const strategy = repo.getStrategy(userId, buyOrder.strategyId, { includeDeleted: true });
   if (!strategy) return null;
   const entryWindow = buyOrder.entryWindow || strategy.holdingEntryWindow || 'MORNING';
@@ -1126,15 +1538,21 @@ async function ensureKrTargetSellOrder(userId, trading, buyOrder) {
   });
   if (existing) return existing;
 
-  const quantity = Math.floor(Number(buyOrder.filledQuantity || buyOrder.quantity || 0));
+  let quantity = buyOrder.liveOrderEnabled
+    ? getConfirmedOrderFilledQuantity(buyOrder)
+    : Math.floor(Number(buyOrder.filledQuantity || buyOrder.quantity || 0));
+  if (buyOrder.liveOrderEnabled) {
+    quantity = Math.min(quantity, getKrManagedRemainingQuantity(buyOrder, buyOrder.entryId));
+  }
   const averageFilledPrice = Number(buyOrder.averageFilledPrice || buyOrder.orderPrice || 0);
   if (quantity <= 0 || averageFilledPrice <= 0) return null;
   const targetProfitRate = entryWindow === 'LUNCH'
     ? strategy.lunchTargetProfitRate
     : strategy.morningTargetProfitRate;
   const targetPrice = Math.ceil(averageFilledPrice * (1 + Number(targetProfitRate || 0)));
+  const entry = buyOrder.entryId ? repo.getEntryById(buyOrder.entryId) : null;
   const idempotencyKey = `${makeKrRankIdempotencyKey({
-    tradeDate: kstToday(),
+    tradeDate: entry?.tradeDate || kstToday(),
     strategyId: strategy.id,
     entryWindow,
     side: 'SELL'
@@ -1165,20 +1583,74 @@ async function ensureKrTargetSellOrder(userId, trading, buyOrder) {
       requestPayloadMasked: maskPayload({ ...baseOrder, market: 'KR', currency: 'KRW', decisionReason })
     });
   }
+  const [balance, openOrders] = await Promise.all([
+    limitedKisCall(userId, `kr-target-balance:${buyOrder.symbol}`, () => (
+      trading.getBalance(buyOrder.symbol, { market: 'KR', currency: 'KRW' })
+    )),
+    safeOpenOrders(userId, trading, buyOrder.symbol)
+  ]);
+  const holdingQuantity = Math.floor(Number(balance.quantity || 0));
+  quantity = Math.min(quantity, holdingQuantity);
+  const guard = checkOrderSafety({
+    side: 'SELL', quantity, openOrders, idempotencyKey, holdingQuantity
+  });
+  if (!guard.ok) return null;
+  baseOrder.quantity = quantity;
+  baseOrder.estimatedAmount = quantity * targetPrice;
   return placeOrder(userId, trading, baseOrder, {
     liveOrderEnabled: true,
     decisionReason
   });
 }
 
-async function cancelTargetBeforeDefensiveSell(userId, trading, order) {
+function getConfirmedOrderFilledQuantity(order) {
+  if (!order) return 0;
+  const ordered = Math.max(0, Math.floor(Number(order.quantity || 0)));
+  const reportedFilled = Math.max(0, Math.floor(Number(order.filledQuantity || 0)));
+  if (reportedFilled > 0) return ordered > 0 ? Math.min(reportedFilled, ordered) : reportedFilled;
+  // KIS 주문 이력이 FILLED를 명시했다면 주문 수량 전부가 체결된 것으로 볼 수 있다. ACCEPTED와
+  // 잔고만으로는 체결을 추정하지 않는다.
+  return order.status === 'FILLED' ? ordered : 0;
+}
+
+function mergeMonotonicFilledQuantity(order, reportedFilledQuantity) {
+  const previous = Math.max(0, Math.floor(Number(order?.filledQuantity || 0)));
+  const reported = Math.max(0, Math.floor(Number(reportedFilledQuantity || 0)));
+  const ordered = Math.max(0, Math.floor(Number(order?.quantity || 0)));
+  const merged = Math.max(previous, reported);
+  const capped = ordered > 0 ? Math.min(merged, ordered) : merged;
+  return capped > 0 ? capped : (order?.filledQuantity ?? null);
+}
+
+function mergeMonotonicAverageFilledPrice(order, reportedFilledQuantity, reportedAverageFilledPrice) {
+  const previousQuantity = Math.max(0, Math.floor(Number(order?.filledQuantity || 0)));
+  const reportedQuantity = Math.max(0, Math.floor(Number(reportedFilledQuantity || 0)));
+  const reportedPrice = Number(reportedAverageFilledPrice || 0);
+  if (reportedPrice <= 0 || reportedQuantity < previousQuantity) {
+    return order?.averageFilledPrice ?? null;
+  }
+  return reportedPrice;
+}
+
+function getKrManagedRemainingQuantity(buyOrder, entryId = null) {
+  const bought = getConfirmedOrderFilledQuantity(buyOrder);
+  if (bought <= 0) return 0;
+  const resolvedEntryId = entryId ?? buyOrder?.entryId ?? null;
+  const sold = repo.getLiveFilledSellQuantityForEntry(resolvedEntryId);
+  return Math.max(0, bought - sold);
+}
+
+async function cancelKrOrderAndConfirm(userId, trading, order) {
   if (!order) return { ok: true, reason: '' };
   if (!order.liveOrderEnabled || order.status === 'DECIDED' || order.status === 'DRY_RUN') {
     repo.updateOrder(userId, order.id, { status: 'CANCELED' });
-    return { ok: true, reason: '기존 목표가 예정 기록을 취소했습니다.' };
+    return { ok: true, reason: '기존 예정 주문 기록을 취소했습니다.', order: repo.getOrder(userId, order.id) };
   }
   if (!order.kisOrderNo) {
-    return { ok: false, reason: 'KIS 주문번호가 없어 목표가 주문 취소를 확인할 수 없습니다.' };
+    return { ok: false, reason: 'KIS 주문번호가 없어 주문 취소를 확인할 수 없습니다.' };
+  }
+  if (!isGlobalLiveOrderEnabled()) {
+    return { ok: false, reason: '전역 실주문 중지 상태라 기존 주문을 취소하지 않았습니다.' };
   }
   try {
     await limitedKisCall(userId, `kr-cancel-order:${order.symbol}:${order.kisOrderNo}`, () => (
@@ -1191,8 +1663,20 @@ async function cancelTargetBeforeDefensiveSell(userId, trading, order) {
         remainingQuantity: order.remainingQuantity ?? order.quantity
       })
     ));
-    repo.updateOrder(userId, order.id, { status: 'CANCELED' });
-    return { ok: true, reason: '기존 목표가 주문을 취소했습니다.' };
+    // 취소 API rt_cd=0은 문서상 "주문 전송 완료"일 뿐 취소 체결이 아니다. 주문 이력의
+    // CANCELED/REJECTED를 다시 확인해야 새 매도로 넘어갈 수 있다.
+    const refreshed = await tryRefreshKrOrderState(userId, trading, order);
+    if (refreshed?.status === 'CANCELED' || refreshed?.status === 'REJECTED') {
+      return { ok: true, reason: '기존 주문 취소가 확인됐습니다.', order: refreshed };
+    }
+    if (refreshed?.status === 'FILLED') {
+      return { ok: false, reason: '취소 확인 중 기존 주문 체결이 확인되어 후속 주문을 만들지 않습니다.', order: refreshed };
+    }
+    return {
+      ok: false,
+      reason: 'KIS 취소 요청은 접수됐지만 주문 이력에서 취소 완료가 아직 확인되지 않았습니다.',
+      order: refreshed || order
+    };
   } catch (error) {
     return { ok: false, reason: error.message || '취소 요청 실패' };
   }
@@ -1332,15 +1816,11 @@ async function safeOpenOrders(userId, trading, symbol) {
 
 function excludeKnownTargetOrder(openOrders, targetOrder) {
   if (!Array.isArray(openOrders) || !targetOrder) return openOrders;
-  const targetOrderNos = new Set([
-    targetOrder.kisOrderNo,
-    targetOrder.kisOriginalOrderNo
-  ].map((value) => String(value || '').trim()).filter(Boolean));
-  if (targetOrderNos.size === 0) return openOrders;
+  const targetOrderNo = String(targetOrder.kisOrderNo || '').trim();
+  if (!targetOrderNo) return openOrders;
   return openOrders.filter((row) => {
     const rowOrderNo = String(row?.orderNo || '').trim();
-    const rowOriginalOrderNo = String(row?.originalOrderNo || '').trim();
-    return !targetOrderNos.has(rowOrderNo) && !targetOrderNos.has(rowOriginalOrderNo);
+    return rowOrderNo !== targetOrderNo;
   });
 }
 
@@ -1404,6 +1884,15 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
       });
       continue;
     }
+    if (referencePrice > 0 && buyPlan.currentPrice < referencePrice * (1 - ENTRY_MAX_ADVERSE_MOVE_RATE)) {
+      const adverseMove = (referencePrice - buyPlan.currentPrice) / referencePrice;
+      rejections.push({
+        symbol: result.picked.symbol,
+        name: result.picked.name,
+        reason: `신호가 ${fmt(referencePrice)}원 대비 현재가 ${fmt(buyPlan.currentPrice)}원으로 ${(adverseMove * 100).toFixed(1)}% 급락해 모멘텀이 무효화됨`
+      });
+      continue;
+    }
     return { ...result, buyPlan, rejections };
   }
   return { picked: null, rejections };
@@ -1452,14 +1941,18 @@ function describeBlockedEntryWindow(strategy, holdingEntryWindow, symbol) {
 }
 
 function findCurrentEntryId(strategy, entryWindow, symbol) {
-  const entry = repo.getEntry(strategy.id, kstToday(), entryWindow);
+  const entry = repo.getEntry(strategy.id, kstToday(), entryWindow)
+    || repo.getLatestBoughtEntry(strategy.id, entryWindow, symbol);
   if (!entry || entry.selectedSymbol !== symbol) return null;
   return entry.id;
 }
 
 function orderStatusNote(order, liveOrderEnabled) {
   if (order.status === 'FAILED' || order.status === 'REJECTED') {
-    return `주문 실패: ${order.errorMessage || '거절됨'} (자동 재시도하지 않습니다.)`;
+    return `주문 실패: ${order.errorMessage || '거절됨'} 다음 평가에서 안전 조건을 다시 확인합니다.`;
+  }
+  if (order.status === 'UNKNOWN' || order.status === 'REQUESTED') {
+    return 'KIS 주문 전송 결과가 불명확해 자동 재전송을 막았습니다. 계좌 주문 내역을 확인하세요.';
   }
   if (!liveOrderEnabled || order.status === 'DRY_RUN') {
     return '실주문 실행 설정이 꺼져 있어 실제 주문 없이 기록만 저장했습니다.';

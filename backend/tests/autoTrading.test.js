@@ -8,6 +8,7 @@ const credentialService = await import('../src/services/kisCredentialService.js'
 const autoTradingService = await import('../src/services/autoTradingService.js');
 const { evaluateAutoTrading } = await import('../src/services/autoTradingStrategyEngine.js');
 const repo = await import('../src/repositories/autoTradingRepository.js');
+const { env } = await import('../src/config/env.js');
 
 const alice = createUser(db, 'alice-auto@example.com');
 const bob = createUser(db, 'bob-auto@example.com');
@@ -249,6 +250,7 @@ test('live order setting writes history', () => {
 });
 
 test('liveOrderEnabled=true sends KIS order only after safety checks pass', async () => {
+  autoTradingService.updateLiveOrderSetting(alice.id, true);
   const strategy = autoTradingService.createStrategy(alice.id, {
     symbol: 'QQQ',
     market: 'US',
@@ -259,6 +261,8 @@ test('liveOrderEnabled=true sends KIS order only after safety checks pass', asyn
   });
   autoTradingService.startStrategy(alice.id, strategy.id);
   const mocked = mockKis();
+  const previousEnableLiveOrder = env.enableLiveOrder;
+  env.enableLiveOrder = 'true';
   try {
     const result = await autoTradingService.evaluateStrategy(alice.id, strategy.id);
     assert.equal(result.decision.decision, 'BUY');
@@ -267,6 +271,8 @@ test('liveOrderEnabled=true sends KIS order only after safety checks pass', asyn
     assert.equal(mocked.calls.some((call) => call.url.includes('/uapi/overseas-stock/v1/trading/order')), true);
     assert.doesNotMatch(result.order.requestPayloadMasked || '', /12345678|sec-auto|auto-token/);
   } finally {
+    env.enableLiveOrder = previousEnableLiveOrder;
+    autoTradingService.updateLiveOrderSetting(alice.id, false);
     mocked.restore();
   }
 });

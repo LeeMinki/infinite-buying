@@ -34,6 +34,8 @@ liveOrderEnabled=true → REQUESTED → ACCEPTED → PARTIALLY_FILLED → FILLED
 
 - `POST /api/auto-trading/orders/:id/refresh` — KIS 주문/체결 조회로 상태를 갱신해 로컬에 반영.
 - 자동매매 평가가 다음 tick에 다시 돌면, 미체결 행들에 대해 `kis_order_no`를 가지고 KIS에 조회·갱신할 수 있다 (구현 흐름은 `kisTradingService` + `autoTradingService.refreshOrder`).
+- 주문 상태 정규화는 체결수량과 잔량만으로 종결 상태를 추측하지 않는다. 국내 `주식일별주문체결조회`는 `cncl_yn`·`cnc_cfrm_qty`(응답 예시의 `cncl_cfrm_qty` 표기도 수용)·`rjct_qty`·`rmn_qty`, 해외 `해외주식 주문체결내역`은 `rvse_cncl_dvsn`·`prcs_stat_name`·`rjct_rson`·`rjct_rson_name`·`nccs_qty`를 함께 판정한다. 체결수량 0·잔량 0인데 취소/거부/체결 근거가 없으면 `FILLED`가 아니라 `UNKNOWN`으로 두고 재확인한다.
+- 랭킹 전략의 live 포지션 수량은 계좌의 종목 전체 잔고가 아니라 해당 전략 BUY 주문의 확인된 체결수량을 기준으로 한다. BUY 체결수량은 주문수량을 넘지 않게 제한하고, 관리 잔량은 BUY 체결수량에서 같은 진입의 누적 SELL 체결수량을 뺀 뒤 실제 계좌 잔고로 한 번 더 상한을 둔다. 신규 BUY 직전 동일 종목 잔고가 이미 있으면 외부 보유분과 섞이지 않도록 주문을 차단한다.
 
 ## 자동 취소
 
@@ -42,7 +44,7 @@ liveOrderEnabled=true → REQUESTED → ACCEPTED → PARTIALLY_FILLED → FILLED
 - 국내: TR `TTTC0013U`, `RVSE_CNCL_DVSN_CD=02`, `QTY_ALL_ORD_YN=Y`
 - 해외: TR `TTTT1004U`, `RVSE_CNCL_DVSN_CD=02`, `OVRS_EXCG_CD` 포함
 
-성공 시 로컬에 `CANCELED`로 마킹하고 `decision_reason`에 cancel 노트가 추가된다.
+취소 API의 성공 응답은 취소 요청 접수일 뿐 완료가 아니다. 한국·미국 랭킹 전략은 주문 이력에서 원주문 또는 연결된 취소 행의 `CANCELED`가 확인된 뒤에만 로컬 주문을 종결하고 후속 매도를 만들며, 거부·처리 중·조회 실패이면 원주문을 유지한다.
 
 ## 판단 로그 (`auto_trading_decision_logs`)
 

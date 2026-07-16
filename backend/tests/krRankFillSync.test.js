@@ -198,6 +198,105 @@ test('syncOrderFills: 같은 종목의 여러 주문은 KIS 체결조회를 1회
   }
 });
 
+test('syncOrderFills: 체결 0인 취소·거부 상태도 ACCEPTED에서 terminal로 전파한다', async () => {
+  const strategy = createStrategyForUser();
+  const canceled = createAcceptedSellOrder(strategy.id, {
+    kisOrderNo: 'KR-ZERO-CANCELED', symbol: '100001', quantity: 10, orderPrice: 1_000
+  });
+  const rejected = createAcceptedSellOrder(strategy.id, {
+    kisOrderNo: 'KR-ZERO-REJECTED', symbol: '100002', quantity: 10, orderPrice: 1_000
+  });
+  const state = {
+    history: [
+      {
+        odno: 'KR-ZERO-CANCELED', pdno: '100001', sll_buy_dvsn_cd: '01',
+        ord_qty: '10', tot_ccld_qty: '0', rmn_qty: '0', cncl_yn: 'Y', cnc_cfrm_qty: '10'
+      },
+      {
+        odno: 'KR-ZERO-REJECTED', pdno: '100002', sll_buy_dvsn_cd: '01',
+        ord_qty: '10', tot_ccld_qty: '0', rmn_qty: '0', rjct_qty: '10'
+      }
+    ]
+  };
+
+  await withMockedFetch(state, async () => {
+    const updated = await krRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+    assert.equal(updated.length, 2);
+  });
+
+  assert.equal(repo.getOrder(user.id, canceled.id).status, 'CANCELED');
+  assert.equal(repo.getOrder(user.id, rejected.id).status, 'REJECTED');
+});
+
+test('syncOrderFills: 원주문 부분체결과 별도 취소 행을 병합해 수량·평단을 보존한다', async () => {
+  const strategy = createStrategyForUser();
+  const sell = createAcceptedSellOrder(strategy.id, {
+    kisOrderNo: 'KR-PARTIAL-ORIGINAL', symbol: '100003', quantity: 10, orderPrice: 1_000
+  });
+  const state = {
+    history: [
+      {
+        odno: 'KR-PARTIAL-ORIGINAL', pdno: '100003', sll_buy_dvsn_cd: '01',
+        ord_qty: '10', tot_ccld_qty: '4', rmn_qty: '6', avg_prvs: '995'
+      },
+      {
+        odno: 'KR-PARTIAL-CANCEL', orgn_odno: 'KR-PARTIAL-ORIGINAL', pdno: '100003',
+        sll_buy_dvsn_cd: '01', ord_qty: '6', tot_ccld_qty: '0', rmn_qty: '0',
+        cncl_yn: 'Y', cnc_cfrm_qty: '6'
+      }
+    ]
+  };
+
+  await withMockedFetch(state, async () => {
+    const updated = await krRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+    assert.equal(updated.length, 1);
+  });
+
+  const after = repo.getOrder(user.id, sell.id);
+  assert.equal(after.status, 'CANCELED');
+  assert.equal(after.filledQuantity, 4);
+  assert.equal(after.averageFilledPrice, 995);
+});
+
+test('syncOrderFills: 후속 KIS 응답의 체결수량이 줄거나 주문수량을 넘더라도 기존 체결을 단조 증가·상한 유지한다', async () => {
+  const strategy = createStrategyForUser();
+  const sell = createAcceptedSellOrder(strategy.id, {
+    kisOrderNo: 'KR-MONOTONIC-FILL', symbol: '100004', quantity: 10, orderPrice: 1_000
+  });
+  repo.updateOrder(user.id, sell.id, {
+    status: 'PARTIALLY_FILLED',
+    filledQuantity: 4,
+    remainingQuantity: 6,
+    averageFilledPrice: 995
+  });
+
+  await withMockedFetch({
+    history: [{
+      odno: 'KR-MONOTONIC-FILL', pdno: '100004', sll_buy_dvsn_cd: '01',
+      ord_qty: '10', tot_ccld_qty: '2', rmn_qty: '8', avg_prvs: '990'
+    }]
+  }, async () => {
+    await krRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+  });
+
+  const afterSmaller = repo.getOrder(user.id, sell.id);
+  assert.equal(afterSmaller.filledQuantity, 4);
+  assert.equal(afterSmaller.averageFilledPrice, 995);
+
+  await withMockedFetch({
+    history: [{
+      odno: 'KR-MONOTONIC-FILL', pdno: '100004', sll_buy_dvsn_cd: '01',
+      ord_qty: '10', tot_ccld_qty: '12', rmn_qty: '0', avg_prvs: '997'
+    }]
+  }, async () => {
+    await krRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+  });
+
+  const afterOversized = repo.getOrder(user.id, sell.id);
+  assert.equal(afterOversized.filledQuantity, 10);
+  assert.equal(afterOversized.averageFilledPrice, 997);
+});
+
 test('syncOrderFills: 과거 주문은 주문 생성일 기준 날짜 범위로 KIS 체결조회를 호출한다', async () => {
   const strategy = createStrategyForUser();
   autoTradingRepo.updateLiveOrderSetting(user.id, true);

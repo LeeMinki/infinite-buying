@@ -51,6 +51,7 @@ export class KisTradingService {
   }
 
   async placeBuyOrder(order) {
+    assertGlobalLiveOrderEnabled();
     const context = await this.requireAccountContext();
     if (normalizeMarket(order.market, order.symbol) === 'KR') {
       return this.placeDomesticOrder(context, { ...order, side: 'BUY' });
@@ -59,6 +60,7 @@ export class KisTradingService {
   }
 
   async placeSellOrder(order) {
+    assertGlobalLiveOrderEnabled();
     const context = await this.requireAccountContext();
     if (normalizeMarket(order.market, order.symbol) === 'KR') {
       return this.placeDomesticOrder(context, { ...order, side: 'SELL' });
@@ -67,6 +69,7 @@ export class KisTradingService {
   }
 
   async cancelOpenOrder(order) {
+    assertGlobalLiveOrderEnabled();
     const context = await this.requireAccountContext();
     const market = normalizeMarket(order.market, order.symbol);
     if (market === 'KR') return this.cancelDomesticOrder(context, order);
@@ -122,15 +125,11 @@ export class KisTradingService {
       exchange: order.exchange,
       ...orderHistoryDateWindow(order)
     });
-    const found = rows.find((row) => (
-      (order.kisOrderNo && row.orderNo === order.kisOrderNo)
-      || (order.kisOriginalOrderNo && row.originalOrderNo === order.kisOriginalOrderNo)
-    ));
+    const found = findOrderHistoryMatch(rows, order);
     if (!found) {
       const open = await this.getOpenOrders(order.symbol, { market: order.market, exchange: order.exchange });
       const openFound = open.find((row) => (
-        (order.kisOrderNo && row.orderNo === order.kisOrderNo)
-        || (order.kisOriginalOrderNo && row.originalOrderNo === order.kisOriginalOrderNo)
+        order.kisOrderNo && row.orderNo === order.kisOrderNo
       ));
       return openFound || { status: 'UNKNOWN', responsePayloadMasked: maskPayload({ notFound: true }) };
     }
@@ -525,6 +524,46 @@ export class KisTradingService {
   }
 }
 
+// 주문 취소 이력은 별도 주문번호를 갖고 originalOrderNo로 원주문을 가리킨다.
+// 원주문 행이 아직 ACCEPTED/UNKNOWN이어도 취소확정 행이 있으면 CANCELED를 우선하되,
+// 취소요청 REJECTED는 원주문의 체결/미체결 상태를 증명하지 않으므로 교차 매칭하지 않는다.
+export function findOrderHistoryMatch(rows, order) {
+  const list = Array.isArray(rows) ? rows : [];
+  const orderNo = String(order?.kisOrderNo || order?.orderNo || '').trim();
+  if (orderNo) {
+    const direct = list.find((row) => String(row?.orderNo || '').trim() === orderNo);
+    const canceled = list.find((row) => (
+      String(row?.originalOrderNo || '').trim() === orderNo
+      && row?.status === 'CANCELED'
+    ));
+    // 원주문 자체가 전량 체결됐다면 뒤따른 취소 행보다 체결 증거를 우선한다.
+    if (direct?.status === 'FILLED') return direct;
+    if (canceled) return mergeCanceledOrderRow(canceled, direct);
+    if (direct) return direct;
+  }
+  // kisOriginalOrderNo에 저장된 KRX_FWDG_ORD_ORGNO/ord_orgno는 거래소 전송
+  // 조직번호이지 주문 identity가 아니다. 이 값으로 이력 행을 교차 매칭하면 다른 주문을
+  // 잘못 체결/취소로 확정할 수 있으므로 매칭에 사용하지 않는다.
+  return null;
+}
+
+function mergeCanceledOrderRow(canceled, direct) {
+  if (!direct) return canceled;
+  // 별도 취소확정 행은 체결수량·평단을 0으로 돌려주는 경우가 있으므로 원주문에서
+  // 이미 확인된 부분체결을 항상 병합한다. 수량이 같아도 direct 평단을 잃지 않는다.
+  return {
+    ...canceled,
+    symbol: canceled.symbol || direct.symbol,
+    filledQuantity: Math.max(
+      Number(canceled.filledQuantity || 0),
+      Number(direct.filledQuantity || 0)
+    ),
+    averageFilledPrice: Number(direct.averageFilledPrice || 0)
+      || Number(canceled.averageFilledPrice || 0),
+    remainingQuantity: 0
+  };
+}
+
 const KIS_RETRY_BACKOFF_MS = [400, 900, 1800];
 const KIS_MIN_INTERVAL_MS = 220; // 안전 마진 — 일반 KIS 계정 5건/초 한도 아래로 유지.
 const rateLimitQueue = new Map();
@@ -595,15 +634,18 @@ function maskValue(value) {
   return masked;
 }
 
-function normalizeOrderRow(row, market, currency) {
+export function normalizeOrderRow(row, market, currency) {
   const orderedQuantity = num(row.ord_qty ?? row.ft_ord_qty ?? row.ovrs_ord_qty);
   const filledQuantity = num(row.tot_ccld_qty ?? row.ft_ccld_qty ?? row.ccld_qty);
   // 국내 inquire-daily-ccld는 잔여수량을 rmn_qty로 돌려준다. 미체결 조회(inquire-psbl-rvsecncl)는 nccs_qty.
   const remainingQuantity = num(row.nccs_qty ?? row.ft_nccs_qty ?? row.rmnd_qty ?? row.rmn_qty);
   const orderNo = String(row.odno ?? row.ODNO ?? '').trim() || null;
-  const status = remainingQuantity > 0
-    ? (filledQuantity > 0 ? 'PARTIALLY_FILLED' : 'ACCEPTED')
-    : (filledQuantity > 0 || orderedQuantity > 0 ? 'FILLED' : 'UNKNOWN');
+  const status = normalizeOrderStatus(row, {
+    market,
+    orderedQuantity,
+    filledQuantity,
+    remainingQuantity
+  });
   return {
     orderNo,
     originalOrderNo: String(row.orgn_odno ?? row.KRX_FWDG_ORD_ORGNO ?? '').trim() || null,
@@ -617,6 +659,84 @@ function normalizeOrderRow(row, market, currency) {
     averageFilledPrice: num(row.avg_prvs ?? row.ft_ccld_unpr3 ?? row.ccld_unpr),
     responsePayloadMasked: maskPayload(row)
   };
+}
+
+function normalizeOrderStatus(row, {
+  market,
+  orderedQuantity,
+  filledQuantity,
+  remainingQuantity
+}) {
+  // KIS 로컬 문서(2026-05-12) 기준으로 주문 이력의 종결 사유 필드는 시장마다 다르다.
+  // - 국내 주식일별주문체결조회(TTTC0081R): cncl_yn, cnc/cncl_cfrm_qty, rjct_qty
+  // - 해외 주식 주문체결내역(TTTS3035R): rvse_cncl_dvsn(02=취소),
+  //   prcs_stat_name(완료/거부/전송), rjct_rson, rjct_rson_name
+  // 주문수량만 있고 체결·잔량이 모두 0인 행은 취소/거부일 수 있으므로 절대 FILLED로 추정하지 않는다.
+  const rejected = isRejectedOrderRow(row, market);
+  const canceled = isCanceledOrderRow(row, market);
+  if (remainingQuantity > 0) {
+    // 종결 표식과 잔량이 동시에 오는 모순 응답은 terminal로 풀지 않는다. UNKNOWN은
+    // 미체결 안전 검사에서 blocking 상태라 다음 조회로 확인할 수 있다.
+    if (rejected || canceled) return 'UNKNOWN';
+    return filledQuantity > 0 ? 'PARTIALLY_FILLED' : 'ACCEPTED';
+  }
+  if (rejected) return 'REJECTED';
+  // 일부 체결 후 잔량 취소도 주문 자체는 더 이상 살아 있지 않다. 체결수량은 별도로 보존한다.
+  if (canceled) {
+    // 해외 rvse_cncl_dvsn=02는 취소 "행"이라는 뜻이고, prcs_stat_name='전송'이면
+    // 아직 처리 중이다. 완료 증거 없이 terminal CANCELED로 풀지 않는다.
+    if (market !== 'KR' && !/완료|COMPLETE|COMPLETED/.test(textValue(row.prcs_stat_name))) {
+      return 'UNKNOWN';
+    }
+    return 'CANCELED';
+  }
+  if (filledQuantity > 0) {
+    // 주문수량보다 적게 체결됐는데 잔량·취소 사유가 모두 0이면 전량체결 근거가 없다.
+    // FILLED로 닫으면 남은 수량의 재확인/청산을 막으므로 UNKNOWN으로 보수적으로 유지한다.
+    if (orderedQuantity > 0 && filledQuantity < orderedQuantity) return 'UNKNOWN';
+    return 'FILLED';
+  }
+
+  // orderedQuantity > 0 이어도 체결 근거가 없다. KIS가 명시적인 취소/거부 필드를 주지 않은
+  // 모호한 종결 행은 UNKNOWN으로 두어 상위 주문 상태 머신이 재조회하도록 fail-closed 한다.
+  return 'UNKNOWN';
+}
+
+function isRejectedOrderRow(row, market) {
+  if (market === 'KR') {
+    return num(row.rjct_qty) > 0;
+  }
+  const processStatus = textValue(row.prcs_stat_name);
+  return hasMeaningfulText(row.rjct_rson)
+    || hasMeaningfulText(row.rjct_rson_name)
+    || /거부|REJECT/.test(processStatus);
+}
+
+function isCanceledOrderRow(row, market) {
+  if (market === 'KR') {
+    const canceledFlag = textValue(row.cncl_yn);
+    const canceledQuantity = num(row.cnc_cfrm_qty ?? row.cncl_cfrm_qty);
+    return canceledQuantity > 0 || /^(Y|1|TRUE|예|취소)$/.test(canceledFlag);
+  }
+  const cancelCode = textValue(row.rvse_cncl_dvsn ?? row.rvse_cncl_dvsn_cd);
+  const cancelName = textValue(row.rvse_cncl_dvsn_name ?? row.rvse_cncl_dvsn_cd_name);
+  return cancelCode === '02' || /취소|CANCEL/.test(cancelName);
+}
+
+function textValue(value) {
+  return String(value ?? '').trim().toUpperCase();
+}
+
+function hasMeaningfulText(value) {
+  const text = textValue(value);
+  return text !== '' && !/^0+(?:\.0+)?$/.test(text);
+}
+
+function assertGlobalLiveOrderEnabled() {
+  if (env.enableLiveOrder === 'true') return;
+  const error = new Error('전역 실주문 실행 설정이 꺼져 있어 KIS 주문 요청을 차단했습니다.');
+  error.status = 503;
+  throw error;
 }
 
 function normalizeRealizedProfitRow(row) {

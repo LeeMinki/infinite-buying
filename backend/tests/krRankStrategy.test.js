@@ -444,13 +444,52 @@ test('aggregateRankingCandidates: 관찰이 충분한데 반복 후보가 없으
   assert.deepEqual(candidates, []);
 });
 
-test('aggregateRankingCandidates: 관찰이 충분하지 않으면 단발 후보를 유지한다', () => {
+test('aggregateRankingCandidates: 관찰 snapshot이 최소 개수 미만이면 후보를 허용하지 않는다', () => {
   const snapshots = [
     [{ symbol: 'AAA', name: '첫 후보', price: 1000, fluctuationRate: 0.12 }],
     [{ symbol: 'BBB', name: '둘째 후보', price: 1100, fluctuationRate: 0.13 }]
   ];
   const candidates = aggregateRankingCandidates(snapshots);
-  assert.deepEqual(new Set(candidates.map((candidate) => candidate.symbol)), new Set(['AAA', 'BBB']));
+  assert.deepEqual(candidates, []);
+});
+
+test('aggregateRankingCandidates: 원본 top 10을 먼저 자르고 11위 후보를 backfill하지 않는다', () => {
+  const overheatedTop10 = Array.from({ length: 10 }, (_, index) => ({
+    symbol: `HOT${index}`,
+    name: `과열${index}`,
+    price: 1_000 + index,
+    fluctuationRate: 0.25
+  }));
+  const deepCandidate = { symbol: 'DEEP11', name: '원본11위', price: 900, fluctuationRate: 0.10 };
+  const snapshots = Array.from({ length: 3 }, () => [...overheatedTop10, deepCandidate]);
+
+  const candidates = aggregateRankingCandidates(snapshots, {
+    maxFluctuationRate: 0.21,
+    perSnapshotCandidateLimit: 10
+  });
+
+  assert.deepEqual(candidates, []);
+});
+
+test('aggregateRankingCandidates: 최신 snapshot 포함과 50% 이상 출현을 모두 요구한다', () => {
+  const snapshots = [
+    [
+      { symbol: 'STALE', name: '과거지속', price: 1000, fluctuationRate: 0.10 },
+      { symbol: 'CURRENT', name: '현재지속', price: 2000, fluctuationRate: 0.11 }
+    ],
+    [{ symbol: 'STALE', name: '과거지속', price: 1010, fluctuationRate: 0.11 }],
+    [{ symbol: 'STALE', name: '과거지속', price: 1020, fluctuationRate: 0.12 }],
+    [
+      { symbol: 'CURRENT', name: '현재지속', price: 2100, fluctuationRate: 0.12 },
+      { symbol: 'FLASH', name: '최신단발', price: 3000, fluctuationRate: 0.13 }
+    ]
+  ];
+
+  const candidates = aggregateRankingCandidates(snapshots);
+
+  assert.deepEqual(candidates.map((candidate) => candidate.symbol), ['CURRENT']);
+  assert.equal(candidates[0].observationCount, 2);
+  assert.equal(candidates[0].observationSnapshots, 4);
 });
 
 test('VWAP은 (고+저+종)/3 가중 평균으로 계산된다', () => {
@@ -915,8 +954,8 @@ test('evaluateMidTradeDefense: 목표 주문이 오래되지 않았거나 손실
   }).defensive, false);
 });
 
-// ── 진입 기록 승격: 레거시 NO_CANDIDATE → SELECTED ──────────────────────
-test('updateEntrySelection은 NO_CANDIDATE 진입 기록을 SELECTED로 승격한다', () => {
+// ── 진입 기록 종결: 무효 후보 → SKIPPED ────────────────────────────────
+test('finalizeEntryWithoutCandidate는 무효 후보를 지우고 SKIPPED로 종결한다', () => {
   const strategy = repo.createStrategy(user.id, {
     morningBudget: 1_000_000, lunchBudget: 0,
     morningTargetProfitRate: 0.05, morningStopLossRate: 0.03,
@@ -924,15 +963,16 @@ test('updateEntrySelection은 NO_CANDIDATE 진입 기록을 SELECTED로 승격�
   });
   const entry = repo.createEntry(user.id, {
     strategyId: strategy.id, tradeDate: '2026-05-25', entryWindow: 'MORNING',
-    status: 'NO_CANDIDATE', bought: false
+    status: 'SELECTED', selectedSymbol: '000660', selectedSymbolName: 'SK하이닉스',
+    selectedPrice: 180000, selectedFluctuationRate: 0.12, bought: false
   });
-  assert.equal(entry.status, 'NO_CANDIDATE');
-  assert.equal(entry.selectedSymbol, null);
-  const promoted = repo.updateEntrySelection(entry.id, {
-    selectedSymbol: '000660', selectedSymbolName: 'SK하이닉스',
-    selectedPrice: 180000, selectedFluctuationRate: 0.12
+  const skipped = repo.finalizeEntryWithoutCandidate(entry.id, {
+    status: 'SKIPPED',
+    rankingSnapshot: [{ symbol: '000660', name: 'SK하이닉스', price: 179000, fluctuationRate: 0.11 }]
   });
-  assert.equal(promoted.status, 'SELECTED');
-  assert.equal(promoted.selectedSymbol, '000660');
-  assert.equal(promoted.bought, false);
+  assert.equal(skipped.status, 'SKIPPED');
+  assert.equal(skipped.selectedSymbol, null);
+  assert.equal(skipped.selectedPrice, null);
+  assert.equal(skipped.bought, false);
+  assert.equal(skipped.rankingSnapshot[0].symbol, '000660');
 });
