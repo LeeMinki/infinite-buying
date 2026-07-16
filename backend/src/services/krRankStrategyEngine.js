@@ -1,11 +1,17 @@
 // 한국 국장 상승률 랭킹 전략(KR_RANK_MOMENTUM)의 순수 판단 로직.
 // KIS 호출·DB는 krRankService 가 담당하고, 여기서는 입력값만으로 결정한다.
 
-// 진입 시 등락률이 이 값 이상인 종목은 매수 대상에서 제외한다.
-// 오전은 21%, 점심은 오전 급등 뒤 되돌림 위험을 줄이기 위해 더 낮은 15%를 쓴다.
+// 기본 호출자용 등락률 범위. 실제 진입은 운영 실전 손익을 복기한 구간별 밴드를 쓴다.
+export const MIN_FLUCTUATION_RATE = 0;
 export const MAX_FLUCTUATION_RATE = 0.21;
+export const ENTRY_MIN_FLUCTUATION_RATES = {
+  // 오전 15% 미만은 최근 실전 복기에서 후속 모멘텀이 약하고 손실이 크게 나타났다.
+  MORNING: 0.15,
+  LUNCH: 0
+};
 export const ENTRY_MAX_FLUCTUATION_RATES = {
-  MORNING: 0.21,
+  // 오전 20% 이상과 점심 15% 이상은 급등 후 되돌림 위험이 크게 나타난 구간이다.
+  MORNING: 0.20,
   LUNCH: 0.15
 };
 
@@ -164,7 +170,10 @@ export function selectRankingCandidate(rankingList = [], options = {}) {
 
 // 같은 필터를 적용해 후보 목록을 그대로 돌려준다. 매수 필터(분봉 검사)는
 // 첫 후보가 떨어졌을 때 차순위로 넘기기 위해 호출 측이 직접 순회한다.
-export function selectRankingCandidates(rankingList = [], { maxFluctuationRate = MAX_FLUCTUATION_RATE } = {}) {
+export function selectRankingCandidates(rankingList = [], {
+  minFluctuationRate = MIN_FLUCTUATION_RATE,
+  maxFluctuationRate = MAX_FLUCTUATION_RATE
+} = {}) {
   if (!Array.isArray(rankingList)) return [];
   const out = [];
   for (const item of rankingList) {
@@ -172,7 +181,7 @@ export function selectRankingCandidates(rankingList = [], { maxFluctuationRate =
     if (excludedKrRankIssueReason(item)) continue;
     const rate = Number(item.fluctuationRate);
     if (!Number.isFinite(rate)) continue;
-    if (rate >= maxFluctuationRate) continue;
+    if (rate < minFluctuationRate || rate >= maxFluctuationRate) continue;
     const price = Number(item.price);
     if (!Number.isFinite(price) || price <= 0) continue;
     out.push({
@@ -187,6 +196,10 @@ export function selectRankingCandidates(rankingList = [], { maxFluctuationRate =
 
 export function maxFluctuationRateForEntryWindow(entryWindow) {
   return ENTRY_MAX_FLUCTUATION_RATES[entryWindow] ?? MAX_FLUCTUATION_RATE;
+}
+
+export function minFluctuationRateForEntryWindow(entryWindow) {
+  return ENTRY_MIN_FLUCTUATION_RATES[entryWindow] ?? MIN_FLUCTUATION_RATE;
 }
 
 export function excludedKrRankIssueReason(candidate = {}) {
@@ -508,6 +521,7 @@ export function checkBuyCandidate(candles, opts = {}) {
 }
 
 export function aggregateRankingCandidates(snapshots = [], opts = {}) {
+  const minFluctuationRate = opts.minFluctuationRate ?? MIN_FLUCTUATION_RATE;
   const maxFluctuationRate = opts.maxFluctuationRate ?? MAX_FLUCTUATION_RATE;
   const candidateLimit = opts.candidateLimit ?? RANKING_OBSERVATION_DEFAULTS.candidateLimit;
   const perSnapshotCandidateLimit = opts.perSnapshotCandidateLimit ?? RANKING_OBSERVATION_DEFAULTS.perSnapshotCandidateLimit;
@@ -526,7 +540,7 @@ export function aggregateRankingCandidates(snapshots = [], opts = {}) {
   normalized.forEach((snapshot, snapshotIndex) => {
     const candidates = selectRankingCandidates(
       snapshot.slice(0, perSnapshotCandidateLimit),
-      { maxFluctuationRate }
+      { minFluctuationRate, maxFluctuationRate }
     );
     candidates.forEach((candidate, rankIndex) => {
       const rank = rankIndex + 1;

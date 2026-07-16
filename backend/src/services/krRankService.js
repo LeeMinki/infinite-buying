@@ -19,6 +19,7 @@ import {
   parseHhmmMinutes,
   makeKrRankIdempotencyKey,
   checkBuyCandidate,
+  minFluctuationRateForEntryWindow,
   maxFluctuationRateForEntryWindow
 } from './krRankStrategyEngine.js';
 
@@ -48,8 +49,9 @@ const ENTRY_MAX_ADVERSE_MOVE_RATE = 0.007;
 const ENTRY_DECISION_GRACE_MINUTES = 3;
 // 첫 필터 통과 후보는 다음 tick에서 한 번 더 확인하되, 기술 오류로 오래 끌며 늦게 진입하지 않는다.
 const ENTRY_CONFIRMATION_MAX_MINUTES = 3;
-// 확정 손실 청산이 이 횟수 연속이면 신규 진입을 잠그고 수동 stop→start 재개를 요구한다.
-const CONSECUTIVE_LOSS_LOCK_LIMIT = 2;
+// 같은 거래일에 실주문 청산 손실/손익 미확정이 이 횟수 누적되면 그날의 남은 신규 진입만
+// 잠근다. 전략은 RUNNING을 유지하며 다음 거래일에는 수동 재시작 없이 자동으로 재개한다.
+const DAILY_RISK_EXIT_LIMIT = 2;
 // 진입 매수 지정가 버퍼: 시장가 대신 현재가보다 이만큼 위의 지정가로 매수한다. 정상 호가에서는
 // 시장가처럼 즉시 체결되면서도, 순간 급등으로 호가가 위로 갭하면 꼭대기를 잡지 않게 막는다.
 // (미국 랭킹 전략이 지정가로 매수하는 것과 같은 철학. 호가단위 스냅·올림은 주문 빌더가 처리한다.)
@@ -214,10 +216,11 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   const pendingBuyStarted = pendingEntry
     ? repo.hasStartedBuyForEntry(pendingEntry.id)
     : false;
-  // 손실 회로 차단기는 무보유일 때만 적용한다. 보유 중에는 어떤 손실 이력이 있어도
-  // 체결 동기화와 청산 평가를 계속해야 포지션이 방치되지 않는다.
+  // 일일 손실 회로 차단기는 무보유일 때만 적용한다. 보유 중에는 어떤 손실 이력이 있어도
+  // 체결 동기화와 청산 평가를 계속해야 포지션이 방치되지 않는다. 이미 시작한 BUY 역시
+  // 신규 진입 잠금보다 먼저 끝까지 reconcile한다.
   if (!strategy.holdingSymbol && !pendingBuyStarted) {
-    const riskBlocked = applyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSource });
+    const riskBlocked = applyDailyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSource });
     if (riskBlocked) return riskBlocked;
   }
   // 1분 폴링이라 할 일이 없는 tick은 KIS 호출 없이 일찍 끝낸다.
@@ -296,35 +299,19 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
   }
 }
 
-function applyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSource }) {
+function applyDailyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSource }) {
   const tradeDate = kstToday();
-  const risk = repo.getLiveLossRiskState(strategy.id, {
-    tradeDate,
-    since: strategy.startedAt || null
-  });
+  // started_at을 경계로 쓰지 않는다. 같은 날 stop→start로 일일 한도를 우회하지 못하게 하고,
+  // 날짜가 바뀌면 과거 연속 손실과 무관하게 자동 재개한다.
+  const risk = repo.getLiveLossRiskState(strategy.id, { tradeDate });
+  if (risk.riskExitsToday < DAILY_RISK_EXIT_LIMIT) return null;
 
-  const consecutiveRiskExits = risk.consecutiveRiskExits ?? risk.consecutiveLossExits;
-  if (consecutiveRiskExits >= CONSECUTIVE_LOSS_LOCK_LIMIT) {
-    // DB상 flat만 믿고 STOPPED로 바꾸면 늦게 반영된 체결/외부 잔고를 관리할 scheduler까지
-    // 끊을 수 있다. RUNNING은 유지하고 신규 진입만 잠가 sync/청산 경로를 계속 살린다.
-    const alreadyLogged = repo.hasLossCircuitBreakerLog(strategy.id, strategy.startedAt || null);
-    const riskSummary = risk.consecutiveUnresolvedExits > 0
-      ? `최근 실주문 청산 ${consecutiveRiskExits}회가 연속 손실이거나 손익 미확정 상태입니다 (이 중 ${risk.consecutiveUnresolvedExits}회는 실현손익 동기화 대기 중).`
-      : `최근 실주문 손실 청산이 ${risk.consecutiveLossExits}회 연속 확정되어`;
-    return saveDecision(userId, strategy, {
-      decision: 'SKIP', liveOrderEnabled, evaluationSource,
-      reason: `손실 회로 차단기: ${riskSummary} 신규 진입을 잠갔습니다. 체결 확인과 기존 보유 청산은 계속하며, 재개하려면 계좌를 확인한 뒤 전략을 중지하고 다시 시작하세요.`,
-      noLog: evaluationSource !== 'MANUAL' && alreadyLogged
-    });
-  }
-
-  if (!risk.lossExitToday && !risk.unresolvedExitToday) return null;
   const entryWindow = resolveEntryObservationWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled })
     || resolveEntryWindow(new Date(), { lunchEntryEnabled: strategy.lunchEntryEnabled });
   if (!entryWindow) return null;
 
   let entry = repo.getEntry(strategy.id, tradeDate, entryWindow);
-  let created = false;
+  let stateChanged = false;
   if (!entry) {
     entry = repo.createEntry(userId, {
       strategyId: strategy.id,
@@ -334,14 +321,17 @@ function applyLossRiskGate(userId, strategy, { liveOrderEnabled, evaluationSourc
       rankingSnapshot: null,
       bought: false
     });
-    created = Boolean(entry);
+    stateChanged = Boolean(entry);
+  } else if (entry.status === 'SELECTED' && !entry.bought) {
+    // 아직 주문을 시작하지 않은 후보는 당일 한도에 걸린 순간 종결한다. SELECTED로 남겨 두면
+    // 위험 집계가 뒤늦게 바뀌었을 때 같은 후보가 주문 경로로 되살아날 수 있다.
+    entry = repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED' });
+    stateChanged = true;
   }
   return saveDecision(userId, strategy, {
     decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
-    reason: risk.unresolvedExitToday
-      ? `오늘 실주문 청산의 손익 확인이 끝나지 않아 ${ENTRY_WINDOWS[entryWindow].label} 신규 진입을 안전상 건너뜁니다. 기존 보유분의 체결 확인과 청산 관리는 계속합니다.`
-      : `오늘 실주문 손실 청산이 확정되어 ${ENTRY_WINDOWS[entryWindow].label} 신규 진입을 건너뜁니다. 기존 보유분의 체결 확인과 청산 관리는 계속합니다.`,
-    noLog: evaluationSource !== 'MANUAL' && !created
+    reason: `일일 손실 회로 차단기: 오늘 실주문 손실 ${risk.lossExitsToday}회${risk.unresolvedExitsToday > 0 ? `, 손익 확인 대기 ${risk.unresolvedExitsToday}회` : ''}가 누적되어 ${ENTRY_WINDOWS[entryWindow].label} 신규 진입을 건너뜁니다. 전략은 계속 실행되며 다음 거래일에 자동 재개합니다. 기존 보유분의 체결 확인과 청산 관리도 계속합니다.`,
+    noLog: evaluationSource !== 'MANUAL' && !stateChanged
   });
 }
 
@@ -832,10 +822,13 @@ async function evaluateEntryPath(userId, strategy, {
     });
     const observations = repo.listObservations(strategy.id, tradeDate, entryWindow, { limit: RANKING_OBSERVATION_LIMIT });
     const observationSnapshots = observations.map((row) => row.rankingSnapshot).filter(Boolean);
-    // 구간별 등락률 상한 미만 후보를 사전 관찰 스냅샷과 현재 랭킹으로 종합한 뒤,
+    // 구간별 실전 손익에서 상대적으로 유리했던 등락률 밴드의 후보를 사전 관찰
+    // 스냅샷과 현재 랭킹으로 종합한 뒤,
     // 매수 필터(분봉 단기 흐름·거래대금)와 점수로 한 번 더 거른다.
+    const minFluctuationRate = minFluctuationRateForEntryWindow(entryWindow);
     const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
     const candidates = aggregateRankingCandidates(observationSnapshots, {
+      minFluctuationRate,
       maxFluctuationRate,
       candidateLimit: BUY_FILTER_CANDIDATE_LIMIT
     });
@@ -850,8 +843,11 @@ async function evaluateEntryPath(userId, strategy, {
         strategyId: strategy.id, tradeDate, entryWindow,
         status: 'NO_CANDIDATE', rankingSnapshot, bought: false
       });
+      const fluctuationBand = minFluctuationRate > 0
+        ? `${(minFluctuationRate * 100).toFixed(0)}% 이상 ${(maxFluctuationRate * 100).toFixed(0)}% 미만`
+        : `${(maxFluctuationRate * 100).toFixed(0)}% 미만`;
       const reason = candidates.length === 0
-        ? `${label} 진입: 원본 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위 안에서 등락률 ${(maxFluctuationRate * 100).toFixed(0)}% 미만이고 지속적으로 확인된 매수 대상이 없어 이 구간 매수를 건너뜁니다.`
+        ? `${label} 진입: 원본 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위 안에서 등락률 ${fluctuationBand}이고 지속적으로 확인된 매수 대상이 없어 이 구간 매수를 건너뜁니다.`
         : `${label} 진입: 관찰 랭킹 종합 후보 ${candidates.length}개가 단기 흐름·거래대금·매수가능금액 검사에서 모두 거절되어 이 구간 매수를 건너뜁니다. ${filterResult.rejections.map((r) => {
             const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
             return `${nameLabel}: ${r.reason}`;
@@ -1084,10 +1080,11 @@ async function evaluateEntryPath(userId, strategy, {
       });
     }
     rankingSnapshot = (latestRanking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+    const minFluctuationRate = minFluctuationRateForEntryWindow(entryWindow);
     const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
     const retryCandidate = selectRankingCandidates(
       (latestRanking || []).slice(0, RAW_RANK_CANDIDATE_LIMIT),
-      { maxFluctuationRate }
+      { minFluctuationRate, maxFluctuationRate }
     )
       .find((candidate) => candidate.symbol === symbol);
     const retryCheck = retryCandidate
@@ -1095,7 +1092,10 @@ async function evaluateEntryPath(userId, strategy, {
           entryWindow,
           candidate: retryCandidate
         })
-      : { ok: false, reason: `최신 랭킹에서 사라졌거나 현재 등락률이 진입 상한 ${(maxFluctuationRate * 100).toFixed(0)}% 이상입니다.` };
+      : {
+          ok: false,
+          reason: `최신 랭킹에서 사라졌거나 현재 등락률이 진입 범위(${(minFluctuationRate * 100).toFixed(0)}% 이상 ${(maxFluctuationRate * 100).toFixed(0)}% 미만)를 벗어났습니다.`
+        };
     if (!retryCheck.ok) {
       repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
       return saveDecision(userId, strategy, {

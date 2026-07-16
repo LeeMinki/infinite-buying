@@ -739,17 +739,28 @@ export function hasBlockingOpenOrder(userId, strategyId) {
 
 // 실주문으로 청산이 확정된 최근 포지션을 entry 단위로 묶어 손실 회로 차단기 상태를 계산한다.
 // 부분체결→잔량취소와 잔량 재매도를 주문 행별 손실 여러 회로 오인하지 않는다. 실현손익
-// 동기화가 늦은 청산은 BUY/SELL 체결가로 보완하고, 그래도 판정할 수 없으면 승리로 간주하지
-// 않고 UNKNOWN으로 남겨 신규 진입을 fail-closed한다.
+// 동기화가 늦은 청산은 BUY/SELL의 실체결가로만 보완하고, 그래도 판정할 수 없으면
+// 주문 결정가로 추정하지 않고 UNKNOWN으로 남긴다. 청산 거래일은 동기화 발견 시각이 아니라
+// 진입 거래일(레거시는 멱등키 날짜)을 쓨서 전일 체결이 다음 날 손실로 오귀속되지 않게 한다.
 export function getLiveLossRiskState(strategyId, { tradeDate, since = null, limit = 20 } = {}) {
   const rows = getDb().prepare(`
     SELECT s.id, s.entry_id, s.sell_reason, s.status, s.quantity, s.filled_quantity,
            s.average_filled_price, s.order_price,
            s.realized_profit_amount, s.realized_profit_rate,
            COALESCE(s.filled_at, s.updated_at, s.created_at) AS exit_at,
-           date(datetime(COALESCE(s.filled_at, s.updated_at, s.created_at), '+9 hours')) AS trade_date,
+           COALESCE(
+             e.trade_date,
+             CASE
+               WHEN length(s.idempotency_key) >= 8
+                 AND substr(s.idempotency_key, 1, 8) NOT GLOB '*[^0-9]*'
+               THEN substr(s.idempotency_key, 1, 4) || '-' ||
+                    substr(s.idempotency_key, 5, 2) || '-' ||
+                    substr(s.idempotency_key, 7, 2)
+             END,
+             date(datetime(s.created_at, '+9 hours'))
+           ) AS trade_date,
            (
-             SELECT COALESCE(b.average_filled_price, b.order_price)
+             SELECT b.average_filled_price
              FROM kr_rank_orders b
              WHERE s.entry_id IS NOT NULL
                AND b.entry_id = s.entry_id
@@ -760,6 +771,7 @@ export function getLiveLossRiskState(strategyId, { tradeDate, since = null, limi
              LIMIT 1
            ) AS buy_price
     FROM kr_rank_orders s
+    LEFT JOIN kr_rank_entries e ON e.id = s.entry_id
     WHERE s.strategy_id = ?
       AND s.side = 'SELL'
       AND s.live_order_enabled = 1
@@ -801,7 +813,8 @@ export function getLiveLossRiskState(strategyId, { tradeDate, since = null, limi
           Math.max(Number(row.filled_quantity || (row.status === 'FILLED' ? row.quantity : 0)), 0),
           Math.max(Number(row.quantity || 0), 0)
         ),
-        price: Number(row.average_filled_price || row.order_price || 0)
+        // live 주문의 결정가/시장가 시세는 실제 체결가가 아니다. 체결가가 비면 UNKNOWN으로 둔다.
+        price: Number(row.average_filled_price || 0)
       }));
       if (buyPrice > 0 && priced.length > 0 && priced.every((row) => row.quantity > 0 && row.price > 0)) {
         const quantity = priced.reduce((sum, row) => sum + row.quantity, 0);
@@ -837,27 +850,25 @@ export function getLiveLossRiskState(strategyId, { tradeDate, since = null, limi
   const unresolvedExitToday = tradeDate
     ? recent.some((row) => row.outcome === 'UNKNOWN' && row.tradeDate === tradeDate)
     : false;
+  const lossExitsToday = tradeDate
+    ? recent.filter((row) => row.outcome === 'LOSS' && row.tradeDate === tradeDate).length
+    : 0;
+  const unresolvedExitsToday = tradeDate
+    ? recent.filter((row) => row.outcome === 'UNKNOWN' && row.tradeDate === tradeDate).length
+    : 0;
   const consecutiveUnresolvedExits = recent
     .slice(0, consecutiveRiskExits)
     .filter((row) => row.outcome === 'UNKNOWN').length;
   return {
     lossExitToday,
     unresolvedExitToday,
+    lossExitsToday,
+    unresolvedExitsToday,
+    riskExitsToday: lossExitsToday + unresolvedExitsToday,
     consecutiveLossExits,
     consecutiveUnresolvedExits,
     consecutiveRiskExits
   };
-}
-
-export function hasLossCircuitBreakerLog(strategyId, since = null) {
-  return Boolean(getDb().prepare(`
-    SELECT 1
-    FROM kr_rank_decision_logs
-    WHERE strategy_id = ?
-      AND reason LIKE '손실 회로 차단기:%'
-      AND (? IS NULL OR created_at >= ?)
-    LIMIT 1
-  `).get(strategyId, since, since));
 }
 
 export function getActiveSellOrder({ strategyId, entryWindow, symbol = null, sellReason = null } = {}) {

@@ -28,6 +28,7 @@ import {
   evaluateMidTradeDefense,
   evaluateStopLossDeferral,
   MAX_FLUCTUATION_RATE,
+  minFluctuationRateForEntryWindow,
   maxFluctuationRateForEntryWindow
 } from '../src/services/krRankStrategyEngine.js';
 
@@ -68,10 +69,27 @@ test('모든 종목이 21% 이상이면 후보가 없다', () => {
   assert.equal(selectRankingCandidate(ranking), null);
 });
 
-test('진입 구간별 등락률 상한은 오전 21%, 점심은 되돌림 위험으로 15%를 쓴다', () => {
-  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.21);
+test('진입 구간별 등락률 밴드는 오전 15~20%, 점심 0~15%를 쓴다', () => {
+  assert.equal(minFluctuationRateForEntryWindow('MORNING'), 0.15);
+  assert.equal(maxFluctuationRateForEntryWindow('MORNING'), 0.20);
+  assert.equal(minFluctuationRateForEntryWindow('LUNCH'), 0);
   assert.equal(maxFluctuationRateForEntryWindow('LUNCH'), 0.15);
+  assert.equal(minFluctuationRateForEntryWindow('UNKNOWN'), 0);
   assert.equal(maxFluctuationRateForEntryWindow('UNKNOWN'), MAX_FLUCTUATION_RATE);
+});
+
+test('오전 등락률 15%는 포함하고 15% 미만·20% 이상은 제외한다', () => {
+  const ranking = [
+    { symbol: '200000', name: '상한경계', price: 1000, fluctuationRate: 0.20 },
+    { symbol: '199000', name: '상한통과', price: 1000, fluctuationRate: 0.199 },
+    { symbol: '150000', name: '하한통과', price: 1000, fluctuationRate: 0.15 },
+    { symbol: '149000', name: '하한미달', price: 1000, fluctuationRate: 0.149 }
+  ];
+  const candidates = selectRankingCandidates(ranking, {
+    minFluctuationRate: minFluctuationRateForEntryWindow('MORNING'),
+    maxFluctuationRate: maxFluctuationRateForEntryWindow('MORNING')
+  });
+  assert.deepEqual(candidates.map((candidate) => candidate.symbol), ['199000', '150000']);
 });
 
 test('점심 등락률 상한 15%는 경계값부터 후보에서 제외한다', () => {
