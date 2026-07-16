@@ -15,7 +15,7 @@ patches:
 images:
   - name: infinite-buying-backend
     newName: yny.ocir.io/axnyuujz40an/infinite-buying-backend
-    newTag: b1cb58ccea65598f2438d31277903065c9f6b642
+    newTag: 7da19cb510715122663f9a7d1be9d5b8e0a5f136
   - name: infinite-buying-frontend
     newName: yny.ocir.io/axnyuujz40an/infinite-buying-frontend
-    newTag: b1cb58ccea65598f2438d31277903065c9f6b642
+    newTag: 7da19cb510715122663f9a7d1be9d5b8e0a5f136
