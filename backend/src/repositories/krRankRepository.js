@@ -79,7 +79,11 @@ export function getStrategy(userId, id, { includeDeleted = false } = {}) {
 export function startStrategy(userId, id) {
   getDb().prepare(`
     UPDATE kr_rank_strategies
-    SET status = 'RUNNING', started_at = COALESCE(started_at, datetime('now')),
+    SET started_at = CASE
+          WHEN status = 'RUNNING' THEN COALESCE(started_at, datetime('now'))
+          ELSE datetime('now')
+        END,
+        status = 'RUNNING',
         stopped_at = NULL, last_error_message = NULL, updated_at = datetime('now')
     WHERE user_id = ? AND id = ?
   `).run(userId, id);
@@ -135,6 +139,32 @@ export function setHolding(userId, id, { symbol, symbolName, entryWindow }) {
     WHERE user_id = ? AND id = ?
   `).run(symbol, symbolName || null, entryWindow, userId, id);
   return getStrategy(userId, id);
+}
+
+// 실제/모의 매수 확인 뒤 진입 BOUGHT와 전략 holding은 하나의 상태 전이다. 둘 사이에서
+// 프로세스가 끊기면 실제 포지션이 scheduler에서 사라질 수 있으므로 같은 SQLite transaction으로 확정한다.
+export function confirmEntryHolding(userId, strategyId, entryId, { symbol, symbolName, entryWindow }) {
+  const db = getDb();
+  const confirm = db.transaction(() => {
+    const entryResult = db.prepare(`
+      UPDATE kr_rank_entries
+      SET status = 'BOUGHT', bought = 1, updated_at = datetime('now')
+      WHERE id = ? AND strategy_id = ? AND user_id = ?
+    `).run(entryId, strategyId, userId);
+    if (entryResult.changes !== 1) throw new Error('확정할 한국 랭킹 진입 기록을 찾을 수 없습니다.');
+    const strategyResult = db.prepare(`
+      UPDATE kr_rank_strategies
+      SET holding_symbol = ?, holding_symbol_name = ?, holding_entry_window = ?,
+          updated_at = datetime('now')
+      WHERE id = ? AND user_id = ?
+    `).run(symbol, symbolName || null, entryWindow, strategyId, userId);
+    if (strategyResult.changes !== 1) throw new Error('보유 상태를 기록할 한국 랭킹 전략을 찾을 수 없습니다.');
+  });
+  confirm();
+  return {
+    entry: getEntryById(entryId),
+    strategy: getStrategy(userId, strategyId, { includeDeleted: true })
+  };
 }
 
 export function clearHolding(userId, id) {
@@ -233,6 +263,23 @@ export function clearEntrySelection(id, { rankingSnapshot = null } = {}) {
   return getEntryById(id);
 }
 
+// 한 번 정한 진입 판단이 무효화되면 같은 구간에서 새 후보를 계속 탐색하지 않는다.
+// 선택값은 지워 UI가 실제 매수 종목처럼 보이지 않게 하고, 스냅샷은 사후 분석용으로 보존한다.
+export function finalizeEntryWithoutCandidate(id, { status = 'NO_CANDIDATE', rankingSnapshot = null } = {}) {
+  getDb().prepare(`
+    UPDATE kr_rank_entries
+    SET status = ?, bought = 0,
+        selected_symbol = NULL,
+        selected_symbol_name = NULL,
+        selected_price = NULL,
+        selected_fluctuation_rate = NULL,
+        ranking_snapshot = COALESCE(?, ranking_snapshot),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(status, rankingSnapshot ? JSON.stringify(rankingSnapshot) : null, id);
+  return getEntryById(id);
+}
+
 export function getEntry(strategyId, tradeDate, entryWindow) {
   return toEntry(getDb().prepare(`
     SELECT * FROM kr_rank_entries
@@ -240,8 +287,59 @@ export function getEntry(strategyId, tradeDate, entryWindow) {
   `).get(strategyId, tradeDate, entryWindow));
 }
 
+// 진입창이 끝난 뒤에도 이미 접수됐거나 일부/전부 체결된 BUY를 잔고·청산 상태까지
+// 이어서 확인할 수 있도록 미종결 SELECTED 진입을 찾는다. 오늘 아직 주문 전인 후보도 포함한다.
+export function getPendingEntry(strategyId, tradeDate) {
+  return toEntry(getDb().prepare(`
+    SELECT e.*
+    FROM kr_rank_entries e
+    WHERE e.strategy_id = ?
+      AND e.status = 'SELECTED'
+      AND e.bought = 0
+      AND e.selected_symbol IS NOT NULL
+      AND (
+        e.trade_date = ?
+        OR EXISTS (
+          SELECT 1
+          FROM kr_rank_orders o
+          WHERE o.entry_id = e.id
+            AND o.side = 'BUY'
+            AND (
+              o.status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+              OR COALESCE(o.filled_quantity, 0) > 0
+            )
+        )
+      )
+    ORDER BY e.trade_date ASC, e.id ASC
+    LIMIT 1
+  `).get(strategyId, tradeDate));
+}
+
+export function hasStartedBuyForEntry(entryId) {
+  return Boolean(getDb().prepare(`
+    SELECT 1
+    FROM kr_rank_orders
+    WHERE entry_id = ?
+      AND side = 'BUY'
+      AND (status NOT IN ('FAILED', 'REJECTED', 'CANCELED') OR COALESCE(filled_quantity, 0) > 0)
+    LIMIT 1
+  `).get(entryId));
+}
+
 export function getEntryById(id) {
   return toEntry(getDb().prepare('SELECT * FROM kr_rank_entries WHERE id = ?').get(id));
+}
+
+export function getLatestBoughtEntry(strategyId, entryWindow, symbol) {
+  return toEntry(getDb().prepare(`
+    SELECT * FROM kr_rank_entries
+    WHERE strategy_id = ?
+      AND entry_window = ?
+      AND selected_symbol = ?
+      AND bought = 1
+    ORDER BY trade_date DESC, id DESC
+    LIMIT 1
+  `).get(strategyId, entryWindow, symbol));
 }
 
 export function listEntries(userId, strategyId, { limit = 50, offset = 0 } = {}) {
@@ -596,26 +694,37 @@ export function hasDuplicateOrder(idempotencyKey) {
   return Boolean(getDb().prepare('SELECT 1 FROM kr_rank_orders WHERE idempotency_key = ?').get(idempotencyKey));
 }
 
-// 같은 키로 FAILED가 아닌 주문(접수/체결 등)이 있는지 — 있으면 이미 처리된 것으로 본다.
+// 같은 키로 살아 있는 주문이 있는지. BUY 일부체결 후 잔량 취소/거부는 잔고 확인 없이
+// 새 매수를 만들면 안 되므로 blocking한다. SELL 잔량 취소는 남은 실제 잔고를 다시 팔 수 있어야 한다.
 export function hasNonFailedOrder(idempotencyKey) {
   return Boolean(getDb().prepare(
-    "SELECT 1 FROM kr_rank_orders WHERE idempotency_key = ? AND status <> 'FAILED' LIMIT 1"
+    `SELECT 1 FROM kr_rank_orders
+     WHERE idempotency_key = ?
+       AND (
+         status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+         OR (side = 'BUY' AND COALESCE(filled_quantity, 0) > 0)
+       )
+     LIMIT 1`
   ).get(idempotencyKey));
 }
 
 export function getActiveOrderByIdempotencyKey(idempotencyKey) {
   return toOrder(getDb().prepare(`
     SELECT * FROM kr_rank_orders
-    WHERE idempotency_key = ? AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+    WHERE idempotency_key = ?
+      AND (
+        status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+        OR (side = 'BUY' AND COALESCE(filled_quantity, 0) > 0)
+      )
     ORDER BY id DESC
     LIMIT 1
   `).get(idempotencyKey));
 }
 
-// 같은 키로 누적된 실패 주문 수 — 재시도 한도 판정에 쓴다.
+// 같은 키로 누적된 실패/거부 주문 수 — 재시도 한도 판정에 쓴다.
 export function countFailedOrders(idempotencyKey) {
   return getDb().prepare(
-    "SELECT COUNT(*) AS c FROM kr_rank_orders WHERE idempotency_key = ? AND status = 'FAILED'"
+    "SELECT COUNT(*) AS c FROM kr_rank_orders WHERE idempotency_key = ? AND status IN ('FAILED', 'REJECTED')"
   ).get(idempotencyKey).c;
 }
 
@@ -626,6 +735,129 @@ export function hasBlockingOpenOrder(userId, strategyId) {
       AND status IN ('REQUESTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'UNKNOWN')
     LIMIT 1
   `).get(userId, strategyId));
+}
+
+// 실주문으로 청산이 확정된 최근 포지션을 entry 단위로 묶어 손실 회로 차단기 상태를 계산한다.
+// 부분체결→잔량취소와 잔량 재매도를 주문 행별 손실 여러 회로 오인하지 않는다. 실현손익
+// 동기화가 늦은 청산은 BUY/SELL 체결가로 보완하고, 그래도 판정할 수 없으면 승리로 간주하지
+// 않고 UNKNOWN으로 남겨 신규 진입을 fail-closed한다.
+export function getLiveLossRiskState(strategyId, { tradeDate, since = null, limit = 20 } = {}) {
+  const rows = getDb().prepare(`
+    SELECT s.id, s.entry_id, s.sell_reason, s.status, s.quantity, s.filled_quantity,
+           s.average_filled_price, s.order_price,
+           s.realized_profit_amount, s.realized_profit_rate,
+           COALESCE(s.filled_at, s.updated_at, s.created_at) AS exit_at,
+           date(datetime(COALESCE(s.filled_at, s.updated_at, s.created_at), '+9 hours')) AS trade_date,
+           (
+             SELECT COALESCE(b.average_filled_price, b.order_price)
+             FROM kr_rank_orders b
+             WHERE s.entry_id IS NOT NULL
+               AND b.entry_id = s.entry_id
+               AND b.side = 'BUY'
+               AND b.live_order_enabled = 1
+               AND (b.status = 'FILLED' OR COALESCE(b.filled_quantity, 0) > 0)
+             ORDER BY b.id DESC
+             LIMIT 1
+           ) AS buy_price
+    FROM kr_rank_orders s
+    WHERE s.strategy_id = ?
+      AND s.side = 'SELL'
+      AND s.live_order_enabled = 1
+      AND (s.status = 'FILLED' OR COALESCE(s.filled_quantity, 0) > 0)
+      AND (? IS NULL OR COALESCE(s.filled_at, s.updated_at, s.created_at) >= ?)
+    ORDER BY COALESCE(s.filled_at, s.updated_at, s.created_at) DESC, s.id DESC
+    LIMIT ?
+  `).all(strategyId, since, since, Math.max(limit * 5, limit));
+
+  const groups = new Map();
+  for (const row of rows) {
+    const key = row.entry_id == null ? `order:${row.id}` : `entry:${row.entry_id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { rows: [], exitAt: row.exit_at, tradeDate: row.trade_date };
+      groups.set(key, group);
+    }
+    group.rows.push(row);
+  }
+
+  const recent = [...groups.values()]
+    // 부분체결만 진행 중인 포지션은 아직 청산 결과가 아니므로 회로 차단기에 넣지 않는다.
+    .filter((group) => group.rows.some((row) => row.status === 'FILLED'))
+    .sort((a, b) => String(b.exitAt).localeCompare(String(a.exitAt)))
+    .slice(0, limit)
+    .map((group) => {
+      const executed = group.rows.filter((row) => Number(row.filled_quantity || (row.status === 'FILLED' ? row.quantity : 0)) > 0);
+      const realizedAmounts = executed
+        .filter((row) => row.realized_profit_amount != null)
+        .map((row) => Number(row.realized_profit_amount));
+      if (realizedAmounts.length === executed.length && realizedAmounts.length > 0) {
+        const amount = realizedAmounts.reduce((sum, value) => sum + value, 0);
+        return { ...group, outcome: amount < 0 ? 'LOSS' : (amount > 0 ? 'WIN' : 'UNKNOWN') };
+      }
+
+      const buyPrice = Number(executed.find((row) => Number(row.buy_price) > 0)?.buy_price || 0);
+      const priced = executed.map((row) => ({
+        quantity: Math.min(
+          Math.max(Number(row.filled_quantity || (row.status === 'FILLED' ? row.quantity : 0)), 0),
+          Math.max(Number(row.quantity || 0), 0)
+        ),
+        price: Number(row.average_filled_price || row.order_price || 0)
+      }));
+      if (buyPrice > 0 && priced.length > 0 && priced.every((row) => row.quantity > 0 && row.price > 0)) {
+        const quantity = priced.reduce((sum, row) => sum + row.quantity, 0);
+        const sellPrice = priced.reduce((sum, row) => sum + row.quantity * row.price, 0) / quantity;
+        if (sellPrice !== buyPrice) {
+          return { ...group, outcome: sellPrice < buyPrice ? 'LOSS' : 'WIN' };
+        }
+      }
+
+      const realizedRates = executed
+        .filter((row) => row.realized_profit_rate != null)
+        .map((row) => Number(row.realized_profit_rate));
+      if (realizedRates.length > 0 && realizedRates.every(Number.isFinite)) {
+        const worstRate = Math.min(...realizedRates);
+        if (worstRate !== 0) return { ...group, outcome: worstRate < 0 ? 'LOSS' : 'WIN' };
+      }
+
+      const lossReason = executed.some((row) => ['STOP_LOSS', 'ENTRY_FAILED'].includes(row.sell_reason));
+      return { ...group, outcome: lossReason ? 'LOSS' : 'UNKNOWN' };
+    });
+
+  let consecutiveLossExits = 0;
+  let consecutiveRiskExits = 0;
+  for (const row of recent) {
+    if (row.outcome === 'WIN') break;
+    consecutiveRiskExits += 1;
+    if (row.outcome === 'LOSS') consecutiveLossExits += 1;
+  }
+
+  const lossExitToday = tradeDate
+    ? recent.some((row) => row.outcome === 'LOSS' && row.tradeDate === tradeDate)
+    : false;
+  const unresolvedExitToday = tradeDate
+    ? recent.some((row) => row.outcome === 'UNKNOWN' && row.tradeDate === tradeDate)
+    : false;
+  const consecutiveUnresolvedExits = recent
+    .slice(0, consecutiveRiskExits)
+    .filter((row) => row.outcome === 'UNKNOWN').length;
+  return {
+    lossExitToday,
+    unresolvedExitToday,
+    consecutiveLossExits,
+    consecutiveUnresolvedExits,
+    consecutiveRiskExits
+  };
+}
+
+export function hasLossCircuitBreakerLog(strategyId, since = null) {
+  return Boolean(getDb().prepare(`
+    SELECT 1
+    FROM kr_rank_decision_logs
+    WHERE strategy_id = ?
+      AND reason LIKE '손실 회로 차단기:%'
+      AND (? IS NULL OR created_at >= ?)
+    LIMIT 1
+  `).get(strategyId, since, since));
 }
 
 export function getActiveSellOrder({ strategyId, entryWindow, symbol = null, sellReason = null } = {}) {
@@ -648,6 +880,82 @@ export function getActiveSellOrder({ strategyId, entryWindow, symbol = null, sel
     SELECT * FROM kr_rank_orders
     WHERE ${where}
     ORDER BY id DESC
+    LIMIT 1
+  `).get(...params));
+}
+
+export function getLatestBuyOrder({ strategyId, entryWindow, symbol = null, entryId = null } = {}) {
+  const params = [strategyId, entryWindow];
+  let where = `
+    strategy_id = ?
+    AND entry_window = ?
+    AND side = 'BUY'
+    AND (status NOT IN ('FAILED', 'REJECTED', 'CANCELED') OR COALESCE(filled_quantity, 0) > 0)
+  `;
+  if (entryId != null) {
+    where += ' AND entry_id = ?';
+    params.push(entryId);
+  }
+  if (symbol) {
+    where += ' AND symbol = ?';
+    params.push(symbol);
+  }
+  return toOrder(getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE ${where}
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(...params));
+}
+
+export function getLiveFilledSellQuantityForEntry(entryId) {
+  if (entryId == null) return 0;
+  const row = getDb().prepare(`
+    SELECT COALESCE(SUM(
+      CASE
+        WHEN COALESCE(filled_quantity, 0) > 0
+          THEN MIN(COALESCE(filled_quantity, 0), COALESCE(quantity, filled_quantity, 0))
+        WHEN status = 'FILLED' THEN COALESCE(quantity, 0)
+        ELSE 0
+      END
+    ), 0) AS quantity
+    FROM kr_rank_orders
+    WHERE entry_id = ?
+      AND side = 'SELL'
+      AND live_order_enabled = 1
+  `).get(entryId);
+  return Math.max(0, Math.floor(Number(row?.quantity || 0)));
+}
+
+export function getFilledSellOrderForEntry(entryId) {
+  return toOrder(getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE entry_id = ? AND side = 'SELL' AND status = 'FILLED'
+    ORDER BY COALESCE(filled_at, updated_at, created_at) DESC, id DESC
+    LIMIT 1
+  `).get(entryId));
+}
+
+export function getLatestFilledSellOrder({ strategyId, entryWindow, symbol = null, entryId = null } = {}) {
+  const params = [strategyId, entryWindow];
+  let where = `
+    strategy_id = ?
+    AND entry_window = ?
+    AND side = 'SELL'
+    AND status = 'FILLED'
+  `;
+  if (entryId != null) {
+    where += ' AND entry_id = ?';
+    params.push(entryId);
+  }
+  if (symbol) {
+    where += ' AND symbol = ?';
+    params.push(symbol);
+  }
+  return toOrder(getDb().prepare(`
+    SELECT * FROM kr_rank_orders
+    WHERE ${where}
+    ORDER BY COALESCE(filled_at, updated_at, created_at) DESC, id DESC
     LIMIT 1
   `).get(...params));
 }

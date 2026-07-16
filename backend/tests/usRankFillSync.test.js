@@ -204,6 +204,113 @@ test('syncOrderFills (US): 같은 (symbol, exchange) 여러 주문은 inquire-cc
   }
 });
 
+test('syncOrderFills (US): 체결 0인 취소·거부 상태도 ACCEPTED에서 terminal로 전파한다', async () => {
+  const strategy = createStrategy();
+  const canceledTrade = createTrade(strategy.id, { symbol: 'USCAN', tradeSeq: 41 });
+  const rejectedTrade = repo.createTrade(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-05-28', tradeSeq: 42,
+    symbol: 'USREJ', symbolName: 'USREJ', exchange: 'NAS', selectedPrice: 50, status: 'BOUGHT'
+  });
+  const canceled = createAcceptedSellOrder(strategy.id, {
+    tradeId: canceledTrade.id, symbol: 'USCAN', kisOrderNo: 'US-ZERO-CANCELED', quantity: 10
+  });
+  const rejected = createAcceptedSellOrder(strategy.id, {
+    tradeId: rejectedTrade.id, symbol: 'USREJ', kisOrderNo: 'US-ZERO-REJECTED', quantity: 10
+  });
+  const state = {
+    history: [
+      {
+        odno: 'US-ZERO-CANCELED', ovrs_pdno: 'USCAN', sll_buy_dvsn_cd: '01',
+        ft_ord_qty: '10', ft_ccld_qty: '0', nccs_qty: '0',
+        rvse_cncl_dvsn: '02', prcs_stat_name: '완료'
+      },
+      {
+        odno: 'US-ZERO-REJECTED', ovrs_pdno: 'USREJ', sll_buy_dvsn_cd: '01',
+        ft_ord_qty: '10', ft_ccld_qty: '0', nccs_qty: '0',
+        prcs_stat_name: '거부', rjct_rson: 'ORDER_REJECTED'
+      }
+    ]
+  };
+
+  await withMockedFetch(state, async () => {
+    const updated = await usRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+    assert.equal(updated.length, 2);
+  });
+
+  assert.equal(repo.getOrder(user.id, canceled.id).status, 'CANCELED');
+  assert.equal(repo.getOrder(user.id, rejected.id).status, 'REJECTED');
+});
+
+test('syncOrderFills (US): 원주문 부분체결과 별도 취소 행을 병합해 수량·평단을 보존한다', async () => {
+  const strategy = createStrategy();
+  const trade = createTrade(strategy.id, { symbol: 'USPART', tradeSeq: 43 });
+  const sell = createAcceptedSellOrder(strategy.id, {
+    tradeId: trade.id, symbol: 'USPART', kisOrderNo: 'US-PARTIAL-ORIGINAL', quantity: 10
+  });
+  const state = {
+    history: [
+      {
+        odno: 'US-PARTIAL-ORIGINAL', ovrs_pdno: 'USPART', sll_buy_dvsn_cd: '01',
+        ft_ord_qty: '10', ft_ccld_qty: '4', nccs_qty: '6', ft_ccld_unpr3: '51.25',
+        prcs_stat_name: '전송'
+      },
+      {
+        odno: 'US-PARTIAL-CANCEL', orgn_odno: 'US-PARTIAL-ORIGINAL', ovrs_pdno: 'USPART',
+        sll_buy_dvsn_cd: '01', ft_ord_qty: '6', ft_ccld_qty: '0', nccs_qty: '0',
+        rvse_cncl_dvsn: '02', prcs_stat_name: '완료'
+      }
+    ]
+  };
+
+  await withMockedFetch(state, async () => {
+    const updated = await usRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+    assert.equal(updated.length, 1);
+  });
+
+  const after = repo.getOrder(user.id, sell.id);
+  assert.equal(after.status, 'CANCELED');
+  assert.equal(after.filledQuantity, 4);
+  assert.ok(Math.abs(after.averageFilledPrice - 51.25) < 1e-9);
+});
+
+test('syncOrderFills (US): 후속 체결수량은 기존값 이상·주문수량 이하로 유지하고 축소 응답의 평단은 버린다', async () => {
+  const strategy = createStrategy();
+  const trade = createTrade(strategy.id, { symbol: 'USMONO', tradeSeq: 44 });
+  const sell = createAcceptedSellOrder(strategy.id, {
+    tradeId: trade.id, symbol: 'USMONO', kisOrderNo: 'US-MONOTONIC-FILL', quantity: 10
+  });
+  repo.updateOrder(user.id, sell.id, {
+    status: 'PARTIALLY_FILLED', filledQuantity: 4, remainingQuantity: 6,
+    averageFilledPrice: 51.25
+  });
+
+  await withMockedFetch({
+    history: [{
+      odno: 'US-MONOTONIC-FILL', ovrs_pdno: 'USMONO', sll_buy_dvsn_cd: '01',
+      ft_ord_qty: '10', ft_ccld_qty: '2', nccs_qty: '8', ft_ccld_unpr3: '50.50',
+      prcs_stat_name: '전송'
+    }]
+  }, async () => {
+    await usRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+  });
+  const afterSmaller = repo.getOrder(user.id, sell.id);
+  assert.equal(afterSmaller.filledQuantity, 4);
+  assert.ok(Math.abs(afterSmaller.averageFilledPrice - 51.25) < 1e-9);
+
+  await withMockedFetch({
+    history: [{
+      odno: 'US-MONOTONIC-FILL', ovrs_pdno: 'USMONO', sll_buy_dvsn_cd: '01',
+      ft_ord_qty: '10', ft_ccld_qty: '12', nccs_qty: '0', ft_ccld_unpr3: '51.50',
+      prcs_stat_name: '완료'
+    }]
+  }, async () => {
+    await usRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+  });
+  const afterOversized = repo.getOrder(user.id, sell.id);
+  assert.equal(afterOversized.filledQuantity, 10);
+  assert.ok(Math.abs(afterOversized.averageFilledPrice - 51.5) < 1e-9);
+});
+
 test('syncOrderFills (US): 과거 주문은 주문 생성일 기준 날짜 범위로 KIS 체결조회를 호출한다', async () => {
   const strategy = createStrategy();
   const trade = createTrade(strategy.id, { symbol: 'PAST' });

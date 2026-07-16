@@ -142,6 +142,35 @@ export function setHolding(userId, id, { symbol, symbolName, exchange, quantity,
   return getStrategy(userId, id);
 }
 
+export function confirmTradeHolding(userId, strategyId, tradeId, {
+  symbol, symbolName, exchange, quantity, averagePrice
+}) {
+  const db = getDb();
+  const confirm = db.transaction(() => {
+    const tradeResult = db.prepare(`
+      UPDATE us_rank_trades
+      SET status = 'BOUGHT', entry_price = ?, entry_quantity = ?, updated_at = datetime('now')
+      WHERE id = ? AND strategy_id = ? AND user_id = ?
+    `).run(averagePrice || 0, quantity || 0, tradeId, strategyId, userId);
+    if (tradeResult.changes !== 1) throw new Error('확정할 미국 랭킹 매매 기록을 찾을 수 없습니다.');
+    const strategyResult = db.prepare(`
+      UPDATE us_rank_strategies
+      SET holding_symbol = ?, holding_symbol_name = ?, holding_exchange = ?,
+          holding_quantity = ?, holding_average_price = ?, updated_at = datetime('now')
+      WHERE id = ? AND user_id = ?
+    `).run(
+      symbol, symbolName || null, exchange || null,
+      quantity || 0, averagePrice || 0, strategyId, userId
+    );
+    if (strategyResult.changes !== 1) throw new Error('보유 상태를 기록할 미국 랭킹 전략을 찾을 수 없습니다.');
+  });
+  confirm();
+  return {
+    trade: getTradeById(tradeId),
+    strategy: getStrategy(userId, strategyId, { includeDeleted: true })
+  };
+}
+
 export function clearHolding(userId, id) {
   getDb().prepare(`
     UPDATE us_rank_strategies
@@ -510,7 +539,13 @@ export function hasDuplicateOrder(idempotencyKey) {
 
 export function hasNonFailedOrder(idempotencyKey) {
   return Boolean(getDb().prepare(
-    "SELECT 1 FROM us_rank_orders WHERE idempotency_key = ? AND status <> 'FAILED' LIMIT 1"
+    `SELECT 1 FROM us_rank_orders
+     WHERE idempotency_key = ?
+       AND (
+         status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+         OR (side = 'BUY' AND COALESCE(filled_quantity, 0) > 0)
+       )
+     LIMIT 1`
   ).get(idempotencyKey));
 }
 
@@ -518,15 +553,33 @@ export function hasNonFailedOrder(idempotencyKey) {
 export function getActiveOrderByIdempotencyKey(idempotencyKey) {
   return toOrder(getDb().prepare(`
     SELECT * FROM us_rank_orders
-    WHERE idempotency_key = ? AND status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+    WHERE idempotency_key = ?
+      AND (
+        status NOT IN ('FAILED', 'REJECTED', 'CANCELED')
+        OR (side = 'BUY' AND COALESCE(filled_quantity, 0) > 0)
+      )
     ORDER BY id DESC LIMIT 1
   `).get(idempotencyKey));
 }
 
 export function countFailedOrders(idempotencyKey) {
   return getDb().prepare(
-    "SELECT COUNT(*) AS c FROM us_rank_orders WHERE idempotency_key = ? AND status = 'FAILED'"
+    "SELECT COUNT(*) AS c FROM us_rank_orders WHERE idempotency_key = ? AND status IN ('FAILED', 'REJECTED')"
   ).get(idempotencyKey).c;
+}
+
+// 사용자 실주문 토글은 포지션 생성 뒤 바뀔 수 있으므로, 현재 설정이 아니라 실제로 이 trade를
+// 만든 BUY 주문의 live_order_enabled를 포지션 provenance로 사용한다. 일부 체결 뒤 취소된 주문도
+// 실제 포지션을 만들 수 있어 filled_quantity가 있으면 종결 상태와 무관하게 포함한다.
+export function getLatestBuyOrderForTrade(tradeId) {
+  return toOrder(getDb().prepare(`
+    SELECT * FROM us_rank_orders
+    WHERE trade_id = ?
+      AND side = 'BUY'
+      AND (status NOT IN ('FAILED', 'REJECTED', 'CANCELED') OR COALESCE(filled_quantity, 0) > 0)
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(tradeId));
 }
 
 // 한 매매(trade)에 대해 아직 살아 있는(취소·실패·거절이 아닌) 가장 최근 매도 주문.

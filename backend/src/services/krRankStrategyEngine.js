@@ -122,6 +122,13 @@ export const RANKING_OBSERVATION_DEFAULTS = {
   candidateLimit: 5,
   minSnapshotsForStability: 3,
   minAppearancesWhenStable: 2,
+  // "반복 출현"을 고정 2회로만 보면 30개 스냅샷 중 잠깐 두 번 나타난 종목도
+  // 지속 후보로 승격된다. 관찰이 충분할 때는 절반 이상 등장해야 한다.
+  minAppearanceRateWhenStable: 0.5,
+  // 과거 관찰에는 있었지만 진입 시점 랭킹에서 사라진 종목을 stale 가격으로 고르지 않는다.
+  requireLatestSnapshotWhenStable: true,
+  // 원본 상승률 랭킹 상위 N위 안에서만 후보를 찾는다. 상한/상품군 제외 뒤 빈자리를
+  // 11위 이하 종목으로 채우면 실제 하위 종목이 전략 상위 후보로 승격되는 문제가 생긴다.
   perSnapshotCandidateLimit: 10
 };
 
@@ -506,12 +513,21 @@ export function aggregateRankingCandidates(snapshots = [], opts = {}) {
   const perSnapshotCandidateLimit = opts.perSnapshotCandidateLimit ?? RANKING_OBSERVATION_DEFAULTS.perSnapshotCandidateLimit;
   const minSnapshotsForStability = opts.minSnapshotsForStability ?? RANKING_OBSERVATION_DEFAULTS.minSnapshotsForStability;
   const minAppearancesWhenStable = opts.minAppearancesWhenStable ?? RANKING_OBSERVATION_DEFAULTS.minAppearancesWhenStable;
+  const minAppearanceRateWhenStable = opts.minAppearanceRateWhenStable ?? RANKING_OBSERVATION_DEFAULTS.minAppearanceRateWhenStable;
+  const requireLatestSnapshotWhenStable = opts.requireLatestSnapshotWhenStable
+    ?? RANKING_OBSERVATION_DEFAULTS.requireLatestSnapshotWhenStable;
   const normalized = Array.isArray(snapshots)
     ? snapshots.map((s) => Array.isArray(s) ? s : s?.rankingSnapshot).filter((s) => Array.isArray(s) && s.length > 0)
     : [];
+  // 관찰이 충분하지 않은 상태에서 현재 한 번 보인 종목을 사지 않는다. 스케줄러 지연이나
+  // 재시작으로 사전 관찰을 놓친 날은 거래를 쉬는 쪽이 실주문 안전 원칙에 맞다.
+  if (normalized.length < minSnapshotsForStability) return [];
   const stats = new Map();
   normalized.forEach((snapshot, snapshotIndex) => {
-    const candidates = selectRankingCandidates(snapshot, { maxFluctuationRate }).slice(0, perSnapshotCandidateLimit);
+    const candidates = selectRankingCandidates(
+      snapshot.slice(0, perSnapshotCandidateLimit),
+      { maxFluctuationRate }
+    );
     candidates.forEach((candidate, rankIndex) => {
       const rank = rankIndex + 1;
       const existing = stats.get(candidate.symbol) || {
@@ -539,9 +555,16 @@ export function aggregateRankingCandidates(snapshots = [], opts = {}) {
     });
   });
 
-  const requireRepeatedAppearance = normalized.length >= minSnapshotsForStability;
+  const requireRepeatedAppearance = true;
   const all = Array.from(stats.values());
-  const repeated = all.filter((s) => s.appearances >= minAppearancesWhenStable);
+  const requiredAppearances = requireRepeatedAppearance
+    ? Math.max(minAppearancesWhenStable, Math.ceil(normalized.length * minAppearanceRateWhenStable))
+    : minAppearancesWhenStable;
+  const latestSnapshotIndex = normalized.length - 1;
+  const repeated = all.filter((s) => (
+    s.appearances >= requiredAppearances
+    && (!requireLatestSnapshotWhenStable || s.latestSnapshotIndex === latestSnapshotIndex)
+  ));
   // 관찰 스냅샷이 충분히 쌓인 뒤에는 반복 출현(지속성)한 종목만 후보로 본다.
   // 모든 종목이 한 번씩만 나타난 난조장은 단발 후보로 되돌아가지 않고 진입을 건너뛴다.
   const eligible = requireRepeatedAppearance ? repeated : all;
