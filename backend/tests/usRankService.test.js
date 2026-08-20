@@ -147,6 +147,9 @@ function withMockedFetch(state, run) {
     if (options.method === 'POST' && text.includes('/uapi/overseas-stock/v1/trading/order')) {
       state.orderCalls = (state.orderCalls || 0) + 1;
       if (state.orderNetworkError) throw new Error('simulated order response timeout');
+      if (state.orderBusinessReject) {
+        return json({ rt_cd: '1', msg_cd: 'APBK0506', msg1: '주문단가 오류' });
+      }
       return json({ rt_cd: '0', output: { ODNO: `ORD${state.orderCalls}` } });
     }
     return json({ rt_cd: '0', output: {} });
@@ -852,16 +855,8 @@ test('실주문 손절 매도가 미체결로 오래 머물면 취소하고 더 
       const sellOrder = repo.listOrders(reqUser.id, { strategyId: strategy.id }).find((o) => o.side === 'SELL');
       db.prepare("UPDATE us_rank_orders SET created_at = ? WHERE id = ?").run('2026-05-18 14:00:00', sellOrder.id);
 
-      // tick2(+30초): 아직 stale 아님 → 체결 대기.
+      // tick2(+30초): 다음 scheduler tick에서 stale → 취소 후 더 공격적으로 재호가.
       await withMockedDate('2026-05-18T14:00:30Z', async () => {
-        const wait = await service.evaluateStrategy(reqUser.id, strategy.id);
-        assert.equal(wait.decision.decision, 'SKIP');
-        assert.ok(/체결 대기/.test(wait.decision.reason));
-        assert.equal(state.orderCalls, 1); // 새 주문 없음
-      });
-
-      // tick3(+60초): stale → 취소하고 더 공격적인 가격으로 재호가(새 주문).
-      await withMockedDate('2026-05-18T14:01:00Z', async () => {
         const requote = await service.evaluateStrategy(reqUser.id, strategy.id);
         assert.equal(requote.decision.decision, 'SELL');
         assert.ok(/재호가/.test(requote.decision.reason));
@@ -874,6 +869,42 @@ test('실주문 손절 매도가 미체결로 오래 머물면 취소하고 더 
   } finally {
     autoTradingRepo.updateLiveOrderSetting(reqUser.id, false);
   }
+});
+
+test('미국 랭킹: 설정 손절이 더 느슨해도 -5% 전에는 보유하고 -5%에서 하드 방어 매도를 시작한다', async () => {
+  const state = {
+    price: 48,
+    cash: 0,
+    balanceQuantity: 0,
+    averagePrice: 50,
+    symbol: 'HARDSTOP',
+    rankingTopSymbol: 'HARDSTOP'
+  };
+
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(user.id, {
+      targetProfitRate: 0.02, stopLossRate: 0.10, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    await service.startStrategy(user.id, strategy.id);
+    createHeldTradeWithBuy(user.id, strategy, {
+      symbol: 'HARDSTOP', symbolName: 'Hard Stop', liveOrderEnabled: false,
+      tradeDate: '2026-05-18'
+    });
+
+    await withMockedDate('2026-05-18T14:00:00Z', async () => {
+      const held = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(held.decision.decision, 'HOLD');
+    });
+
+    state.price = 47.5;
+    await withMockedDate('2026-05-18T14:00:30Z', async () => {
+      const stopped = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(stopped.decision.decision, 'SELL');
+      assert.equal(stopped.decision.sellReason, 'STOP_LOSS');
+      assert.equal(stopped.order.status, 'DRY_RUN');
+      assert.equal(state.orderCalls || 0, 0);
+    });
+  });
 });
 
 test('실주문 미체결 지정가가 오래 머물면 취소하고 매매를 접는다', async () => {
@@ -1638,6 +1669,93 @@ test('미국 랭킹: 주문 응답 timeout은 UNKNOWN intent를 남겨 같은 BU
     });
   } finally {
     autoTradingRepo.updateLiveOrderSetting(timeoutUser.id, false);
+  }
+});
+
+test('미국 랭킹: KIS가 미접수를 명시한 주문 거절은 다음 평가에서 재시도한다', async () => {
+  const retryUser = createUser(db, 'us-rank-order-rejected-retry@example.com');
+  credentialService.saveSettings(retryUser.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(retryUser.id, true);
+  const state = {
+    price: 50,
+    cash: 1_000,
+    balanceQuantity: 0,
+    symbol: 'RETRYBUY',
+    rankingTopSymbol: 'RETRYBUY',
+    openOrders: [],
+    orderBusinessReject: true
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(retryUser.id, {
+        targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+      });
+      await service.startStrategy(retryUser.id, strategy.id);
+
+      await withMockedDate('2026-05-21T15:00:00Z', async () => {
+        const rejected = await service.evaluateStrategy(retryUser.id, strategy.id);
+        assert.equal(rejected.order.status, 'REJECTED');
+      });
+      state.orderBusinessReject = false;
+      await withMockedDate('2026-05-21T15:00:30Z', async () => {
+        const retried = await service.evaluateStrategy(retryUser.id, strategy.id);
+        assert.equal(retried.order.status, 'ACCEPTED');
+      });
+
+      const buys = repo.listOrders(retryUser.id, { strategyId: strategy.id })
+        .filter((order) => order.side === 'BUY');
+      assert.equal(buys.length, 2);
+      assert.deepEqual(buys.map((order) => order.status).sort(), ['ACCEPTED', 'REJECTED']);
+      assert.equal(state.orderCalls, 2);
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(retryUser.id, false);
+  }
+});
+
+test('미국 랭킹: 주문 거절 뒤 선택 종목이 최신 상위 후보에서 이탈하면 재전송하지 않는다', async () => {
+  const retryUser = createUser(db, 'us-rank-rejected-stale-signal@example.com');
+  credentialService.saveSettings(retryUser.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(retryUser.id, true);
+  const state = {
+    price: 50, cash: 1_000, balanceQuantity: 0,
+    symbol: 'STALESIGNAL', rankingTopSymbol: 'STALESIGNAL', openOrders: [],
+    orderBusinessReject: true
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      const strategy = service.createStrategy(retryUser.id, {
+        targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+      });
+      await service.startStrategy(retryUser.id, strategy.id);
+      await withMockedDate('2026-05-21T15:00:00Z', async () => {
+        const rejected = await service.evaluateStrategy(retryUser.id, strategy.id);
+        assert.equal(rejected.order.status, 'REJECTED');
+      });
+
+      state.orderBusinessReject = false;
+      state.rankingRows = [
+        { symb: 'NEWLEADER', name: 'New Leader', last: '50', rate: '25.0', rank: '1', tvol: '20000000' }
+      ];
+      await withMockedDate('2026-05-21T15:00:30Z', async () => {
+        const skipped = await service.evaluateStrategy(retryUser.id, strategy.id);
+        assert.equal(skipped.decision.decision, 'SKIP');
+        assert.match(skipped.decision.reason, /상위 3개 후보에서 이탈/);
+      });
+
+      assert.equal(state.orderCalls, 1);
+      const staleTrade = repo.listTrades(retryUser.id, { strategyId: strategy.id })
+        .find((trade) => trade.symbol === 'STALESIGNAL');
+      assert.equal(staleTrade.status, 'FAILED');
+    });
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(retryUser.id, false);
   }
 });
 

@@ -1,4 +1,5 @@
 import * as repo from '../repositories/autoTradingRepository.js';
+import { env } from '../config/env.js';
 import { evaluateAutoTrading } from './autoTradingStrategyEngine.js';
 import { validateOrderSafety } from './autoTradingSafetyGuard.js';
 import { KisTradingService, maskPayload } from './kisTradingService.js';
@@ -75,6 +76,7 @@ export function startStrategy(userId, id) {
   requireStrategy(userId, id);
   const strategy = repo.startStrategy(userId, id);
   const settings = repo.getSettings(userId);
+  const liveOrderEnabled = settings.liveOrderEnabled && env.laorLiveOrderEnabled;
   repo.createDecisionLog(userId, {
     strategyId: strategy.id,
     symbol: strategy.symbol,
@@ -86,8 +88,8 @@ export function startStrategy(userId, id) {
     cashAvailable: null,
     currentRound: strategy.currentRound,
     decision: 'SKIP',
-    liveOrderEnabled: settings.liveOrderEnabled,
-    reason: `자동매매를 시작했습니다. 서버가 최대 10분 간격으로 현재가, 잔고, 매수가능금액, 미체결 주문을 확인합니다. 실주문 설정: ${settings.liveOrderEnabled ? '켜짐' : '꺼짐'}.`
+    liveOrderEnabled,
+    reason: `자동매매를 시작했습니다. 서버가 최대 10분 간격으로 현재가, 잔고, 매수가능금액, 미체결 주문을 확인합니다. 실주문 설정: ${liveOrderEnabled ? '켜짐' : '꺼짐'}${settings.liveOrderEnabled && !env.laorLiveOrderEnabled ? ' (라오어 안전 잠금)' : ''}.`
   });
   return strategy;
 }
@@ -121,6 +123,8 @@ export async function evaluateStrategy(userId, id, { scheduled = false } = {}) {
 
 async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED') {
   const settings = repo.getSettings(userId);
+  const liveOrderEnabled = settings.liveOrderEnabled && env.laorLiveOrderEnabled;
+  const laorSafetyLocked = settings.liveOrderEnabled && !env.laorLiveOrderEnabled;
   const trading = new KisTradingService(userId);
   const tradeDate = today();
   let contextReady = false;
@@ -147,7 +151,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     // 사용자가 KIS HTS/MTS에서 직접 만든 주문은 절대 건드리지 않는다.
     const autoCancelNotes = [];
     let openOrders = openOrdersInitial;
-    if (settings.liveOrderEnabled) {
+    if (liveOrderEnabled) {
       const ownedOpen = repo.listOpenOwnedOrders(userId, strategy.id);
       let touchedAny = false;
       for (const own of ownedOpen) {
@@ -233,7 +237,9 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     });
     const baseReason = autoCancelNotes.length > 0
       ? `${decision.reason} (주문 정리: ${autoCancelNotes.join(' / ')})`
-      : decision.reason;
+      : laorSafetyLocked
+        ? `${decision.reason} (라오어 live 주문은 체결 상태 머신 보강 전 안전 잠금 상태이므로 DRY_RUN만 기록합니다.)`
+        : decision.reason;
     const decisionWithContext = {
       ...decision,
       reason: appendEvaluationContext(baseReason, {
@@ -242,7 +248,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         holdingQuantity,
         averagePrice,
         cashAvailable,
-        liveOrderEnabled: settings.liveOrderEnabled,
+        liveOrderEnabled,
         openOrderCount: openOrders.length
       })
     };
@@ -260,7 +266,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
     }
     const log = createDecisionLog(userId, strategy, {
       ...decisionWithContext,
-      liveOrderEnabled: settings.liveOrderEnabled,
+      liveOrderEnabled,
       currentPrice: price.price,
       averagePrice,
       holdingQuantity,
@@ -294,7 +300,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         userId,
         strategy,
         decision: intentDecision,
-        liveOrderEnabled: settings.liveOrderEnabled,
+        liveOrderEnabled,
         buyingPower: localBuyingPower,
         balance: localBalance,
         openOrders,
@@ -318,12 +324,12 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
         estimatedAmount: intent.expectedAmount,
         idempotencyKey,
         decisionReason: intentDecision.reason,
-        liveOrderEnabled: settings.liveOrderEnabled,
+        liveOrderEnabled,
         half: intent.half,
         decisionLogId: log.id
       };
 
-      if (!settings.liveOrderEnabled) {
+      if (!liveOrderEnabled) {
         orders.push(repo.createOrder(userId, {
           ...baseOrder,
           status: 'DRY_RUN',
@@ -413,7 +419,7 @@ async function evaluateUnlocked(userId, strategy, evaluationSource = 'SCHEDULED'
       cashAvailable: null,
       currentRound: strategy.currentRound,
       decision: 'ERROR',
-      liveOrderEnabled: repo.getSettings(userId).liveOrderEnabled,
+      liveOrderEnabled,
       reason: message,
       openOrderCount: 0,
       evaluationSource
@@ -514,6 +520,7 @@ export async function getDashboard(userId, { refreshPeriodReturns = false } = {}
       kisConnected: Boolean(kis.configured),
       accountConfigured: Boolean(kis.accountConfigured),
       liveOrderEnabled: settings.liveOrderEnabled,
+      laorLiveOrderEnabled: settings.liveOrderEnabled && env.laorLiveOrderEnabled,
       accountLookupStatus: account.lookupStatus,
       marketSessions: getMarketSessionStatus()
     },

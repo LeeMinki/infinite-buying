@@ -449,10 +449,20 @@ export class KisTradingService {
       context,
       body
     });
-    const row = data.output || data.output1 || data;
+    const row = findOrderResponseRow(data);
+    const orderNo = String(row?.ODNO ?? row?.odno ?? row?.order_no ?? '').trim();
+    // rt_cd=0이어도 주문번호가 없으면 실제 접수 여부를 조회할 식별자가 없다. ACCEPTED로
+    // 확정하거나 같은 주문을 재전송하지 않고 UNKNOWN으로 멈춘다.
+    if (!orderNo) {
+      const error = new Error(`${ORDER_ERROR} (주문 접수 번호를 확인하지 못했습니다.)`);
+      error.status = 502;
+      error.orderOutcome = 'UNKNOWN';
+      error.safePayload = maskPayload(data);
+      throw error;
+    }
     return {
       status: 'ACCEPTED',
-      orderNo: String(row.ODNO ?? row.odno ?? row.order_no ?? '').trim() || null,
+      orderNo,
       originalOrderNo: String(row.KRX_FWDG_ORD_ORGNO ?? row.ord_orgno ?? '').trim() || null,
       requestPayloadMasked: maskPayload(body),
       responsePayloadMasked: maskPayload(data)
@@ -510,6 +520,13 @@ export class KisTradingService {
         const error = new Error(detail ? `${baseMsg} (${detail})` : baseMsg);
         error.status = response.status >= 400 ? response.status : 502;
         error.safePayload = maskPayload(data);
+        // HTTP 200의 비일시 업무 거절만 "미접수 확정"으로 분류한다. EGW/429/5xx는
+        // gateway 경계에서 실제 접수 여부를 확정할 수 없으므로 UNKNOWN이어야 한다.
+        if (method === 'POST') {
+          error.orderOutcome = isConfirmedOrderRejection(data, response.status)
+            ? 'REJECTED'
+            : 'UNKNOWN';
+        }
         throw error;
       }
       return data;
@@ -517,6 +534,7 @@ export class KisTradingService {
       if (error.status) throw error;
       const wrapped = new Error(method === 'POST' ? ORDER_ERROR : MARKET_ERROR);
       wrapped.status = error.name === 'AbortError' ? 504 : 502;
+      if (method === 'POST') wrapped.orderOutcome = 'UNKNOWN';
       throw wrapped;
     } finally {
       clearTimeout(timeout);
@@ -600,6 +618,24 @@ function isTransientFailure(data, status) {
   if (status === 429) return true;
   if (status >= 500 && status < 600) return true;
   return false;
+}
+
+function isConfirmedOrderRejection(data, status) {
+  if (!data || typeof data !== 'object') return false;
+  if (status !== 200 || isTransientFailure(data, status)) return false;
+  const resultCode = String(data.rt_cd ?? data.rtCd ?? '').trim();
+  if (!resultCode || resultCode === '0') return false;
+  const row = findOrderResponseRow(data);
+  const orderNo = String(row.ODNO ?? row.odno ?? row.order_no ?? '').trim();
+  return !orderNo;
+}
+
+function findOrderResponseRow(data) {
+  const candidates = [data?.output, data?.output1, data];
+  return candidates.find((row) => (
+    row && typeof row === 'object'
+    && String(row.ODNO ?? row.odno ?? row.order_no ?? '').trim()
+  )) || candidates.find((row) => row && typeof row === 'object') || {};
 }
 
 // KIS 응답의 안전한 부분(rt_cd / msg_cd / msg1)을 사용자에게 보여줄 한 줄로 추린다.

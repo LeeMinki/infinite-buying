@@ -27,13 +27,18 @@ import {
 const LOCK_KEY = 'evaluate';
 const RANKING_SNAPSHOT_SIZE = 10;
 const ORDER_RETRY_LIMIT = 5;
+// 명시 거절 뒤 재시도할 때 최초 선택가에서 이 이상 움직였으면 같은 급등주를 뒤늦게 추격하지 않는다.
+const ENTRY_RETRY_MAX_PRICE_MOVE_RATE = 0.02;
+// 사용자 요구의 하드 손절 기준은 -5%다. 사용자 설정이 더 엄격하면 그 값을 우선하고,
+// 더 느슨해도 -5%에 닿으면 청산을 시작한다. 지정가 체결 지연·갭은 실제 체결가를 보장하지 않는다.
+const HARD_PROTECTIVE_STOP_RATE = 0.05;
 // 미국은 시장가가 없어 현재가 지정가로 매수한다. 급등주가 호가를 위로 이탈하면 체결이 안 될 수 있는데,
 // 미체결 주문을 취소·재시도하지 않으면 그날 내내 멈춘다(진입 구간이 없어 종일 막힘).
 // 매수 주문이 이 시간(ms)을 넘겨도 체결되지 않으면 취소하고 이번 매매를 접어 다음 후보로 넘어간다.
 const BUY_STALE_LIMIT_MS = 3 * 60 * 1000;
 // 손절·익절 매도 주문이 이 시간(ms)을 넘겨도 체결되지 않으면 취소하고 더 공격적인 가격으로 재호가한다.
 // 매수보다 짧게 둔다 — 청산(특히 손절)은 체결 지연이 곧 손실 확대라 빠르게 빠져나가야 한다.
-const SELL_STALE_LIMIT_MS = 45 * 1000;
+const SELL_STALE_LIMIT_MS = 25 * 1000;
 // 판단 로그·주문 이력·매매 사이클 페이징 기본/최대 페이지 크기.
 const PAGE_SIZE_DEFAULT = 50;
 const PAGE_SIZE_MAX = 200;
@@ -498,13 +503,17 @@ async function evaluateSellPath(userId, strategy, {
   // 이미 청산을 시작한 사이클이면(trade.exitReason 새겨짐) 그 사유로 계속 빠져나간다.
   // 청산 도중 가격이 손절선 위로 잠깐 돌아와도 중도 포기하지 않고 끝까지 체결시키는 게 안전하다.
   const committedReason = trade.exitReason || null;
+  const effectiveStopLossRate = Math.min(
+    Number(strategy.stopLossRate) || HARD_PROTECTIVE_STOP_RATE,
+    HARD_PROTECTIVE_STOP_RATE
+  );
   let sell = committedReason
     ? { decision: 'SELL', sellReason: committedReason, profitRate: averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0 }
     : evaluateSell({
         currentPrice,
         averagePrice,
         targetProfitRate: strategy.targetProfitRate,
-        stopLossRate: strategy.stopLossRate,
+        stopLossRate: effectiveStopLossRate,
         forceCloseTriggered,
         cycleTargetReached
       });
@@ -559,7 +568,7 @@ async function evaluateSellPath(userId, strategy, {
       profitRate: sell.profitRate,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). 익절 +${pct(strategy.targetProfitRate)} / 손절 -${pct(strategy.stopLossRate)} / 청산 ${strategy.forceCloseKst} KST 모두 미도달.${targetOrder ? ' 목표 수익 지정가 주문은 체결을 기다리는 중입니다.' : ''}`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). 익절 +${pct(strategy.targetProfitRate)} / 설정 손절 -${pct(strategy.stopLossRate)} / 하드 방어 -${pct(HARD_PROTECTIVE_STOP_RATE)} / 청산 ${strategy.forceCloseKst} KST 모두 미도달.${targetOrder ? ' 목표 수익 지정가 주문은 체결을 기다리는 중입니다.' : ''}`
     });
   }
 
@@ -1872,7 +1881,8 @@ async function evaluateEntryPath(userId, strategy, {
         : `${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다. 체결을 기다립니다.`
     });
   }
-  if (repo.countFailedOrders(idempotencyKey) >= ORDER_RETRY_LIMIT) {
+  const failedAttempts = repo.countFailedOrders(idempotencyKey);
+  if (failedAttempts >= ORDER_RETRY_LIMIT) {
     // 같은 trade로 계속 SKIP을 만들면 무한 노이즈가 되고 다음 매매 사이클이 영원히 못 시작된다.
     // 이 trade는 FAILED로 닫아 다음 tick부터 새 trade(다른 trade_seq, 다른 idempotency_key)로 재시도되게 한다.
     repo.updateTradeOutcome(trade.id, {
@@ -1895,8 +1905,62 @@ async function evaluateEntryPath(userId, strategy, {
     });
   }
 
+  if (failedAttempts > 0) {
+    // 명시 거절은 재전송할 수 있지만, 최초 선택 당시의 급등주를 그대로 쫓지는 않는다.
+    // 최신 top 후보 잔존과 분봉 흐름을 다시 확인하고 무효면 이 trade를 닫아 다음 tick에 새 후보를 본다.
+    let retryCandidate;
+    let retryCheck;
+    try {
+      const latestRanking = await getOverseasFluctuationRanking(userId, { exchange: strategy.exchange });
+      rankingSnapshot = (latestRanking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+      retryCandidate = selectRankingCandidates(latestRanking, { limit: US_RANK_CANDIDATE_LIMIT })
+        .find((candidate) => candidate.symbol === symbol);
+      if (retryCandidate) {
+        const candles = await getOverseasTodayMinuteCandles(
+          userId, symbol, retryCandidate.exchange || exchange, { minutes: 1, count: 120 }
+        );
+        retryCheck = checkUsBuyCandidate(candles);
+      }
+    } catch (error) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', tradeId: trade.id, tradeDate, tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol, selectedSymbolName: trade.symbolName, selectedExchange: exchange,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${symbol} 주문 재시도 전 최신 랭킹·분봉을 확인하지 못해 이번 tick은 재전송하지 않습니다. ${error.message || '다음 평가에서 다시 확인합니다.'}`
+      });
+    }
+    if (!retryCandidate || !retryCheck?.ok) {
+      const invalidReason = !retryCandidate
+        ? `최신 상승률 상위 ${US_RANK_CANDIDATE_LIMIT}개 후보에서 이탈했습니다.`
+        : retryCheck.reason;
+      repo.updateTradeOutcome(trade.id, {
+        status: 'FAILED', errorMessage: `주문 재시도 전 신호 무효: ${invalidReason}`, close: true
+      });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', tradeId: trade.id, tradeDate, tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol, selectedSymbolName: trade.symbolName, selectedExchange: exchange,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${symbol} 주문 재시도 전 신호가 무효화되어 같은 종목을 재전송하지 않습니다. ${invalidReason} 다음 평가에서 새 후보를 찾습니다.`
+      });
+    }
+  }
+
   const buyPlan = trade._preparedBuyPlan || await buildUsBuyPlan(trading, { symbol, exchange, price: trade.selectedPrice });
   const { currentPrice, cashAvailable, quantity, estimatedAmount } = buyPlan;
+  if (failedAttempts > 0 && Number(trade.selectedPrice) > 0) {
+    const priceMoveRate = Math.abs(currentPrice - Number(trade.selectedPrice)) / Number(trade.selectedPrice);
+    if (priceMoveRate > ENTRY_RETRY_MAX_PRICE_MOVE_RATE) {
+      repo.updateTradeOutcome(trade.id, {
+        status: 'FAILED', errorMessage: '주문 재시도 전 가격 이탈로 신호가 무효화됐습니다.', close: true
+      });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', tradeId: trade.id, tradeDate, tradeSeq: trade.tradeSeq,
+        selectedSymbol: symbol, selectedSymbolName: trade.symbolName, selectedExchange: exchange,
+        currentPrice, cashAvailable, rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${symbol} 현재가가 최초 선택가에서 ${(priceMoveRate * 100).toFixed(1)}% 움직여 재시도하지 않고 다음 평가에서 새 후보를 찾습니다.`
+      });
+    }
+  }
   if (quantity <= 0) {
     repo.updateTradeOutcome(trade.id, {
       status: 'FAILED',
@@ -2073,7 +2137,7 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     return created;
   } catch (error) {
     return repo.updateOrder(userId, requested.id, {
-      status: 'UNKNOWN',
+      status: error.orderOutcome === 'REJECTED' ? 'REJECTED' : 'UNKNOWN',
       filledQuantity: null,
       remainingQuantity: null,
       averageFilledPrice: null,

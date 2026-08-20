@@ -9,6 +9,8 @@ const autoTradingService = await import('../src/services/autoTradingService.js')
 const { evaluateAutoTrading } = await import('../src/services/autoTradingStrategyEngine.js');
 const repo = await import('../src/repositories/autoTradingRepository.js');
 const { env } = await import('../src/config/env.js');
+const originalLaorLiveOrderEnabled = env.laorLiveOrderEnabled;
+env.laorLiveOrderEnabled = true;
 
 const alice = createUser(db, 'alice-auto@example.com');
 const bob = createUser(db, 'bob-auto@example.com');
@@ -19,7 +21,10 @@ credentialService.saveSettings(alice.id, {
   accountProductCode: '01'
 });
 
-test.after(() => tmp.cleanup());
+test.after(() => {
+  env.laorLiveOrderEnabled = originalLaorLiveOrderEnabled;
+  tmp.cleanup();
+});
 
 test('auto trading holds when current price is above big-number buy ceiling', () => {
   // 큰수 매수 상한 = 평단가 55 × 1.02 = 56.1. previousClose(500)는 무관해야 한다.
@@ -272,6 +277,31 @@ test('liveOrderEnabled=true sends KIS order only after safety checks pass', asyn
     assert.doesNotMatch(result.order.requestPayloadMasked || '', /12345678|sec-auto|auto-token/);
   } finally {
     env.enableLiveOrder = previousEnableLiveOrder;
+    autoTradingService.updateLiveOrderSetting(alice.id, false);
+    mocked.restore();
+  }
+});
+
+test('라오어 live 안전 잠금은 사용자 토글이 켜져도 KIS POST 대신 DRY_RUN만 남긴다', async () => {
+  autoTradingService.updateLiveOrderSetting(alice.id, true);
+  const strategy = autoTradingService.createStrategy(alice.id, {
+    symbol: 'LOCKED', market: 'US', currency: 'USD',
+    totalBudget: 4000, splitCount: 40, targetProfitRate: 0.1
+  });
+  autoTradingService.startStrategy(alice.id, strategy.id);
+  const mocked = mockKis();
+  const previousEnableLiveOrder = env.enableLiveOrder;
+  env.enableLiveOrder = 'true';
+  env.laorLiveOrderEnabled = false;
+  try {
+    const result = await autoTradingService.evaluateStrategy(alice.id, strategy.id);
+    assert.equal(result.order.status, 'DRY_RUN');
+    assert.equal(result.order.liveOrderEnabled, false);
+    assert.match(result.decision.reason, /라오어.*안전 잠금/);
+    assert.equal(mocked.calls.some((call) => call.method === 'POST' && call.url.includes('/trading/order')), false);
+  } finally {
+    env.enableLiveOrder = previousEnableLiveOrder;
+    env.laorLiveOrderEnabled = true;
     autoTradingService.updateLiveOrderSetting(alice.id, false);
     mocked.restore();
   }

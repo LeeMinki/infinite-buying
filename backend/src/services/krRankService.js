@@ -31,11 +31,16 @@ const BUY_FILTER_CANDIDATE_LIMIT = 5;
 // 상승률 원본 랭킹 상위 10위까지만 전략 후보로 인정한다. 상한/상품 제외 후
 // 11위 이하를 backfill하면 실제 하위 종목이 후보로 승격된다.
 const RAW_RANK_CANDIDATE_LIMIT = 10;
-const RANKING_OBSERVATION_LIMIT = 30;
+// 30초 tick 기준 최근 약 6분. pre-window 전체 20여 개를 계속 분모로 쓰면 진입 시각 뒤 새로
+// 강해진 종목은 50% 지속성 기준을 구조적으로 통과할 수 없으므로, 최근 흐름만 rolling 평가한다.
+const RANKING_OBSERVATION_LIMIT = 12;
 // 진입 전 랭킹 관찰 스냅샷 보존 기간(일). 지속성 백테스트용으로 충분히 남기되 무한 증가는 막는다.
 const OBSERVATION_RETENTION_DAYS = 30;
 // 같은 (날짜·전략·구간·방향) 주문이 실패로 누적되면 더 시도하지 않는 한도.
 const ORDER_RETRY_LIMIT = 5;
+// 현재가 +0.4% 지정가 BUY가 이 시간 동안 전혀 체결되지 않으면 호가에서 멀어진 것으로 본다.
+// KIS 미체결·주문이력·잔고를 확인하고 취소 완료가 확인된 경우에만 최신 신호로 재시도한다.
+const BUY_STALE_LIMIT_MS = 90 * 1000;
 // 상한가를 조회하지 못했을 때 쓰는 보수적 배수 (가격제한폭 상단 = 전일종가 × 1.3 이하).
 const PRICE_LIMIT_MULTIPLIER = 1.3;
 // 진입 슬리피지 가드: 분봉 필터가 승인한 신호가(가장 최근 완성봉 종가)보다 실행 시점 실시간 현재가가
@@ -44,11 +49,15 @@ const PRICE_LIMIT_MULTIPLIER = 1.3;
 const ENTRY_MAX_SLIPPAGE_RATE = 0.007;
 // 실패 주문 재확인 중 신호가보다 이 비율 넘게 하락하면 돌파 모멘텀이 무효화된 것으로 본다.
 const ENTRY_MAX_ADVERSE_MOVE_RATE = 0.007;
-// 신규 후보 선택과 주문 확인은 진입 시작 후 3분 안에 끝낸다. ENTRY_WINDOWS 자체는
-// 이미 접수된 주문의 체결 확인을 위해 넓게 유지한다.
-const ENTRY_DECISION_GRACE_MINUTES = 3;
+// 진입 시작 시점 한 번만 보고 하루를 종결하면 일시적인 랭킹/분봉 상태 때문에 거래 기회가
+// 사라진다. 다만 50분 진입창 전체를 optional stopping으로 훑지는 않고, 시작 후 5분까지만
+// 관찰을 갱신한다. 후보는 아래 확인 시간 안에 다시 검증해야 실제 주문으로 이어진다.
+const ENTRY_SELECTION_WINDOW_MINUTES = 5;
 // 첫 필터 통과 후보는 다음 tick에서 한 번 더 확인하되, 기술 오류로 오래 끌며 늦게 진입하지 않는다.
 const ENTRY_CONFIRMATION_MAX_MINUTES = 3;
+// 사용자 요구의 하드 손절 기준은 -5%다. 설정이 더 엄격하면 그 값을 우선하고, -5%에 닿으면
+// 구조 신호나 초기 흔들기 유예와 무관하게 즉시 청산을 시작한다. 갭·거래정지는 체결가를 보장하지 않는다.
+const HARD_PROTECTIVE_STOP_RATE = 0.05;
 // 같은 거래일에 실주문 청산 손실/손익 미확정이 이 횟수 누적되면 그날의 남은 신규 진입만
 // 잠근다. 전략은 RUNNING을 유지하며 다음 거래일에는 수동 재시작 없이 자동으로 재개한다.
 const DAILY_RISK_EXIT_LIMIT = 2;
@@ -258,10 +267,31 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
         noLog: noLogIfScheduled
       });
     }
-    // 진입 기록이 종결 상태(매수 완료 / 후보 없음)면 KIS 호출 없이 끝낸다.
-    // 종목은 골랐지만 아직 매수가 안 된 상태(SELECTED)면 매수 재시도를 위해 그대로 진행한다.
+    // 진입 기록이 종결 상태(매수 완료 / 관찰시간 종료)면 KIS 호출 없이 끝낸다.
+    // SELECTED는 종목이 정해졌거나 무효 후보를 비우고 재관찰 중인 상태이므로 계속 진행한다.
     const existing = repo.getEntry(strategy.id, kstToday(), window);
     if (existing && (existing.bought || ['NO_CANDIDATE', 'SKIPPED'].includes(existing.status))) {
+      const minutesAfterWindowStart = kstNowMinutes() - ENTRY_WINDOWS[window].startMinutes;
+      const shouldCollectShadowRanking = existing.status === 'NO_CANDIDATE'
+        && !env.krRankLiveEntryRetryEnabled
+        && minutesAfterWindowStart >= 0
+        && minutesAfterWindowStart < ENTRY_SELECTION_WINDOW_MINUTES;
+      if (shouldCollectShadowRanking) {
+        const ranking = await getDomesticFluctuationRanking(userId);
+        const rankingSnapshot = (ranking || []).slice(0, RANKING_SNAPSHOT_SIZE);
+        repo.createObservation(userId, {
+          strategyId: strategy.id,
+          tradeDate: kstToday(),
+          entryWindow: window,
+          rankingSnapshot
+        });
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow: window, liveOrderEnabled, evaluationSource,
+          rankingSnapshot,
+          reason: `${ENTRY_WINDOWS[window].label} 신규 규칙은 수익성 검증 전이라 실주문 재탐색을 잠그고 실제 랭킹만 shadow로 저장했습니다.`,
+          noLog: noLogIfScheduled
+        });
+      }
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow: window, liveOrderEnabled, evaluationSource,
         reason: existing.bought
@@ -463,7 +493,8 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
 
   const isLunch = entryWindow === 'LUNCH';
   const targetProfitRate = isLunch ? strategy.lunchTargetProfitRate : strategy.morningTargetProfitRate;
-  const stopLossRate = isLunch ? strategy.lunchStopLossRate : strategy.morningStopLossRate;
+  const configuredStopLossRate = isLunch ? strategy.lunchStopLossRate : strategy.morningStopLossRate;
+  const stopLossRate = Math.min(Number(configuredStopLossRate) || HARD_PROTECTIVE_STOP_RATE, HARD_PROTECTIVE_STOP_RATE);
   const liquidateTime = isLunch ? strategy.lunchLiquidateTime : strategy.morningLiquidateTime;
   let sell = evaluateSell({
     currentPrice, averagePrice, targetProfitRate, stopLossRate,
@@ -479,7 +510,9 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
     || activeTargetOrder?.createdAt;
   const holdingMinutes = minutesSinceSqliteTimestamp(holdingStartedAt);
   const targetOrderAgeMinutes = minutesSinceSqliteTimestamp(activeTargetOrder?.createdAt);
-  if (sell.decision === 'SELL' && sell.sellReason === 'STOP_LOSS') {
+  const hardProtectiveStopTriggered = sell.sellReason === 'STOP_LOSS'
+    && sell.profitRate <= -HARD_PROTECTIVE_STOP_RATE;
+  if (sell.decision === 'SELL' && sell.sellReason === 'STOP_LOSS' && !hardProtectiveStopTriggered) {
     try {
       const candles = await getDomesticTodayMinuteCandles(userId, symbol);
       const profitRate = averagePrice > 0 ? (currentPrice - averagePrice) / averagePrice : 0;
@@ -544,8 +577,10 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
   const profitPct = (sell.profitRate * 100).toFixed(2);
   const reasonLabel = sell.sellReason === 'TARGET'
     ? '목표 수익 도달'
-    : sell.sellReason === 'STOP_LOSS'
-      ? (defensiveExitReason ? `중기 방어 손절 (${defensiveExitReason})` : '손절 기준 도달')
+      : sell.sellReason === 'STOP_LOSS'
+      ? (hardProtectiveStopTriggered
+          ? `하드 방어 손절(-${(HARD_PROTECTIVE_STOP_RATE * 100).toFixed(1)}%)`
+          : (defensiveExitReason ? `중기 방어 손절 (${defensiveExitReason})` : '손절 기준 도달'))
       : sell.sellReason === 'ENTRY_FAILED'
         ? `빠른 손절${entryFailureReason ? ` (${entryFailureReason})` : ''}`
         : `청산 시각 도달 (${liquidateTime} KST)`;
@@ -587,7 +622,7 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
       holdingQuantity,
       liveOrderEnabled,
       evaluationSource,
-      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 손절 -${(stopLossRate * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.${targetProtectionNote}${blockedEntryNote}`
+      reason: `${symbol} 보유 중 (수익률 ${profitPct}%). ${ENTRY_WINDOWS[entryWindow].label} 진입 기준 목표 수익률 ${(targetProfitRate * 100).toFixed(1)}% / 설정 손절 -${(Number(configuredStopLossRate) * 100).toFixed(1)}% / 하드 방어 -${(HARD_PROTECTIVE_STOP_RATE * 100).toFixed(1)}% 미도달${liquidateNote}이라 보유를 유지합니다.${targetProtectionNote}${blockedEntryNote}`
     });
   }
 
@@ -762,8 +797,8 @@ async function evaluateSellPath(userId, strategy, { trading, liveOrderEnabled, e
 }
 
 // 무보유일 때: 진입 구간에서 종목을 골라 현재가 근처 지정가로 매수한다.
-// 진입 기록이 없을 때 한 번만 후보를 판정한다. 후보가 없거나 전원 거절이면 해당 구간을
-// NO_CANDIDATE로 종결한다. 후보가 있으면 SELECTED로 저장하고 다음 tick 재검증까지 통과한 뒤 주문한다.
+// 진입 기록이 없거나 선택 종목이 비어 있으면 5분 한도 안에서 최신 관찰을 누적해 다시 판정한다.
+// 후보가 있으면 SELECTED로 저장하고 다음 tick 재검증까지 통과한 뒤 주문한다.
 async function evaluateEntryPath(userId, strategy, {
   trading, liveOrderEnabled, evaluationSource, pendingEntry = null
 }) {
@@ -778,7 +813,8 @@ async function evaluateEntryPath(userId, strategy, {
   const tradeDate = pendingEntry?.tradeDate || kstToday();
   const label = ENTRY_WINDOWS[entryWindow].label;
 
-  // 진입 기록: 종결 상태면 종료, 종목이 정해진 SELECTED만 확인/주문을 이어 간다.
+  // 진입 기록: 종결 상태면 종료한다. SELECTED이면서 종목이 비어 있으면 이전 후보가
+  // 무효화된 뒤 제한된 관찰 시간 안에서 새 후보를 찾는 상태다.
   let entry = pendingEntry || repo.getEntry(strategy.id, tradeDate, entryWindow);
   let rankingSnapshot = entry ? entry.rankingSnapshot : null;
   if (entry?.bought || ['NO_CANDIDATE', 'SKIPPED'].includes(entry?.status)) {
@@ -790,25 +826,22 @@ async function evaluateEntryPath(userId, strategy, {
       noLog: evaluationSource !== 'MANUAL'
     });
   }
-  if (entry && !entry.selectedSymbol) {
-    repo.finalizeEntryWithoutCandidate(entry.id, { rankingSnapshot });
-    return saveDecision(userId, strategy, {
-      decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
-      reason: `${label} 진입: 이전 판단에서 선택 후보가 무효화되어 이 구간 매수를 종료합니다.`
-    });
-  }
-
-  // 매수 대상이 아직 없으면 이 구간의 최초 유효 평가에서만 랭킹과 분봉을 판정한다.
-  if (!entry) {
+  // 매수 대상이 아직 없으면 제한된 관찰 시간 동안 랭킹과 분봉을 다시 판정한다. 매 tick마다
+  // 아무 종목이나 고르는 것이 아니라 누적 observation 지속성 필터를 통과해야 SELECTED가 된다.
+  if (!entry?.selectedSymbol) {
     const minutesAfterWindowStart = kstNowMinutes() - ENTRY_WINDOWS[entryWindow].startMinutes;
-    if (minutesAfterWindowStart >= ENTRY_DECISION_GRACE_MINUTES) {
-      repo.createEntry(userId, {
-        strategyId: strategy.id, tradeDate, entryWindow,
-        status: 'SKIPPED', rankingSnapshot: null, bought: false
-      });
+    if (minutesAfterWindowStart >= ENTRY_SELECTION_WINDOW_MINUTES) {
+      if (entry) {
+        repo.finalizeEntryWithoutCandidate(entry.id, { status: 'NO_CANDIDATE', rankingSnapshot });
+      } else {
+        repo.createEntry(userId, {
+          strategyId: strategy.id, tradeDate, entryWindow,
+          status: 'NO_CANDIDATE', rankingSnapshot: null, bought: false
+        });
+      }
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: 시작 후 ${ENTRY_DECISION_GRACE_MINUTES}분 안에 후보를 확정하지 못해 늦은 추격 매수를 막고 이 구간을 종료합니다.`
+        reason: `${label} 진입: 시작 후 ${ENTRY_SELECTION_WINDOW_MINUTES}분 동안 안정적으로 확인된 후보가 없어 늦은 추격 매수를 막고 이 구간을 종료합니다.`
       });
     }
     // 랭킹 조회 실패는 전략 거절과 구분한다. 진입 기록을 만들지 않아 다음 tick에서 기술 오류만 재시도한다.
@@ -837,33 +870,53 @@ async function evaluateEntryPath(userId, strategy, {
     let preparedBuyPlan = filterResult.buyPlan || null;
 
     if (!picked) {
-      // 후보 없음/전원 거절은 전략 판단의 결과다. NO_CANDIDATE를 남겨 50분짜리
-      // 진입창에서 매 30초 optional stopping으로 언젠가 한 번 통과하는 일을 막는다.
-      repo.createEntry(userId, {
-        strategyId: strategy.id, tradeDate, entryWindow,
-        status: 'NO_CANDIDATE', rankingSnapshot, bought: false
-      });
+      // 한 번의 빈 랭킹이나 KIS 분봉/매수가능금액 오류로 구간 전체를 끝내지 않는다. 관찰 스냅샷을
+      // 누적하고 정해진 5분 안에서만 다시 본다. 지속성 필터가 optional stopping을 제어한다.
       const fluctuationBand = minFluctuationRate > 0
         ? `${(minFluctuationRate * 100).toFixed(0)}% 이상 ${(maxFluctuationRate * 100).toFixed(0)}% 미만`
         : `${(maxFluctuationRate * 100).toFixed(0)}% 미만`;
       const reason = candidates.length === 0
-        ? `${label} 진입: 원본 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위 안에서 등락률 ${fluctuationBand}이고 지속적으로 확인된 매수 대상이 없어 이 구간 매수를 건너뜁니다.`
-        : `${label} 진입: 관찰 랭킹 종합 후보 ${candidates.length}개가 단기 흐름·거래대금·매수가능금액 검사에서 모두 거절되어 이 구간 매수를 건너뜁니다. ${filterResult.rejections.map((r) => {
+        ? `${label} 진입 관찰 중: 원본 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위 안에서 등락률 ${fluctuationBand}이고 지속적으로 확인된 매수 대상이 아직 없습니다. 제한 시간 안에 다시 평가합니다.`
+        : `${label} 진입 관찰 중: 관찰 랭킹 종합 후보 ${candidates.length}개가 현재 단기 흐름·거래대금·매수가능금액 검사에서 모두 제외됐습니다. 제한 시간 안에 다시 평가합니다. ${filterResult.rejections.map((r) => {
             const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
             return `${nameLabel}: ${r.reason}`;
           }).join(' / ')}`;
+      // time-split validation에서 rolling 재탐색 변형이 모두 PF<1이었다. live 사용자는 첫 판단을
+      // 종결해 신규 규칙이 실제 돈으로 실행되지 않게 하고, 다음 tick부터 위 shadow 경로로
+      // 실제 market-wide 랭킹만 계속 저장한다. DRY_RUN은 테스트·관찰을 위해 5분 평가를 유지한다.
+      if (liveOrderEnabled && !env.krRankLiveEntryRetryEnabled) {
+        if (entry) {
+          repo.finalizeEntryWithoutCandidate(entry.id, { status: 'NO_CANDIDATE', rankingSnapshot });
+        } else {
+          repo.createEntry(userId, {
+            strategyId: strategy.id, tradeDate, entryWindow,
+            status: 'NO_CANDIDATE', rankingSnapshot, bought: false
+          });
+        }
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+          reason: `${label} 진입: 검증 전 신규 규칙의 실주문 재탐색은 잠그고 이후 5분 실제 랭킹만 shadow로 저장합니다.`
+        });
+      }
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
+        noLog: evaluationSource !== 'MANUAL'
       });
     }
 
-    entry = repo.createEntry(userId, {
-      strategyId: strategy.id, tradeDate, entryWindow,
-      status: 'SELECTED',
-      selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
-      selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
-      rankingSnapshot, bought: false
-    });
+    entry = entry
+      ? repo.updateEntrySelection(entry.id, {
+          selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
+          selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+          rankingSnapshot
+        })
+      : repo.createEntry(userId, {
+          strategyId: strategy.id, tradeDate, entryWindow,
+          status: 'SELECTED',
+          selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
+          selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+          rankingSnapshot, bought: false
+        });
     if (!entry) {
       return saveDecision(userId, strategy, {
         decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
@@ -1018,6 +1071,43 @@ async function evaluateEntryPath(userId, strategy, {
         }
       }
     }
+    const restingMs = refreshedBuyOrder?.createdAt
+      ? Date.now() - sqliteUtcToMs(refreshedBuyOrder.createdAt)
+      : 0;
+    if (entryWasLive
+      && refreshedBuyOrder?.kisOrderNo
+      && ['REQUESTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'UNKNOWN'].includes(refreshedBuyOrder.status)
+      && Number(refreshedBuyOrder.filledQuantity || 0) <= 0
+      && restingMs >= BUY_STALE_LIMIT_MS) {
+      const openOrders = await safeOpenOrders(userId, trading, symbol);
+      if (!Array.isArray(openOrders)) {
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+          liveOrderEnabled: entryWasLive, evaluationSource, orderId: refreshedBuyOrder.id,
+          reason: `${label} 진입: ${symbol} 매수 미체결이 오래됐지만 KIS 미체결 목록을 확인하지 못해 취소·재주문하지 않습니다.`
+        });
+      }
+      const ownBuyStillOpen = openOrders.some((row) => (
+        String(row?.orderNo || '').trim() === String(refreshedBuyOrder.kisOrderNo).trim()
+      ));
+      if (ownBuyStillOpen) {
+        const canceled = await cancelKrOrderAndConfirm(userId, trading, refreshedBuyOrder);
+        if (!canceled.ok) {
+          return saveDecision(userId, strategy, {
+            decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+            liveOrderEnabled: entryWasLive, evaluationSource, orderId: refreshedBuyOrder.id,
+            reason: `${label} 진입: ${symbol} 오래된 미체결 매수의 취소가 확정되지 않아 재주문하지 않습니다. ${canceled.reason}`
+          });
+        }
+        return saveDecision(userId, strategy, {
+          decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+          liveOrderEnabled: entryWasLive, evaluationSource, orderId: canceled.order?.id || refreshedBuyOrder.id,
+          reason: `${label} 진입: ${symbol} 매수가 ${Math.round(BUY_STALE_LIMIT_MS / 1000)}초 동안 체결되지 않아 취소를 확인했습니다. 다음 평가에서 최신 랭킹·분봉·가격을 다시 통과하면 제한 시간 안에서 재호가합니다.`
+        });
+      }
+      // 미체결 목록에 없다는 사실만으로 미접수를 단정할 수 없다. sync/주문이력에서
+      // CANCELED·REJECTED가 확인될 때까지는 blind retry하지 않는다.
+    }
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
       liveOrderEnabled: entryWasLive, evaluationSource,
@@ -1043,23 +1133,16 @@ async function evaluateEntryPath(userId, strategy, {
     });
   }
 
-  const minutesAfterWindowStart = kstNowMinutes() - ENTRY_WINDOWS[entryWindow].startMinutes;
-  if (minutesAfterWindowStart >= ENTRY_DECISION_GRACE_MINUTES) {
-    repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
-    return saveDecision(userId, strategy, {
-      decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-      rankingSnapshot, liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: 시작 후 ${ENTRY_DECISION_GRACE_MINUTES}분이 지나 늦은 주문을 막고 이 구간을 종료합니다.`
-    });
-  }
-
-  const confirmationAgeMinutes = minutesSinceSqliteTimestamp(entry.createdAt);
+  // 후보 탐색 마감과 이미 고른 후보의 확인/주문 재시도 마감을 분리한다. 09:14:30에 고른
+  // 후보도 다음 tick 확인 기회가 있어야 하며, 반대로 선택 후 3분 넘게 기술 오류가 이어진
+  // 후보를 뒤늦게 추격해서는 안 된다. 재선택된 entry는 updated_at을 새 기준으로 쓴다.
+  const confirmationAgeMinutes = minutesSinceSqliteTimestamp(entry.updatedAt || entry.createdAt);
   if (confirmationAgeMinutes != null && confirmationAgeMinutes >= ENTRY_CONFIRMATION_MAX_MINUTES) {
     repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
       rankingSnapshot, liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${symbol} 후보 확인이 ${ENTRY_CONFIRMATION_MAX_MINUTES}분 안에 끝나지 않아 늦은 추격 매수를 막고 이 구간을 종료합니다.`
+      reason: `${label} 진입: ${symbol} 후보 확인 또는 주문 재시도가 선택 후 ${ENTRY_CONFIRMATION_MAX_MINUTES}분 안에 끝나지 않아 늦은 추격 매수를 막고 이 구간을 종료합니다.`
     });
   }
 
@@ -1463,7 +1546,8 @@ function compactDateInKst(date) {
 
 // ── 주문 실행 ─────────────────────────────────────────────────────────────
 
-// 실주문 OFF면 DRY_RUN 기록만, ON이면 KIS로 실제 전송. 실패해도 재시도하지 않는다.
+// 실주문 OFF면 DRY_RUN 기록만, ON이면 KIS로 실제 전송한다. 이 함수 안에서 POST를 재시도하지 않고,
+// 미접수가 명확한 REJECTED만 다음 평가 tick이 최신 신호를 재검증한 뒤 제한 재시도한다.
 async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisionReason }) {
   const orderInput = {
     ...baseOrder,
@@ -1510,9 +1594,9 @@ async function placeOrder(userId, trading, baseOrder, { liveOrderEnabled, decisi
     return created;
   } catch (error) {
     return repo.updateOrder(userId, requested.id, {
-      // POST 예외는 HTTP/KIS 오류 payload가 있어도 서버 접수 여부가 확실하지 않다.
-      // UNKNOWN으로 고정해 자동 재전송을 막고 계좌 확인을 요구한다.
-      status: 'UNKNOWN',
+      // KIS가 업무 거절을 명시한 경우는 미접수가 확정돼 제한 재시도가 가능하다. timeout/5xx처럼
+      // 접수 여부가 모호한 예외는 UNKNOWN으로 남겨 blind retry와 이중 매수를 막는다.
+      status: error.orderOutcome === 'REJECTED' ? 'REJECTED' : 'UNKNOWN',
       filledQuantity: null,
       remainingQuantity: null,
       averageFilledPrice: null,
@@ -2103,6 +2187,13 @@ function minutesSinceSqliteTimestamp(value, now = new Date()) {
   const time = Date.parse(normalized.endsWith('Z') ? normalized : `${normalized}Z`);
   if (!Number.isFinite(time)) return null;
   return Math.max(0, (now.getTime() - time) / 60000);
+}
+
+function sqliteUtcToMs(value) {
+  if (!value) return 0;
+  const normalized = String(value).trim().replace(' ', 'T');
+  const time = Date.parse(normalized.endsWith('Z') ? normalized : `${normalized}Z`);
+  return Number.isFinite(time) ? time : 0;
 }
 
 function badRequest(message) {
