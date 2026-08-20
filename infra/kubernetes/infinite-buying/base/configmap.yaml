@@ -10,7 +10,8 @@ data:
   KIS_API_BASE_URL: https://openapi.koreainvestment.com:9443
   KIS_TIMEOUT_MS: "5000"
   SESSION_COOKIE_SECURE: "true"
-  ENABLE_LIVE_ORDER: "true"
+  # 안전한 1차 rollout: 새 이미지 검증이 끝난 뒤 별도 GitOps PR에서 true로 복원한다.
+  ENABLE_LIVE_ORDER: "false"
   ENABLE_RESERVED_ORDER: "false"
   # time-split validation 미통과: 실제 랭킹은 shadow 저장하되 5분 live 후보 재탐색은 잠근다.
   KR_RANK_LIVE_ENTRY_RETRY_ENABLED: "false"
