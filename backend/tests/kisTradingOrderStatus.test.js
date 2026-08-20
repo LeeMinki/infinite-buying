@@ -248,3 +248,121 @@ test('KisTradingService 최종 경계는 global OFF에서 BUY·SELL·취소 POST
     env.enableLiveOrder = previous;
   }
 });
+
+test('KIS 주문 POST는 확정 업무 거절만 REJECTED이고 일시·통신 오류는 UNKNOWN이다', async () => {
+  const originalFetch = global.fetch;
+  const context = {
+    baseUrl: 'https://example.invalid', accessToken: 'test-token',
+    appKey: 'test-key', appSecret: 'test-secret'
+  };
+  const cases = [
+    {
+      name: 'HTTP 200 업무 거절', status: 200,
+      payload: { rt_cd: '1', msg_cd: 'APBK0919', msg1: '주문단가 오류', output: {} },
+      expected: 'REJECTED'
+    },
+    {
+      name: 'EGW rate limit', status: 200,
+      payload: { rt_cd: '1', msg_cd: 'EGW00201', msg1: '초당 거래건수 초과', output: {} },
+      expected: 'UNKNOWN'
+    },
+    {
+      name: 'HTTP 429', status: 429,
+      payload: { rt_cd: '1', msg_cd: 'TOO_MANY_REQUESTS', output: {} },
+      expected: 'UNKNOWN'
+    },
+    {
+      name: 'JSON 5xx', status: 503,
+      payload: { rt_cd: '1', msg_cd: 'SERVER_ERROR', output: {} },
+      expected: 'UNKNOWN'
+    },
+    {
+      name: '비JSON 5xx', status: 503, jsonError: true,
+      expected: 'UNKNOWN'
+    }
+  ];
+
+  try {
+    let userId = 910000;
+    for (const item of cases) {
+      global.fetch = async () => ({
+        ok: item.status >= 200 && item.status < 300,
+        status: item.status,
+        json: async () => {
+          if (item.jsonError) throw new SyntaxError('invalid json');
+          return item.payload;
+        }
+      });
+      const trading = new KisTradingService(userId++);
+      await assert.rejects(
+        trading.requestOrder('/order', {
+          trId: 'TEST', context, body: { ORD_QTY: '1' },
+          order: { market: 'KR', symbol: '005930', side: 'BUY' }
+        }),
+        (error) => {
+          assert.equal(error.orderOutcome, item.expected, item.name);
+          return true;
+        }
+      );
+    }
+
+    for (const failure of [
+      Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }),
+      Object.assign(new Error('aborted'), { name: 'AbortError' })
+    ]) {
+      global.fetch = async () => { throw failure; };
+      const trading = new KisTradingService(userId++);
+      await assert.rejects(
+        trading.requestOrder('/order', {
+          trId: 'TEST', context, body: { ORD_QTY: '1' },
+          order: { market: 'KR', symbol: '005930', side: 'BUY' }
+        }),
+        (error) => {
+          assert.equal(error.orderOutcome, 'UNKNOWN');
+          return true;
+        }
+      );
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('KIS 주문 성공 응답은 실제 주문번호가 있어야 ACCEPTED다', async () => {
+  const originalFetch = global.fetch;
+  const context = {
+    baseUrl: 'https://example.invalid', accessToken: 'test-token',
+    appKey: 'test-key', appSecret: 'test-secret'
+  };
+  try {
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rt_cd: '0', output: {}, output1: { ODNO: 'ORDER-1' } })
+    });
+    const accepted = await new KisTradingService(920001).requestOrder('/order', {
+      trId: 'TEST', context, body: { ORD_QTY: '1' },
+      order: { market: 'KR', symbol: '005930', side: 'BUY' }
+    });
+    assert.equal(accepted.status, 'ACCEPTED');
+    assert.equal(accepted.orderNo, 'ORDER-1');
+
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rt_cd: '0', output: {} })
+    });
+    await assert.rejects(
+      new KisTradingService(920002).requestOrder('/order', {
+        trId: 'TEST', context, body: { ORD_QTY: '1' },
+        order: { market: 'KR', symbol: '005930', side: 'BUY' }
+      }),
+      (error) => {
+        assert.equal(error.orderOutcome, 'UNKNOWN');
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

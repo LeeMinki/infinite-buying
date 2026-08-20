@@ -305,6 +305,14 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
 
       {tab === 'laor' && (
         <>
+      <section className="panel section warning">
+        <div className="panel-heading">
+          <div>
+            <h3>라오어 실주문 안전 잠금</h3>
+            <p>주문 접수와 실제 체결을 완전히 분리하고 외부 동일종목 보유분을 격리하는 보강이 끝날 때까지 라오어는 모의 기록만 남깁니다. 한국·미국 랭킹 전략의 실주문 설정에는 영향을 주지 않습니다.</p>
+          </div>
+        </div>
+      </section>
       {selected?.market && selected.market !== 'KR' && (
         <ForeignCurrencyGuide />
       )}
@@ -312,7 +320,7 @@ export function AutoTradingPage({ onBack, initialStrategy }) {
       <AccountSummaryPanel
         summary={accountSummary}
         fallbackCurrency={selected?.currency || 'KRW'}
-        liveOrderEnabled={settings?.liveOrderEnabled}
+        liveOrderEnabled={dashboard?.operationStatus?.laorLiveOrderEnabled === true}
         hasStrategy={Boolean(selected)}
       />
 

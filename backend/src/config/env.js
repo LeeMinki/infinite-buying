@@ -15,6 +15,11 @@ export const env = {
   autoTradingSchedulerIntervalMs: Number(process.env.AUTO_TRADING_SCHEDULER_INTERVAL_MS || 600_000),
   // 한국 국장 상승률 랭킹 전략은 진입 시각(09:10·11:30)을 놓치지 않도록 30초 간격으로 평가한다.
   krRankSchedulerIntervalMs: Number(process.env.KR_RANK_SCHEDULER_INTERVAL_MS || 30_000),
+  // 과거 time-split에서 수익성을 통과하지 못한 5분 live 후보 재탐색은 기본 비활성이다.
+  // false여도 실제 랭킹은 5분 동안 shadow 관찰로 저장해 독립 validation 자료를 만든다.
+  krRankLiveEntryRetryEnabled: process.env.KR_RANK_LIVE_ENTRY_RETRY_ENABLED === 'true',
+  // 라오어는 ACCEPTED/FILLED 분리와 외부 동일종목 provenance 보강 전까지 production live를 잠근다.
+  laorLiveOrderEnabled: process.env.LAOR_LIVE_ORDER_ENABLED === 'true',
   // 미국장 상승률 랭킹 전략도 정규장 중 빠른 회전을 위해 30초 간격으로 평가한다.
   usRankSchedulerIntervalMs: Number(process.env.US_RANK_SCHEDULER_INTERVAL_MS || 30_000),
   secretEncryptionKey: process.env.SECRET_ENCRYPTION_KEY || generatedDevEncryptionKey,

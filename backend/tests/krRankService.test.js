@@ -10,7 +10,9 @@ const repo = await import('../src/repositories/krRankRepository.js');
 const autoTradingRepo = await import('../src/repositories/autoTradingRepository.js');
 const { env } = await import('../src/config/env.js');
 const originalEnableLiveOrder = env.enableLiveOrder;
+const originalKrRankLiveEntryRetryEnabled = env.krRankLiveEntryRetryEnabled;
 env.enableLiveOrder = 'true';
+env.krRankLiveEntryRetryEnabled = true;
 
 const user = createUser(db, 'kr-rank-service@example.com');
 credentialService.saveSettings(user.id, {
@@ -22,6 +24,7 @@ credentialService.saveSettings(user.id, {
 
 test.after(() => {
   env.enableLiveOrder = originalEnableLiveOrder;
+  env.krRankLiveEntryRetryEnabled = originalKrRankLiveEntryRetryEnabled;
   tmp.cleanup();
 });
 
@@ -133,6 +136,13 @@ function withMockedFetch(state, run) {
       state.orderCalls = (state.orderCalls || 0) + 1;
       state.orderBodies = [...(state.orderBodies || []), JSON.parse(options.body || '{}')];
       if (state.orderNetworkError) throw new Error('simulated order response timeout');
+      if (state.orderBusinessReject) {
+        return json({
+          rt_cd: '1',
+          msg_cd: state.orderRejectCode || 'APBK0506',
+          msg1: state.orderRejectCode === 'EGW00201' ? '초당 거래건수 초과' : '주문단가 오류'
+        });
+      }
       return json({ rt_cd: '0', output: { ODNO: `KRO${state.orderCalls}` } });
     }
     return json({ rt_cd: '0', output: {} });
@@ -731,7 +741,7 @@ test('한국 랭킹: 목표가 주문이 오래 미체결이고 흐름이 무너
   autoTradingRepo.updateLiveOrderSetting(user.id, false);
 });
 
-test('한국 랭킹: 매수 직후 손절선 터치가 초기 흔들기면 고정 손절을 유예한다', async () => {
+test('한국 랭킹: -5% 전에는 흔들기 유예를 유지하고 -5%에서 하드 손절한다', async () => {
   const strategy = repo.createStrategy(user.id, {
     morningBudget: 1_000_000,
     morningTargetProfitRate: 0.02,
@@ -773,30 +783,38 @@ test('한국 랭킹: 매수 직후 손절선 터치가 초기 흔들기면 고�
   db.prepare("UPDATE kr_rank_orders SET created_at = '2026-06-18 00:11:29', updated_at = '2026-06-18 00:11:29' WHERE id = ?")
     .run(target.id);
 
-  await withMockedFetch({
-    prices: { '365900': 2415 },
+  const market = {
+    prices: { '365900': 2456 },
     minuteRows: { '365900': shakeoutMinuteCandles() },
     holdings: [{
       pdno: '365900',
       hldg_qty: '43',
       pchs_avg_pric: '2572',
-      prpr: '2415'
+      prpr: '2456'
     }]
-  }, async () => {
+  };
+  await withMockedFetch(market, async () => {
     await withMockedDate('2026-06-18T00:12:56Z', async () => {
-      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      assert.equal(result.decision.decision, 'HOLD');
-      assert.match(result.decision.reason, /손절 기준에 닿았지만/);
-      assert.match(result.decision.reason, /초기 흔들기로 보고 관찰/);
-      assert.equal(result.order, null);
+      const held = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(held.decision.decision, 'HOLD');
+    });
+
+    market.prices['365900'] = 2443;
+    market.holdings[0].prpr = '2443';
+    await withMockedDate('2026-06-18T00:13:26Z', async () => {
+      const stopped = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(stopped.decision.decision, 'SELL');
+      assert.equal(stopped.decision.sellReason, 'STOP_LOSS');
+      assert.match(stopped.decision.reason, /하드 방어 손절/);
+      assert.equal(stopped.order.status, 'DRY_RUN');
     });
   });
 
   const refreshedTarget = repo.getOrder(user.id, target.id);
-  assert.equal(refreshedTarget.status, 'DECIDED');
+  assert.equal(refreshedTarget.status, 'CANCELED');
   const stopLossOrder = repo.listOrders(user.id, { strategyId: strategy.id })
     .find((order) => order.side === 'SELL' && order.sellReason === 'STOP_LOSS');
-  assert.equal(stopLossOrder, undefined);
+  assert.equal(stopLossOrder.status, 'DRY_RUN');
 
   autoTradingRepo.updateLiveOrderSetting(user.id, false);
 });
@@ -1568,7 +1586,7 @@ test('한국 랭킹 스케줄러: 이미 평가 중인 idle SKIP은 판단 로�
   assert.equal(after, before);
 });
 
-test('한국 랭킹: 첫 평가 전원 거절은 NO_CANDIDATE로 종결하고 다음 tick에 재조회하지 않는다', async () => {
+test('한국 랭킹: 첫 평가 전원 거절이어도 5분 안에는 재관찰하고 안정 후보를 다음 tick 확인 후 매수한다', async () => {
   const strategy = repo.createStrategy(user.id, {
     morningBudget: 1_000_000,
     morningTargetProfitRate: 0.02,
@@ -1587,38 +1605,91 @@ test('한국 랭킹: 첫 평가 전원 거절은 NO_CANDIDATE로 종결하고 �
       { stck_shrn_iscd: '018260', hts_kor_isnm: '삼성에스디에스', stck_prpr: '286500', prdy_ctrt: '25.0' },
       { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '21.0' }
     ],
-    cash: 1_000_000
+    cash: 1_000_000,
+    prices: { '005930': 70_000 }
   };
   await withMockedFetch(state, async () => {
     await withMockedDate('2026-06-08T00:10:00Z', async () => {
-      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      const result = await service.evaluateStrategy(user.id, strategy.id);
       assert.equal(result.decision.decision, 'SKIP');
       assert.equal(result.decision.entryWindow, 'MORNING');
-      assert.match(result.decision.reason, /매수 대상이 없어/);
+      assert.match(result.decision.reason, /진입 관찰 중/);
       assert.equal(result.order, null);
       assert.equal(state.rankingCalls, 1);
       assert.equal(state.orderCalls || 0, 0);
       const entry = repo.getEntry(strategy.id, '2026-06-08', 'MORNING');
-      assert.equal(entry.status, 'NO_CANDIDATE');
-      assert.equal(entry.selectedSymbol, null);
+      assert.equal(entry, null);
     });
     state.rankingRows = [
-      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '10.0' }
+      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '16.0' }
     ];
     await withMockedDate('2026-06-08T00:10:30Z', async () => {
-      const second = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
-      assert.equal(second.decision, null);
-      assert.equal(state.rankingCalls, 1, '종결된 진입 구간은 랭킹을 다시 조회하면 안 된다');
+      const second = await service.evaluateStrategy(user.id, strategy.id);
+      assert.match(second.decision.reason, /진입 관찰 중/);
+      assert.equal(state.rankingCalls, 2);
       assert.equal(state.orderCalls || 0, 0);
+    });
+    await withMockedDate('2026-06-08T00:11:00Z', async () => {
+      const selected = await service.evaluateStrategy(user.id, strategy.id);
+      assert.match(selected.decision.reason, /후보를 선택했습니다/);
+      assert.equal(state.rankingCalls, 3);
+      assert.equal(state.orderCalls || 0, 0);
+    });
+    await withMockedDate('2026-06-08T00:11:30Z', async () => {
+      const bought = await service.evaluateStrategy(user.id, strategy.id);
+      assert.equal(bought.decision.decision, 'BUY');
+      assert.equal(bought.order.status, 'ACCEPTED');
+      assert.equal(state.orderCalls, 1);
     });
   });
 
-  const logs = repo.listDecisionLogs(user.id, strategy.id, { limit: 10, offset: 0 });
-  assert.equal(logs[0].decision, 'SKIP');
-  assert.equal(logs[0].entryWindow, 'MORNING');
-  assert.match(logs[0].reason, /매수 대상이 없어/);
+  const entry = repo.getEntry(strategy.id, '2026-06-08', 'MORNING');
+  assert.equal(entry.status, 'SELECTED');
+  assert.equal(entry.selectedSymbol, '005930');
 
   autoTradingRepo.updateLiveOrderSetting(user.id, false);
+});
+
+test('한국 랭킹: 검증 전 live 재탐색은 첫 판단에서 종결하되 이후 5분 랭킹은 shadow로 저장한다', async () => {
+  const strategy = createRunningStrategy();
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    rankingRows: [
+      { stck_shrn_iscd: '018260', hts_kor_isnm: '삼성에스디에스', stck_prpr: '286500', prdy_ctrt: '25.0' }
+    ],
+    cash: 1_000_000,
+    prices: { '005930': 70_000 }
+  };
+
+  try {
+    await withEnvOverride({ krRankLiveEntryRetryEnabled: false }, async () => {
+      await withMockedFetch(state, async () => {
+        await withMockedDate('2026-06-09T00:10:00Z', async () => {
+          const first = await service.evaluateStrategy(user.id, strategy.id);
+          assert.equal(first.order, null);
+          assert.match(first.decision.reason, /검증 전.*실주문 재탐색/);
+        });
+        const entry = repo.getEntry(strategy.id, '2026-06-09', 'MORNING');
+        assert.equal(entry.status, 'NO_CANDIDATE');
+
+        state.rankingRows = [
+          { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '16.0' }
+        ];
+        await withMockedDate('2026-06-09T00:10:30Z', async () => {
+          const shadow = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+          assert.equal(shadow.order, null);
+          assert.equal(state.orderCalls || 0, 0);
+        });
+      });
+    });
+
+    const observations = repo.listObservations(strategy.id, '2026-06-09', 'MORNING', { limit: 30 });
+    assert.equal(observations.length, 2);
+    assert.equal(observations.at(-1).rankingSnapshot[0].symbol, '005930');
+    assert.equal(repo.getEntry(strategy.id, '2026-06-09', 'MORNING').status, 'NO_CANDIDATE');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
 });
 
 test('한국 랭킹: 오전 실주문 손실 후에도 수익 기회인 점심 진입 평가를 계속한다', async () => {
@@ -1957,35 +2028,37 @@ test('한국 랭킹: 진입창 종료 뒤에도 접수된 BUY 체결을 확인�
   }
 });
 
-test('한국 랭킹: 진입 시작 3분 뒤 최초 평가는 랭킹 조회 없이 SKIPPED로 종결한다', async () => {
+test('한국 랭킹: 진입 시작 5분 뒤 최초 평가는 랭킹 조회 없이 NO_CANDIDATE로 종결한다', async () => {
   const strategy = createRunningStrategy();
   const state = { cash: 1_000_000 };
 
   await withMockedFetch(state, async () => {
-    await withMockedDate('2026-07-20T00:13:00Z', async () => {
+    await withMockedDate('2026-07-20T00:15:00Z', async () => {
       const result = await service.evaluateStrategy(user.id, strategy.id);
-      assert.match(result.decision.reason, /시작 후 3분 안에 후보를 확정하지 못해/);
+      assert.match(result.decision.reason, /시작 후 5분 동안/);
     });
   });
 
-  assert.equal(repo.getEntry(strategy.id, '2026-07-20', 'MORNING').status, 'SKIPPED');
+  assert.equal(repo.getEntry(strategy.id, '2026-07-20', 'MORNING').status, 'NO_CANDIDATE');
   assert.equal(state.rankingCalls || 0, 0);
   assert.equal(state.orderCalls || 0, 0);
 });
 
-test('한국 랭킹: 주문 없는 SELECTED 후보도 진입 시작 3분 뒤에는 새 주문 없이 SKIPPED로 종결한다', async () => {
+test('한국 랭킹: 주문 없는 SELECTED 후보는 선택 후 3분 뒤 새 주문 없이 SKIPPED로 종결한다', async () => {
   const strategy = createRunningStrategy();
   const entry = repo.createEntry(user.id, {
     strategyId: strategy.id, tradeDate: '2026-07-20', entryWindow: 'MORNING',
     status: 'SELECTED', selectedSymbol: '005930', selectedSymbolName: '삼성전자',
     selectedPrice: 70_000, selectedFluctuationRate: 0.10, bought: false
   });
+  db.prepare("UPDATE kr_rank_entries SET created_at = '2026-07-20 00:10:00', updated_at = '2026-07-20 00:10:00' WHERE id = ?")
+    .run(entry.id);
   const state = { cash: 1_000_000 };
 
   await withMockedFetch(state, async () => {
     await withMockedDate('2026-07-20T00:13:00Z', async () => {
       const result = await service.evaluateStrategy(user.id, strategy.id);
-      assert.match(result.decision.reason, /시작 후 3분이 지나/);
+      assert.match(result.decision.reason, /선택 후 3분 안에/);
     });
   });
 
@@ -2410,6 +2483,220 @@ test('한국 랭킹: 주문 응답 timeout은 UNKNOWN intent를 남겨 같은 BU
     const buys = repo.listOrders(user.id, { strategyId: strategy.id }).filter((order) => order.side === 'BUY');
     assert.equal(buys.length, 1);
     assert.equal(buys[0].status, 'UNKNOWN');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: KIS가 미접수를 명시한 업무 거절은 최신 신호 재검증 후 재시도한다', async () => {
+  const strategy = createRunningStrategy();
+  seedStableObservations(strategy, '2026-07-23', 'MORNING', [
+    { symbol: '005930', name: '삼성전자', price: 70_000, fluctuationRate: 0.16 }
+  ]);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const state = {
+    cash: 1_000_000,
+    prices: { '005930': 70_000 },
+    openOrders: [],
+    orderBusinessReject: true,
+    orderRejectCode: 'APBK0919'
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-07-23T00:10:00Z', async () => {
+        const selected = await service.evaluateStrategy(user.id, strategy.id);
+        assert.match(selected.decision.reason, /후보를 선택했습니다/);
+      });
+      const selectedEntry = repo.getEntry(strategy.id, '2026-07-23', 'MORNING');
+      db.prepare("UPDATE kr_rank_entries SET created_at = '2026-07-23 00:10:00', updated_at = '2026-07-23 00:10:00' WHERE id = ?")
+        .run(selectedEntry.id);
+      await withMockedDate('2026-07-23T00:10:30Z', async () => {
+        const rejected = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(rejected.order.status, 'REJECTED');
+        assert.match(rejected.decision.reason, /다음 평가에서 안전 조건을 다시 확인/);
+      });
+
+      state.orderBusinessReject = false;
+      await withMockedDate('2026-07-23T00:11:00Z', async () => {
+        const retried = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(retried.order.status, 'ACCEPTED');
+      });
+    });
+
+    const buys = repo.listOrders(user.id, { strategyId: strategy.id })
+      .filter((order) => order.side === 'BUY');
+    assert.equal(buys.length, 2);
+    assert.deepEqual(buys.map((order) => order.status).sort(), ['ACCEPTED', 'REJECTED']);
+    assert.equal(state.orderCalls, 2);
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 90초간 전량 미체결된 BUY는 취소 확인 후 최신 신호로 재호가한다', async () => {
+  const strategy = createRunningStrategy();
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-07-24', entryWindow: 'MORNING',
+    status: 'SELECTED', selectedSymbol: '005930', selectedSymbolName: '삼성전자',
+    selectedPrice: 70_000, selectedFluctuationRate: 0.16, bought: false
+  });
+  const stale = repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '005930', symbolName: '삼성전자',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 10, orderPrice: 70_280,
+    estimatedAmount: 702_800, kisOrderNo: 'STALE-KR-BUY', status: 'ACCEPTED',
+    filledQuantity: 0, remainingQuantity: 10,
+    idempotencyKey: `20260724-${strategy.id}-MORNING-BUY`,
+    decisionReason: '오래된 미체결 매수', liveOrderEnabled: true
+  });
+  db.prepare("UPDATE kr_rank_entries SET created_at = '2026-07-24 00:10:00', updated_at = '2026-07-24 00:10:00' WHERE id = ?")
+    .run(entry.id);
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-07-24 00:10:00', updated_at = '2026-07-24 00:10:00' WHERE id = ?")
+    .run(stale.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const active = {
+    odno: 'STALE-KR-BUY', pdno: '005930', sll_buy_dvsn_cd: '02',
+    ord_qty: '10', tot_ccld_qty: '0', rmn_qty: '10'
+  };
+  const state = {
+    cash: 1_000_000,
+    prices: { '005930': 70_000 },
+    rankingRows: [
+      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '16.0' }
+    ],
+    openOrders: [active],
+    openOrdersAfterCancel: [],
+    history: [active],
+    historyAfterCancel: [
+      active,
+      {
+        odno: 'STALE-KR-CANCEL', orgn_odno: 'STALE-KR-BUY', pdno: '005930',
+        sll_buy_dvsn_cd: '02', ord_qty: '10', tot_ccld_qty: '0', rmn_qty: '0',
+        cncl_yn: 'Y', cnc_cfrm_qty: '10'
+      }
+    ]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-07-24T00:11:29Z', async () => {
+        const waiting = await service.evaluateStrategy(user.id, strategy.id);
+        assert.match(waiting.decision.reason, /아직 체결되지 않아/);
+        assert.equal(state.cancelCalls || 0, 0);
+        assert.equal(state.orderCalls || 0, 0);
+      });
+      await withMockedDate('2026-07-24T00:11:30Z', async () => {
+        const canceled = await service.evaluateStrategy(user.id, strategy.id);
+        assert.match(canceled.decision.reason, /90초 동안 체결되지 않아 취소를 확인/);
+        assert.equal(repo.getOrder(user.id, stale.id).status, 'CANCELED');
+        assert.equal(state.cancelCalls, 1);
+      });
+      await withMockedDate('2026-07-24T00:12:00Z', async () => {
+        const requoted = await service.evaluateStrategy(user.id, strategy.id);
+        assert.equal(requoted.decision.decision, 'BUY');
+        assert.equal(requoted.order.status, 'ACCEPTED');
+      });
+    });
+
+    const buys = repo.listOrders(user.id, { strategyId: strategy.id })
+      .filter((order) => order.side === 'BUY');
+    assert.equal(buys.length, 2);
+    assert.equal(state.orderCalls, 1);
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 오래된 BUY 취소 요청만 성공하고 완료가 확인되지 않으면 재호가하지 않는다', async () => {
+  const strategy = createRunningStrategy();
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-07-27', entryWindow: 'MORNING',
+    status: 'SELECTED', selectedSymbol: '000660', selectedSymbolName: 'SK하이닉스',
+    selectedPrice: 200_000, selectedFluctuationRate: 0.16, bought: false
+  });
+  const stale = repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '000660', symbolName: 'SK하이닉스',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 2, orderPrice: 200_800,
+    estimatedAmount: 401_600, kisOrderNo: 'UNCONFIRMED-BUY', status: 'ACCEPTED',
+    filledQuantity: 0, remainingQuantity: 2,
+    idempotencyKey: `20260727-${strategy.id}-MORNING-BUY`,
+    decisionReason: '취소 미확정 매수', liveOrderEnabled: true
+  });
+  db.prepare("UPDATE kr_rank_entries SET created_at = '2026-07-27 00:10:00', updated_at = '2026-07-27 00:10:00' WHERE id = ?")
+    .run(entry.id);
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-07-27 00:10:00', updated_at = '2026-07-27 00:10:00' WHERE id = ?")
+    .run(stale.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const active = {
+    odno: 'UNCONFIRMED-BUY', pdno: '000660', sll_buy_dvsn_cd: '02',
+    ord_qty: '2', tot_ccld_qty: '0', rmn_qty: '2'
+  };
+  const state = {
+    cash: 1_000_000,
+    prices: { '000660': 200_000 },
+    openOrders: [active],
+    openOrdersAfterCancel: [active],
+    history: [active],
+    historyAfterCancel: [active]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-07-27T00:12:00Z', async () => {
+        const blocked = await service.evaluateStrategy(user.id, strategy.id);
+        assert.match(blocked.decision.reason, /취소가 확정되지 않아 재주문하지 않습니다/);
+      });
+    });
+    assert.equal(state.cancelCalls, 1);
+    assert.equal(state.orderCalls || 0, 0);
+    assert.equal(repo.getOrder(user.id, stale.id).status, 'ACCEPTED');
+  } finally {
+    autoTradingRepo.updateLiveOrderSetting(user.id, false);
+  }
+});
+
+test('한국 랭킹: 오래된 BUY가 미체결 목록에 없어도 종결 증거 없이 재주문하지 않는다', async () => {
+  const strategy = createRunningStrategy();
+  const entry = repo.createEntry(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-07-28', entryWindow: 'MORNING',
+    status: 'SELECTED', selectedSymbol: '005930', selectedSymbolName: '삼성전자',
+    selectedPrice: 70_000, selectedFluctuationRate: 0.16, bought: false
+  });
+  const stale = repo.createOrder(user.id, {
+    strategyId: strategy.id, entryId: entry.id, symbol: '005930', symbolName: '삼성전자',
+    side: 'BUY', entryWindow: 'MORNING', quantity: 10, orderPrice: 70_280,
+    estimatedAmount: 702_800, kisOrderNo: 'MISSING-OPEN-BUY', status: 'ACCEPTED',
+    filledQuantity: 0, remainingQuantity: 10,
+    idempotencyKey: `20260728-${strategy.id}-MORNING-BUY`,
+    decisionReason: '미체결 목록에서 사라진 매수', liveOrderEnabled: true
+  });
+  db.prepare("UPDATE kr_rank_entries SET created_at = '2026-07-28 00:10:00', updated_at = '2026-07-28 00:10:00' WHERE id = ?")
+    .run(entry.id);
+  db.prepare("UPDATE kr_rank_orders SET created_at = '2026-07-28 00:10:00', updated_at = '2026-07-28 00:10:00' WHERE id = ?")
+    .run(stale.id);
+  autoTradingRepo.updateLiveOrderSetting(user.id, true);
+  const stillUnresolved = {
+    odno: 'MISSING-OPEN-BUY', pdno: '005930', sll_buy_dvsn_cd: '02',
+    ord_qty: '10', tot_ccld_qty: '0', rmn_qty: '10'
+  };
+  const state = {
+    cash: 1_000_000,
+    prices: { '005930': 70_000 },
+    openOrders: [],
+    history: [stillUnresolved]
+  };
+
+  try {
+    await withMockedFetch(state, async () => {
+      await withMockedDate('2026-07-28T00:12:00Z', async () => {
+        const blocked = await service.evaluateStrategy(user.id, strategy.id);
+        assert.match(blocked.decision.reason, /아직 체결되지 않아/);
+      });
+    });
+    assert.equal(state.cancelCalls || 0, 0);
+    assert.equal(state.orderCalls || 0, 0);
+    assert.equal(repo.getOrder(user.id, stale.id).status, 'ACCEPTED');
+    assert.equal(repo.listOrders(user.id, { strategyId: strategy.id }).filter((order) => order.side === 'BUY').length, 1);
   } finally {
     autoTradingRepo.updateLiveOrderSetting(user.id, false);
   }
