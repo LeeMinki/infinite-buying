@@ -17,7 +17,7 @@
 ## 클론 후 시작하기
 
 ```bash
-# 0. Node.js 24 사용 (.nvmrc / .node-version 기준)
+# 0. Node.js 24.16.0 사용 (.nvmrc / .node-version 기준)
 nvm use  # nvm을 쓰는 경우
 node -v  # v24.x 확인
 
