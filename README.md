@@ -139,6 +139,7 @@ SESSION_COOKIE_SECURE=true  # HTTPS 운영 환경에서 true
 ENABLE_LIVE_ORDER=false
 ENABLE_RESERVED_ORDER=false
 KR_RANK_LIVE_ENTRY_RETRY_ENABLED=false
+KR_RANK_CORE_FALLBACK_STRATEGY_IDS=
 LAOR_LIVE_ORDER_ENABLED=false
 AUTO_TRADING_SCHEDULER_ENABLED=true
 AUTO_TRADING_SCHEDULER_INTERVAL_MS=600000
@@ -158,7 +159,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 `ENABLE_LIVE_ORDER=false`는 사용자별 설정보다 우선하는 전역 kill switch입니다. 이 상태에서는 KIS BUY·SELL·취소 요청을 최종 거래 서비스 경계에서 차단하며, 기존 실주문 포지션은 조회와 체결 상태 동기화만 계속하고 `DRY_RUN` 주문으로 바꾸지 않습니다.
 
-`KR_RANK_LIVE_ENTRY_RETRY_ENABLED=false`는 최근 30일·전체 실전 time-split에서 profit factor 1을 넘지 못한 5분 후보 재탐색의 live 승격을 막습니다. 첫 판단 뒤에도 5분간 실제 top 30 랭킹은 shadow 관찰로 저장하지만 그 자료로 신규 BUY를 만들지 않습니다. 독립 validation gate를 통과하기 전에는 production에서 `true`로 바꾸지 않습니다.
+`KR_RANK_LIVE_ENTRY_RETRY_ENABLED=false`는 첫 판단 뒤 5분간 실제 top 30 랭킹을 shadow 관찰로만 저장하고 신규 BUY를 만들지 않습니다. `true`이면 오전·점심 진입 시작 후 5분 동안 후보를 다시 찾고, 후보를 선택한 다음 tick에서 랭킹·분봉·가격을 재확인한 경우에만 신규 BUY를 만듭니다. production은 첫 판단 한 번으로 거래 기회가 끝나는 장기 무주문 상태를 해소하기 위해 `true`를 사용합니다. 과열·저유동성·급락·상품군 제외, ±0.7% 가격 재확인, 미체결·중복·잔고·매수가능금액 검사는 계속 적용되므로 매 거래일 주문을 보장하지는 않습니다.
+
+`KR_RANK_CORE_FALLBACK_STRATEGY_IDS`는 쉼표로 구분한 KR 전략 ID allowlist입니다. production에서는 test3의 전략 `4`만 지정합니다. 이 전략의 **오전** strict 후보가 없을 때에만 현재 15~20% 밴드·원본 top 10·최신 랭킹 잔존을 유지하면서 지속성 하한을 50%에서 40%로, 거래대금·VWAP·급등·pullback 조건을 과거 core 수준으로 제한 완화합니다. 다음 tick 확인, 최초 선택가와 최신 신호가 대비 ±0.7%, 매수가능금액과 주문 안전 검사는 그대로입니다. 최근 재현에서 확인된 거래는 한 건뿐이라 수익성 검증 규칙이 아니라 장기 무주문을 줄이기 위한 소액 canary이며, 빈 값이면 완전히 비활성입니다. 점심에는 적용하지 않습니다.
 
 `LAOR_LIVE_ORDER_ENABLED=false`는 라오어의 신규 live 주문을 별도로 잠급니다. 라오어가 주문 접수와 체결을 완전히 분리하고 전략 관리 수량을 외부 동일종목 잔고와 격리하기 전에는 사용자 실주문 토글이 켜져 있어도 DRY_RUN만 남깁니다. KR/US 랭킹 전략의 live 설정에는 영향을 주지 않습니다.
 

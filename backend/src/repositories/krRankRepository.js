@@ -196,8 +196,8 @@ export function createEntry(userId, input) {
       INSERT INTO kr_rank_entries (
         user_id, strategy_id, trade_date, entry_window, status,
         selected_symbol, selected_symbol_name, selected_price,
-        selected_fluctuation_rate, ranking_snapshot, bought
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        selected_fluctuation_rate, ranking_snapshot, bought, selection_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       userId,
       input.strategyId,
@@ -209,7 +209,8 @@ export function createEntry(userId, input) {
       input.selectedPrice ?? null,
       input.selectedFluctuationRate ?? null,
       input.rankingSnapshot ? JSON.stringify(input.rankingSnapshot) : null,
-      input.bought ? 1 : 0
+      input.bought ? 1 : 0,
+      input.selectionMode || 'STRICT'
     );
     return getEntryById(result.lastInsertRowid);
   } catch (error) {
@@ -234,6 +235,7 @@ export function updateEntrySelection(id, input) {
     SET status = 'SELECTED',
         selected_symbol = ?, selected_symbol_name = ?,
         selected_price = ?, selected_fluctuation_rate = ?,
+        selection_mode = ?,
         ranking_snapshot = COALESCE(?, ranking_snapshot),
         updated_at = datetime('now')
     WHERE id = ?
@@ -242,6 +244,7 @@ export function updateEntrySelection(id, input) {
     input.selectedSymbolName || null,
     input.selectedPrice ?? null,
     input.selectedFluctuationRate ?? null,
+    input.selectionMode || 'STRICT',
     input.rankingSnapshot ? JSON.stringify(input.rankingSnapshot) : null,
     id
   );
@@ -256,6 +259,7 @@ export function clearEntrySelection(id, { rankingSnapshot = null } = {}) {
         selected_symbol_name = NULL,
         selected_price = NULL,
         selected_fluctuation_rate = NULL,
+        selection_mode = 'STRICT',
         ranking_snapshot = COALESCE(?, ranking_snapshot),
         updated_at = datetime('now')
     WHERE id = ?
@@ -273,6 +277,7 @@ export function finalizeEntryWithoutCandidate(id, { status = 'NO_CANDIDATE', ran
         selected_symbol_name = NULL,
         selected_price = NULL,
         selected_fluctuation_rate = NULL,
+        selection_mode = 'STRICT',
         ranking_snapshot = COALESCE(?, ranking_snapshot),
         updated_at = datetime('now')
     WHERE id = ?
@@ -359,19 +364,44 @@ export function countEntries(userId, strategyId) {
 
 // ── 진입 전 랭킹 관찰 ─────────────────────────────────────────────────────
 
-export function createObservation(userId, input) {
+export function createObservation(userId, input, { minIntervalSeconds = 0 } = {}) {
+  const observedAt = input.observedAt || new Date().toISOString();
+  const intervalSeconds = Math.max(0, Math.trunc(Number(minIntervalSeconds) || 0));
   const result = getDb().prepare(`
     INSERT INTO kr_rank_observations (
-      user_id, strategy_id, trade_date, entry_window, ranking_snapshot
-    ) VALUES (?, ?, ?, ?, ?)
+      user_id, strategy_id, trade_date, entry_window, ranking_snapshot, observed_at
+    )
+    SELECT ?, ?, ?, ?, ?, datetime(?)
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM kr_rank_observations
+      WHERE user_id = ?
+        AND strategy_id = ?
+        AND trade_date = ?
+        AND entry_window = ?
+        AND observed_at > datetime(?, ?)
+    )
   `).run(
     userId,
     input.strategyId,
     input.tradeDate,
     input.entryWindow,
-    JSON.stringify(input.rankingSnapshot || [])
+    JSON.stringify(input.rankingSnapshot || []),
+    observedAt,
+    userId,
+    input.strategyId,
+    input.tradeDate,
+    input.entryWindow,
+    observedAt,
+    `-${intervalSeconds} seconds`
   );
-  return getObservationById(result.lastInsertRowid);
+  if (result.changes > 0) return getObservationById(result.lastInsertRowid);
+  return toObservation(getDb().prepare(`
+    SELECT * FROM kr_rank_observations
+    WHERE user_id = ? AND strategy_id = ? AND trade_date = ? AND entry_window = ?
+    ORDER BY observed_at DESC, id DESC
+    LIMIT 1
+  `).get(userId, input.strategyId, input.tradeDate, input.entryWindow));
 }
 
 export function listObservations(strategyId, tradeDate, entryWindow, { limit = 30 } = {}) {
@@ -1133,6 +1163,7 @@ function toEntry(row) {
     selectedSymbolName: row.selected_symbol_name,
     selectedPrice: row.selected_price,
     selectedFluctuationRate: row.selected_fluctuation_rate,
+    selectionMode: row.selection_mode || 'STRICT',
     rankingSnapshot: parseJson(row.ranking_snapshot),
     bought: row.bought === 1,
     createdAt: row.created_at,

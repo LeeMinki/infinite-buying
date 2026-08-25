@@ -13,7 +13,10 @@ data:
   # 1차 rollout health·DB·scheduler·주문 0건 검증 후 기존 KR/US live 경로만 복원한다.
   ENABLE_LIVE_ORDER: "true"
   ENABLE_RESERVED_ORDER: "false"
-  # time-split validation 미통과: 실제 랭킹은 shadow 저장하되 5분 live 후보 재탐색은 잠근다.
-  KR_RANK_LIVE_ENTRY_RETRY_ENABLED: "false"
+  # 첫 판단 탈락으로 진입 구간이 즉시 끝나지 않도록 5분 동안 live 후보를 재탐색한다.
+  # 과열·저유동성·급락·상품군 제외와 다음 tick 재확인, 주문 안전 검사는 그대로 유지한다.
+  KR_RANK_LIVE_ENTRY_RETRY_ENABLED: "true"
+  # 장기 무주문 해소용 오전 core fallback canary. test3의 현재 KR 전략에만 제한한다.
+  KR_RANK_CORE_FALLBACK_STRATEGY_IDS: "4"
   # ACCEPTED/FILLED 상태 머신과 외부 동일종목 provenance 보강 전까지 라오어 신규 live 주문 금지.
   LAOR_LIVE_ORDER_ENABLED: "false"
