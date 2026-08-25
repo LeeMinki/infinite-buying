@@ -49,6 +49,24 @@ const PRICE_LIMIT_MULTIPLIER = 1.3;
 const ENTRY_MAX_SLIPPAGE_RATE = 0.007;
 // 실패 주문 재확인 중 신호가보다 이 비율 넘게 하락하면 돌파 모멘텀이 무효화된 것으로 본다.
 const ENTRY_MAX_ADVERSE_MOVE_RATE = 0.007;
+// test3 canary용 제한 fallback. strict 필터가 모두 거절한 오전에만 사용하며, 원본 top 10·15~20%
+// 밴드·최신 잔존·다음 tick ±0.7%·주문 안전 검사는 유지한다. 과거 core 정의와 같은 수준으로
+// 거래대금/VWAP/급등/pullback을 완화하되 VWAP 아래·과열·급락·저유동 후보는 계속 제외한다.
+const CORE_FALLBACK_APPEARANCE_RATE = 0.4;
+const CORE_FALLBACK_BUY_FILTER_OPTIONS = Object.freeze({
+  minTurnoverAmount: 100_000_000,
+  minRecentTurnoverAmount: 10_000_000,
+  vwapBufferRate: 0,
+  maxVwapPremiumRate: 0.10,
+  rapidRiseMaxRate: 0.07,
+  extendedRapidRiseMaxRate: 0.12,
+  highPullbackMaxRate: 0.03,
+  recentVwapWindow: 1,
+  volumeShrinkRatio: 0,
+  bodyMinRate: Number.POSITIVE_INFINITY,
+  volumeMultiplier: Number.POSITIVE_INFINITY,
+  tolerance: 0
+});
 // 진입 시작 시점 한 번만 보고 하루를 종결하면 일시적인 랭킹/분봉 상태 때문에 거래 기회가
 // 사라진다. 다만 50분 진입창 전체를 optional stopping으로 훑지는 않고, 시작 후 5분까지만
 // 관찰을 갱신한다. 후보는 아래 확인 시간 안에 다시 검증해야 실제 주문으로 이어진다.
@@ -246,8 +264,9 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
           strategyId: strategy.id,
           tradeDate: kstToday(),
           entryWindow: observationWindow,
-          rankingSnapshot
-        });
+          rankingSnapshot,
+          observedAt: new Date().toISOString()
+        }, { minIntervalSeconds: 20 });
         return saveDecision(userId, strategy, {
           decision: 'SKIP',
           entryWindow: observationWindow,
@@ -283,8 +302,9 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
           strategyId: strategy.id,
           tradeDate: kstToday(),
           entryWindow: window,
-          rankingSnapshot
-        });
+          rankingSnapshot,
+          observedAt: new Date().toISOString()
+        }, { minIntervalSeconds: 20 });
         return saveDecision(userId, strategy, {
           decision: 'SKIP', entryWindow: window, liveOrderEnabled, evaluationSource,
           rankingSnapshot,
@@ -851,8 +871,9 @@ async function evaluateEntryPath(userId, strategy, {
       strategyId: strategy.id,
       tradeDate,
       entryWindow,
-      rankingSnapshot
-    });
+      rankingSnapshot,
+      observedAt: new Date().toISOString()
+    }, { minIntervalSeconds: 20 });
     const observations = repo.listObservations(strategy.id, tradeDate, entryWindow, { limit: RANKING_OBSERVATION_LIMIT });
     const observationSnapshots = observations.map((row) => row.rankingSnapshot).filter(Boolean);
     // 구간별 실전 손익에서 상대적으로 유리했던 등락률 밴드의 후보를 사전 관찰
@@ -860,14 +881,60 @@ async function evaluateEntryPath(userId, strategy, {
     // 매수 필터(분봉 단기 흐름·거래대금)와 점수로 한 번 더 거른다.
     const minFluctuationRate = minFluctuationRateForEntryWindow(entryWindow);
     const maxFluctuationRate = maxFluctuationRateForEntryWindow(entryWindow);
-    const candidates = aggregateRankingCandidates(observationSnapshots, {
+    let candidates = aggregateRankingCandidates(observationSnapshots, {
       minFluctuationRate,
       maxFluctuationRate,
       candidateLimit: BUY_FILTER_CANDIDATE_LIMIT
     });
-    const filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
-    const picked = filterResult.picked;
+    let filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
+    let picked = filterResult.picked;
     let preparedBuyPlan = filterResult.buyPlan || null;
+    let usedCoreFallback = false;
+    if (!picked && isKrCoreFallbackEnabled(strategy, entryWindow, liveOrderEnabled)) {
+      const fallbackCandidates = aggregateRankingCandidates(observationSnapshots, {
+        minFluctuationRate,
+        maxFluctuationRate,
+        candidateLimit: BUY_FILTER_CANDIDATE_LIMIT,
+        minAppearanceRateWhenStable: CORE_FALLBACK_APPEARANCE_RATE
+      });
+      const fallbackResult = await pickFirstFilteredCandidate(userId, fallbackCandidates, {
+        trading,
+        strategy,
+        entryWindow,
+        candidateCheckOptions: CORE_FALLBACK_BUY_FILTER_OPTIONS
+      });
+      if (fallbackCandidates.length > 0) candidates = fallbackCandidates;
+      if (fallbackResult.picked) {
+        filterResult = fallbackResult;
+        picked = fallbackResult.picked;
+        preparedBuyPlan = fallbackResult.buyPlan || null;
+        usedCoreFallback = true;
+      } else if (fallbackResult.rejections.length > 0) {
+        filterResult = {
+          ...filterResult,
+          rejections: [...filterResult.rejections, ...fallbackResult.rejections]
+        };
+      }
+    }
+
+    // 마지막 허용 tick에서 분봉·현재가·매수가능금액 조회가 지연되더라도 5분 마감 뒤 새 후보를
+    // SELECTED로 만들지 않는다. 마감 전에 선택을 끝낸 후보의 다음 tick 확인은 별도 3분 제한을 쓴다.
+    const selectionFinishedAfterDeadline = picked
+      && kstNowMinutes() - ENTRY_WINDOWS[entryWindow].startMinutes >= ENTRY_SELECTION_WINDOW_MINUTES;
+    if (selectionFinishedAfterDeadline) {
+      if (entry) {
+        repo.finalizeEntryWithoutCandidate(entry.id, { status: 'NO_CANDIDATE', rankingSnapshot });
+      } else {
+        repo.createEntry(userId, {
+          strategyId: strategy.id, tradeDate, entryWindow,
+          status: 'NO_CANDIDATE', rankingSnapshot, bought: false
+        });
+      }
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+        reason: `${label} 진입: 후보 검사 중 시작 후 ${ENTRY_SELECTION_WINDOW_MINUTES}분 제한이 지나 늦은 추격 매수를 막고 이 구간을 종료합니다.`
+      });
+    }
 
     if (!picked) {
       // 한 번의 빈 랭킹이나 KIS 분봉/매수가능금액 오류로 구간 전체를 끝내지 않는다. 관찰 스냅샷을
@@ -907,14 +974,18 @@ async function evaluateEntryPath(userId, strategy, {
     entry = entry
       ? repo.updateEntrySelection(entry.id, {
           selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
-          selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+          selectedPrice: preparedBuyPlan?.currentPrice || picked.price,
+          selectedFluctuationRate: picked.fluctuationRate,
+          selectionMode: usedCoreFallback ? 'CORE_FALLBACK' : 'STRICT',
           rankingSnapshot
         })
       : repo.createEntry(userId, {
           strategyId: strategy.id, tradeDate, entryWindow,
           status: 'SELECTED',
           selectedSymbol: picked.symbol, selectedSymbolName: picked.name,
-          selectedPrice: picked.price, selectedFluctuationRate: picked.fluctuationRate,
+          selectedPrice: preparedBuyPlan?.currentPrice || picked.price,
+          selectedFluctuationRate: picked.fluctuationRate,
+          selectionMode: usedCoreFallback ? 'CORE_FALLBACK' : 'STRICT',
           rankingSnapshot, bought: false
         });
     if (!entry) {
@@ -929,7 +1000,7 @@ async function evaluateEntryPath(userId, strategy, {
       currentPrice: preparedBuyPlan?.currentPrice,
       cashAvailable: preparedBuyPlan?.cashAvailable,
       rankingSnapshot, liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${picked.symbol} 후보를 선택했습니다. 단 한 번의 순간 통과로 주문하지 않고 다음 평가에서 최신 랭킹·분봉·가격을 다시 확인합니다.`
+      reason: `${label} 진입: ${picked.symbol} 후보를 ${usedCoreFallback ? '제한 core fallback으로 ' : ''}선택했습니다. 단 한 번의 순간 통과로 주문하지 않고 다음 평가에서 최신 랭킹·분봉·가격을 다시 확인합니다.`
     });
   }
 
@@ -1117,10 +1188,11 @@ async function evaluateEntryPath(userId, strategy, {
     });
   }
   if (repo.countFailedOrders(idempotencyKey) >= ORDER_RETRY_LIMIT) {
+    repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
     return saveDecision(userId, strategy, {
       decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
-      liveOrderEnabled, evaluationSource,
-      reason: `${label} 진입: ${symbol} 매수가 ${ORDER_RETRY_LIMIT}회 실패해 더 시도하지 않습니다.`
+      rankingSnapshot, liveOrderEnabled, evaluationSource,
+      reason: `${label} 진입: ${symbol} 매수가 ${ORDER_RETRY_LIMIT}회 실패해 이 구간을 종료합니다. 다음 진입 구간은 정상적으로 다시 평가합니다.`
     });
   }
 
@@ -1172,6 +1244,10 @@ async function evaluateEntryPath(userId, strategy, {
       .find((candidate) => candidate.symbol === symbol);
     const retryCheck = retryCandidate
       ? checkBuyCandidate(latestCandles, {
+          ...(entry.selectionMode === 'CORE_FALLBACK'
+            && isKrCoreFallbackEnabled(strategy, entryWindow, liveOrderEnabled)
+            ? CORE_FALLBACK_BUY_FILTER_OPTIONS
+            : {}),
           entryWindow,
           candidate: retryCandidate
         })
@@ -1201,6 +1277,16 @@ async function evaluateEntryPath(userId, strategy, {
     }
     const referencePrice = Number(retryCheck.referencePrice) || 0;
     const selectedPrice = Number(entry.selectedPrice) || referencePrice;
+    if (selectedPrice > 0 && buyPlan.currentPrice > selectedPrice * (1 + ENTRY_MAX_SLIPPAGE_RATE)) {
+      const slippage = (buyPlan.currentPrice - selectedPrice) / selectedPrice;
+      repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        currentPrice: buyPlan.currentPrice, cashAvailable: buyPlan.cashAvailable,
+        rankingSnapshot, liveOrderEnabled, evaluationSource,
+        reason: `${label} 진입: ${symbol} 현재가가 최초 선택가보다 ${(slippage * 100).toFixed(1)}% 올라 추격 매수를 중단하고 이 구간을 종료합니다.`
+      });
+    }
     if (selectedPrice > 0 && buyPlan.currentPrice < selectedPrice * (1 - ENTRY_MAX_ADVERSE_MOVE_RATE)) {
       const adverseMove = (selectedPrice - buyPlan.currentPrice) / selectedPrice;
       repo.finalizeEntryWithoutCandidate(entry.id, { status: 'SKIPPED', rankingSnapshot });
@@ -1911,7 +1997,12 @@ function excludeKnownTargetOrder(openOrders, targetOrder) {
 // 상위 후보를 순서대로 보면서 매수 필터(시가·VWAP·거래량·장대 음봉·고점 돌파)를 적용한다.
 // 통과 후보 중 점수가 가장 높은 후보를 picked로 반환한다. 모두 거절되면 picked=null과 거절 사유 목록을 함께 돌려준다.
 // 분봉 조회가 실패한 후보는 단기 흐름 확인 불가로 보수적으로 건너뛴다.
-async function pickFirstFilteredCandidate(userId, candidates, { trading = null, strategy = null, entryWindow = null } = {}) {
+async function pickFirstFilteredCandidate(userId, candidates, {
+  trading = null,
+  strategy = null,
+  entryWindow = null,
+  candidateCheckOptions = null
+} = {}) {
   const rejections = [];
   const accepted = [];
   for (const candidate of candidates) {
@@ -1922,7 +2013,11 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
       rejections.push({ symbol: candidate.symbol, name: candidate.name, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
       continue;
     }
-    const check = checkBuyCandidate(candles, { candidate, entryWindow });
+    const check = checkBuyCandidate(candles, {
+      ...(candidateCheckOptions || {}),
+      candidate,
+      entryWindow
+    });
     if (!check.ok) {
       rejections.push({ symbol: candidate.symbol, name: candidate.name, reason: check.reason });
       continue;
@@ -1980,6 +2075,12 @@ async function pickFirstFilteredCandidate(userId, candidates, { trading = null, 
     return { ...result, buyPlan, rejections };
   }
   return { picked: null, rejections };
+}
+
+function isKrCoreFallbackEnabled(strategy, entryWindow, liveOrderEnabled) {
+  if (!env.krRankLiveEntryRetryEnabled || !liveOrderEnabled || entryWindow !== 'MORNING') return false;
+  return Array.isArray(env.krRankCoreFallbackStrategyIds)
+    && env.krRankCoreFallbackStrategyIds.includes(Number(strategy?.id));
 }
 
 async function buildKrBuyPlan(trading, strategy, entryWindow, candidate) {

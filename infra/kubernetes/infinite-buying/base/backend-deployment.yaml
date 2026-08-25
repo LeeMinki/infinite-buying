@@ -17,6 +17,8 @@ spec:
     metadata:
       labels:
         app: infinite-buying-backend
+      annotations:
+        infinite-buying/config-revision: kr-live-retry-20260826
     spec:
       dnsConfig:
         options:
