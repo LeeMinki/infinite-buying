@@ -1,0 +1,803 @@
+{
+  "generated_at_utc": "2026-09-07T00:33:21.100549+00:00",
+  "scope": "selected user; system totals contain no identities",
+  "inventory": {
+    "strategies": {
+      "selected_count": 0,
+      "system_count": 0,
+      "first_stored_timestamp": null,
+      "last_stored_timestamp": null
+    },
+    "holdings": {
+      "selected_count": 0,
+      "system_count": 0,
+      "first_stored_timestamp": null,
+      "last_stored_timestamp": null
+    },
+    "virtual_orders": {
+      "selected_count": 0,
+      "system_count": 0,
+      "first_stored_timestamp": null,
+      "last_stored_timestamp": null
+    },
+    "decision_logs": {
+      "selected_count": 0,
+      "system_count": 0,
+      "first_stored_timestamp": null,
+      "last_stored_timestamp": null
+    },
+    "auto_trading_strategies": {
+      "selected_count": 1,
+      "system_count": 1,
+      "first_stored_timestamp": "2026-05-17 10:58:21",
+      "last_stored_timestamp": "2026-05-17 10:58:21"
+    },
+    "auto_trading_orders": {
+      "selected_count": 4,
+      "system_count": 4,
+      "first_stored_timestamp": "2026-05-18 00:28:09",
+      "last_stored_timestamp": "2026-05-19 00:02:14"
+    },
+    "auto_trading_decision_logs": {
+      "selected_count": 182,
+      "system_count": 182,
+      "first_stored_timestamp": "2026-05-18 00:19:41",
+      "last_stored_timestamp": "2026-05-19 00:52:13"
+    },
+    "auto_trading_position_snapshots": {
+      "selected_count": 43,
+      "system_count": 43,
+      "first_stored_timestamp": "2026-05-18 00:28:09",
+      "last_stored_timestamp": "2026-05-19 00:52:13"
+    },
+    "kr_rank_strategies": {
+      "selected_count": 1,
+      "system_count": 1,
+      "first_stored_timestamp": "2026-05-20 22:41:22",
+      "last_stored_timestamp": "2026-05-20 22:41:22"
+    },
+    "kr_rank_orders": {
+      "selected_count": 198,
+      "system_count": 198,
+      "first_stored_timestamp": "2026-05-21 00:10:33",
+      "last_stored_timestamp": "2026-09-01 00:11:58"
+    },
+    "kr_rank_entries": {
+      "selected_count": 139,
+      "system_count": 139,
+      "first_stored_timestamp": "2026-05-21 00:10:32",
+      "last_stored_timestamp": "2026-09-01 00:11:28"
+    },
+    "kr_rank_decision_logs": {
+      "selected_count": 9424,
+      "system_count": 9424,
+      "first_stored_timestamp": "2026-05-20 22:41:25",
+      "last_stored_timestamp": "2026-09-07 00:33:19"
+    },
+    "kr_rank_observations": {
+      "selected_count": 779,
+      "system_count": 779,
+      "first_stored_timestamp": "2026-08-10 00:00:18",
+      "last_stored_timestamp": "2026-09-01 00:11:28"
+    },
+    "us_rank_strategies": {
+      "selected_count": 1,
+      "system_count": 1,
+      "first_stored_timestamp": "2026-05-22 04:44:05",
+      "last_stored_timestamp": "2026-05-22 04:44:05"
+    },
+    "us_rank_orders": {
+      "selected_count": 554,
+      "system_count": 554,
+      "first_stored_timestamp": "2026-05-22 14:00:28",
+      "last_stored_timestamp": "2026-05-26 14:09:57"
+    },
+    "us_rank_trades": {
+      "selected_count": 113,
+      "system_count": 113,
+      "first_stored_timestamp": "2026-05-22 14:00:27",
+      "last_stored_timestamp": "2026-05-26 14:06:57"
+    },
+    "us_rank_decision_logs": {
+      "selected_count": 720,
+      "system_count": 720,
+      "first_stored_timestamp": "2026-05-22 04:44:09",
+      "last_stored_timestamp": "2026-05-26 14:09:57"
+    },
+    "backtest_runs": {
+      "selected_count": 39,
+      "system_count": 39,
+      "first_stored_timestamp": "2026-05-13 01:55:43",
+      "last_stored_timestamp": "2026-05-17 07:43:01"
+    },
+    "backtest_trades": {
+      "selected_count": 7825,
+      "system_count": 7825,
+      "first_stored_timestamp": "2026-05-13 01:55:46",
+      "last_stored_timestamp": "2026-05-17 07:43:02"
+    },
+    "market_price_cache": {
+      "selected_count": 674,
+      "system_count": 674,
+      "first_stored_timestamp": "2026-05-13 01:55:44",
+      "last_stored_timestamp": "2026-06-18 00:23:27"
+    },
+    "user_trading_setting_histories": {
+      "selected_count": 5,
+      "system_count": 5,
+      "first_stored_timestamp": "2026-05-17 06:54:03",
+      "last_stored_timestamp": "2026-05-18 23:06:13"
+    }
+  },
+  "orders": {
+    "kr_rank": {
+      "status_side_mode": {
+        "BUY:FAILED:live": 19,
+        "BUY:FILLED:live": 75,
+        "BUY:UNKNOWN:live": 1,
+        "SELL:CANCELED:live": 28,
+        "SELL:FILLED:live": 75
+      },
+      "error_codes": {
+        "APBK0919": 10,
+        "APBK1497": 5,
+        "EGW00201": 5
+      },
+      "unresolved_count": 1,
+      "unresolved_without_broker_number": 1
+    },
+    "us_rank": {
+      "status_side_mode": {
+        "BUY:CANCELED:live": 1,
+        "BUY:FAILED:live": 549,
+        "BUY:FILLED:live": 2,
+        "SELL:FILLED:live": 2
+      },
+      "error_codes": {
+        "APBK1664": 549
+      },
+      "unresolved_count": 0,
+      "unresolved_without_broker_number": 0
+    },
+    "auto_trading": {
+      "status_side_mode": {
+        "BUY:FAILED:live": 2,
+        "BUY:UNKNOWN:live": 2
+      },
+      "error_codes": {
+        "APBK0506": 2
+      },
+      "unresolved_count": 2,
+      "unresolved_without_broker_number": 0
+    }
+  },
+  "decisions": {
+    "kr_rank": {
+      "by_decision": {
+        "BUY": 95,
+        "ERROR": 125,
+        "HOLD": 3735,
+        "SELL": 40,
+        "SKIP": 5429
+      },
+      "classified_reason": {
+        "candidate_selected": 3,
+        "confirmation_filter_rejection": 1,
+        "confirmation_price_move": 1,
+        "no_candidate": 39,
+        "other": 6084,
+        "pending_buy_wait": 3283,
+        "selection_window_expired": 6,
+        "shadow_only": 7
+      },
+      "pending_buy_wait_by_kst_date": {
+        "2026-05-28": 2,
+        "2026-05-29": 4,
+        "2026-06-02": 3,
+        "2026-06-04": 98,
+        "2026-07-07": 4,
+        "2026-07-09": 2,
+        "2026-09-01": 758,
+        "2026-09-02": 781,
+        "2026-09-03": 782,
+        "2026-09-04": 782,
+        "2026-09-07": 67
+      }
+    },
+    "us_rank": {
+      "by_decision": {
+        "BUY": 552,
+        "HOLD": 42,
+        "SELL": 2,
+        "SKIP": 124
+      },
+      "classified_reason": {
+        "other": 711,
+        "pending_buy_wait": 9
+      },
+      "pending_buy_wait_by_kst_date": {
+        "2026-05-26": 9
+      }
+    },
+    "auto_trading": {
+      "by_decision": {
+        "BUY": 38,
+        "ERROR": 35,
+        "SKIP": 109
+      },
+      "classified_reason": {
+        "other": 182
+      },
+      "pending_buy_wait_by_kst_date": {}
+    }
+  },
+  "kr_rank": {
+    "fill_join_checks": {
+      "legacy_sell_without_entry_id": 22,
+      "sell_with_explicit_position_id": 53,
+      "open_filled_buy_lots": 0
+    },
+    "performance": {
+      "closed_trades": 75,
+      "first_entry_kst": "2026-05-21",
+      "last_entry_kst": "2026-07-16",
+      "gross": {
+        "count": 75,
+        "sum": -59879.0,
+        "wins": 41,
+        "losses": 34,
+        "flat": 0,
+        "win_rate": 0.54666667,
+        "profit_factor": 0.60440657
+      },
+      "broker_net": {
+        "count": 75,
+        "sum": -78052.0,
+        "wins": 41,
+        "losses": 34,
+        "flat": 0,
+        "win_rate": 0.54666667,
+        "profit_factor": 0.51027732
+      },
+      "gross_return_mean": -0.00676426,
+      "gross_return_median": 0.01834862,
+      "gross_return_min": -0.06335616,
+      "gross_return_max": 0.03448276,
+      "mean_winning_gross_return": 0.01984487,
+      "mean_losing_gross_return": -0.03885173,
+      "net_return_mean": -0.00893103,
+      "net_return_min": -0.06539384,
+      "gross_losses_at_least_5pct": 10,
+      "fees": 1590.0,
+      "taxes": 16604.0,
+      "max_consecutive_losses": 3,
+      "closed_trade_pnl_drawdown_amount_not_account_mdd": 79929.0
+    },
+    "by_entry_window": {
+      "LUNCH": {
+        "closed_trades": 36,
+        "first_entry_kst": "2026-05-21",
+        "last_entry_kst": "2026-07-16",
+        "gross": {
+          "count": 36,
+          "sum": -16792.0,
+          "wins": 19,
+          "losses": 17,
+          "flat": 0,
+          "win_rate": 0.52777778,
+          "profit_factor": 0.71542842
+        },
+        "broker_net": {
+          "count": 36,
+          "sum": -25370.0,
+          "wins": 19,
+          "losses": 17,
+          "flat": 0,
+          "win_rate": 0.52777778,
+          "profit_factor": 0.59622485
+        },
+        "gross_return_mean": -0.00455456,
+        "gross_return_median": 0.01871527,
+        "gross_return_min": -0.05644546,
+        "gross_return_max": 0.02357143,
+        "mean_winning_gross_return": 0.01982489,
+        "mean_losing_gross_return": -0.03180218,
+        "net_return_mean": -0.00671519,
+        "net_return_min": -0.05847445,
+        "gross_losses_at_least_5pct": 2,
+        "fees": 770.0,
+        "taxes": 7874.0
+      },
+      "MORNING": {
+        "closed_trades": 39,
+        "first_entry_kst": "2026-05-21",
+        "last_entry_kst": "2026-07-16",
+        "gross": {
+          "count": 39,
+          "sum": -43087.0,
+          "wins": 22,
+          "losses": 17,
+          "flat": 0,
+          "win_rate": 0.56410256,
+          "profit_factor": 0.53347337
+        },
+        "broker_net": {
+          "count": 39,
+          "sum": -52682.0,
+          "wins": 22,
+          "losses": 17,
+          "flat": 0,
+          "win_rate": 0.56410256,
+          "profit_factor": 0.45434395
+        },
+        "gross_return_mean": -0.00880397,
+        "gross_return_median": 0.01788171,
+        "gross_return_min": -0.06335616,
+        "gross_return_max": 0.03448276,
+        "mean_winning_gross_return": 0.01986212,
+        "mean_losing_gross_return": -0.04590128,
+        "net_return_mean": -0.01097643,
+        "net_return_min": -0.06539384,
+        "gross_losses_at_least_5pct": 8,
+        "fees": 820.0,
+        "taxes": 8730.0
+      }
+    },
+    "by_entry_month": {
+      "2026-05": {
+        "closed_trades": 12,
+        "first_entry_kst": "2026-05-21",
+        "last_entry_kst": "2026-05-29",
+        "gross": {
+          "count": 12,
+          "sum": -20171.0,
+          "wins": 6,
+          "losses": 6,
+          "flat": 0,
+          "win_rate": 0.5,
+          "profit_factor": 0.50742369
+        },
+        "broker_net": {
+          "count": 12,
+          "sum": -24083.0,
+          "wins": 6,
+          "losses": 6,
+          "flat": 0,
+          "win_rate": 0.5,
+          "profit_factor": 0.43728679
+        },
+        "gross_return_mean": -0.01146451,
+        "gross_return_median": 0.00717793,
+        "gross_return_min": -0.05666667,
+        "gross_return_max": 0.03448276,
+        "mean_winning_gross_return": 0.02250919,
+        "mean_losing_gross_return": -0.0454382,
+        "net_return_mean": -0.01364018,
+        "net_return_min": -0.05869504,
+        "gross_losses_at_least_5pct": 5,
+        "fees": 370.0,
+        "taxes": 3542.0
+      },
+      "2026-06": {
+        "closed_trades": 40,
+        "first_entry_kst": "2026-06-01",
+        "last_entry_kst": "2026-06-30",
+        "gross": {
+          "count": 40,
+          "sum": -22053.0,
+          "wins": 23,
+          "losses": 17,
+          "flat": 0,
+          "win_rate": 0.575,
+          "profit_factor": 0.69145855
+        },
+        "broker_net": {
+          "count": 40,
+          "sum": -31608.0,
+          "wins": 23,
+          "losses": 17,
+          "flat": 0,
+          "win_rate": 0.575,
+          "profit_factor": 0.58114018
+        },
+        "gross_return_mean": -0.00467115,
+        "gross_return_median": 0.01885425,
+        "gross_return_min": -0.06335616,
+        "gross_return_max": 0.02145215,
+        "mean_winning_gross_return": 0.01962831,
+        "mean_losing_gross_return": -0.03754689,
+        "net_return_mean": -0.00682778,
+        "net_return_min": -0.06539384,
+        "gross_losses_at_least_5pct": 3,
+        "fees": 780.0,
+        "taxes": 8797.0
+      },
+      "2026-07": {
+        "closed_trades": 23,
+        "first_entry_kst": "2026-07-01",
+        "last_entry_kst": "2026-07-16",
+        "gross": {
+          "count": 23,
+          "sum": -17655.0,
+          "wins": 12,
+          "losses": 11,
+          "flat": 0,
+          "win_rate": 0.52173913,
+          "profit_factor": 0.54661017
+        },
+        "broker_net": {
+          "count": 23,
+          "sum": -22361.0,
+          "wins": 12,
+          "losses": 11,
+          "flat": 0,
+          "win_rate": 0.52173913,
+          "profit_factor": 0.45620136
+        },
+        "gross_return_mean": -0.00795213,
+        "gross_return_median": 0.01680672,
+        "gross_return_min": -0.05384615,
+        "gross_return_max": 0.01971326,
+        "mean_winning_gross_return": 0.01892778,
+        "mean_losing_gross_return": -0.03727568,
+        "net_return_mean": -0.01013192,
+        "net_return_min": -0.05579976,
+        "gross_losses_at_least_5pct": 2,
+        "fees": 440.0,
+        "taxes": 4265.0
+      }
+    },
+    "by_exit_reason": {
+      "ENTRY_FAILED": {
+        "closed_trades": 19,
+        "first_entry_kst": "2026-05-29",
+        "last_entry_kst": "2026-07-16",
+        "gross": {
+          "count": 19,
+          "sum": -63724.0,
+          "wins": 0,
+          "losses": 19,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "broker_net": {
+          "count": 19,
+          "sum": -68026.0,
+          "wins": 0,
+          "losses": 19,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "gross_return_mean": -0.03162071,
+        "gross_return_median": -0.03115265,
+        "gross_return_min": -0.04942339,
+        "gross_return_max": -0.00212766,
+        "mean_winning_gross_return": null,
+        "mean_losing_gross_return": -0.03162071,
+        "net_return_mean": -0.03370655,
+        "net_return_min": -0.0514827,
+        "gross_losses_at_least_5pct": 0,
+        "fees": 340.0,
+        "taxes": 3977.0
+      },
+      "STOP_LOSS": {
+        "closed_trades": 15,
+        "first_entry_kst": "2026-05-21",
+        "last_entry_kst": "2026-07-16",
+        "gross": {
+          "count": 15,
+          "sum": -87641.0,
+          "wins": 0,
+          "losses": 15,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "broker_net": {
+          "count": 15,
+          "sum": -91354.0,
+          "wins": 0,
+          "losses": 15,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "gross_return_mean": -0.04801102,
+        "gross_return_median": -0.05155642,
+        "gross_return_min": -0.06335616,
+        "gross_return_max": -0.03070761,
+        "mean_winning_gross_return": null,
+        "mean_losing_gross_return": -0.04801102,
+        "net_return_mean": -0.05009409,
+        "net_return_min": -0.06539384,
+        "gross_losses_at_least_5pct": 10,
+        "fees": 340.0,
+        "taxes": 3379.0
+      },
+      "TARGET": {
+        "closed_trades": 41,
+        "first_entry_kst": "2026-05-21",
+        "last_entry_kst": "2026-07-15",
+        "gross": {
+          "count": 41,
+          "sum": 91486.0,
+          "wins": 41,
+          "losses": 0,
+          "flat": 0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "broker_net": {
+          "count": 41,
+          "sum": 81328.0,
+          "wins": 41,
+          "losses": 0,
+          "flat": 0,
+          "win_rate": 1.0,
+          "profit_factor": null
+        },
+        "gross_return_mean": 0.01984487,
+        "gross_return_median": 0.01946472,
+        "gross_return_min": 0.01648352,
+        "gross_return_max": 0.03448276,
+        "mean_winning_gross_return": 0.01984487,
+        "mean_losing_gross_return": null,
+        "net_return_mean": 0.01760996,
+        "net_return_min": 0.0142674,
+        "gross_losses_at_least_5pct": 0,
+        "fees": 910.0,
+        "taxes": 9248.0
+      }
+    },
+    "entries_by_status": {
+      "BOUGHT": 75,
+      "NO_CANDIDATE": 58,
+      "SELECTED": 4,
+      "SKIPPED": 2
+    },
+    "entries_by_month_status": {
+      "2026-05:LUNCH:BOUGHT": 6,
+      "2026-05:LUNCH:SELECTED": 1,
+      "2026-05:MORNING:BOUGHT": 6,
+      "2026-05:MORNING:SELECTED": 1,
+      "2026-06:LUNCH:BOUGHT": 19,
+      "2026-06:LUNCH:SELECTED": 1,
+      "2026-06:MORNING:BOUGHT": 21,
+      "2026-07:LUNCH:BOUGHT": 11,
+      "2026-07:LUNCH:NO_CANDIDATE": 10,
+      "2026-07:MORNING:BOUGHT": 12,
+      "2026-07:MORNING:NO_CANDIDATE": 10,
+      "2026-08:LUNCH:NO_CANDIDATE": 20,
+      "2026-08:MORNING:NO_CANDIDATE": 18,
+      "2026-08:MORNING:SKIPPED": 2,
+      "2026-09:MORNING:SELECTED": 1
+    },
+    "retained_observations": {
+      "first_date": "2026-08-10",
+      "last_date": "2026-09-01",
+      "unique_dates": 16,
+      "by_window": {
+        "LUNCH": {
+          "windows": 15,
+          "snapshots": 387,
+          "last_snapshot_raw_top10_has_no_rate_band_candidate": 15,
+          "last_snapshot_full_top10": 15,
+          "last_snapshot_tenth_rate_at_or_above_ceiling": 15
+        },
+        "MORNING": {
+          "windows": 16,
+          "snapshots": 392,
+          "last_snapshot_raw_top10_has_no_rate_band_candidate": 0,
+          "last_snapshot_full_top10": 16,
+          "last_snapshot_tenth_rate_at_or_above_ceiling": 0
+        }
+      }
+    }
+  },
+  "us_rank": {
+    "fill_join_checks": {
+      "sell_with_explicit_position_id": 2,
+      "open_filled_buy_lots": 0
+    },
+    "performance": {
+      "closed_trades": 2,
+      "first_entry_kst": "2026-05-22",
+      "last_entry_kst": "2026-05-26",
+      "gross": {
+        "count": 2,
+        "sum": -20.8085,
+        "wins": 0,
+        "losses": 2,
+        "flat": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0
+      },
+      "broker_net": {
+        "count": 0,
+        "sum": null,
+        "wins": 0,
+        "losses": 0,
+        "flat": 0,
+        "win_rate": null,
+        "profit_factor": null
+      },
+      "gross_return_mean": -0.08755407,
+      "gross_return_median": -0.08755407,
+      "gross_return_min": -0.09756098,
+      "gross_return_max": -0.07754716,
+      "mean_winning_gross_return": null,
+      "mean_losing_gross_return": -0.08755407,
+      "net_return_mean": null,
+      "net_return_min": null,
+      "gross_losses_at_least_5pct": 2,
+      "fees": null,
+      "taxes": null,
+      "max_consecutive_losses": 2,
+      "closed_trade_pnl_drawdown_amount_not_account_mdd": 20.8085
+    },
+    "by_entry_window": {
+      "US": {
+        "closed_trades": 2,
+        "first_entry_kst": "2026-05-22",
+        "last_entry_kst": "2026-05-26",
+        "gross": {
+          "count": 2,
+          "sum": -20.8085,
+          "wins": 0,
+          "losses": 2,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "broker_net": {
+          "count": 0,
+          "sum": null,
+          "wins": 0,
+          "losses": 0,
+          "flat": 0,
+          "win_rate": null,
+          "profit_factor": null
+        },
+        "gross_return_mean": -0.08755407,
+        "gross_return_median": -0.08755407,
+        "gross_return_min": -0.09756098,
+        "gross_return_max": -0.07754716,
+        "mean_winning_gross_return": null,
+        "mean_losing_gross_return": -0.08755407,
+        "net_return_mean": null,
+        "net_return_min": null,
+        "gross_losses_at_least_5pct": 2,
+        "fees": null,
+        "taxes": null
+      }
+    },
+    "by_entry_month": {
+      "2026-05": {
+        "closed_trades": 2,
+        "first_entry_kst": "2026-05-22",
+        "last_entry_kst": "2026-05-26",
+        "gross": {
+          "count": 2,
+          "sum": -20.8085,
+          "wins": 0,
+          "losses": 2,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "broker_net": {
+          "count": 0,
+          "sum": null,
+          "wins": 0,
+          "losses": 0,
+          "flat": 0,
+          "win_rate": null,
+          "profit_factor": null
+        },
+        "gross_return_mean": -0.08755407,
+        "gross_return_median": -0.08755407,
+        "gross_return_min": -0.09756098,
+        "gross_return_max": -0.07754716,
+        "mean_winning_gross_return": null,
+        "mean_losing_gross_return": -0.08755407,
+        "net_return_mean": null,
+        "net_return_min": null,
+        "gross_losses_at_least_5pct": 2,
+        "fees": null,
+        "taxes": null
+      }
+    },
+    "by_exit_reason": {
+      "STOP_LOSS": {
+        "closed_trades": 2,
+        "first_entry_kst": "2026-05-22",
+        "last_entry_kst": "2026-05-26",
+        "gross": {
+          "count": 2,
+          "sum": -20.8085,
+          "wins": 0,
+          "losses": 2,
+          "flat": 0,
+          "win_rate": 0.0,
+          "profit_factor": 0.0
+        },
+        "broker_net": {
+          "count": 0,
+          "sum": null,
+          "wins": 0,
+          "losses": 0,
+          "flat": 0,
+          "win_rate": null,
+          "profit_factor": null
+        },
+        "gross_return_mean": -0.08755407,
+        "gross_return_median": -0.08755407,
+        "gross_return_min": -0.09756098,
+        "gross_return_max": -0.07754716,
+        "mean_winning_gross_return": null,
+        "mean_losing_gross_return": -0.08755407,
+        "net_return_mean": null,
+        "net_return_min": null,
+        "gross_losses_at_least_5pct": 2,
+        "fees": null,
+        "taxes": null
+      }
+    },
+    "trade_table_status": {
+      "CLOSED": 2,
+      "FAILED": 111
+    },
+    "trade_table_closed_gross_profit": -22.5385
+  },
+  "backtests": {
+    "run_statuses": {
+      "COMPLETED": 39
+    },
+    "trade_sides": {
+      "BUY": 6738,
+      "HOLD": 688,
+      "SELL": 399
+    },
+    "unique_full_parameter_sets": 35,
+    "duplicate_extra_runs": 4,
+    "unique_symbol_date_windows": 23,
+    "final_asset_mismatch_count": 0,
+    "return_arithmetic_mismatch_count": 0,
+    "trade_amount_mismatch_count": 0,
+    "by_algorithm": {
+      "LAOR_INFINITE_V2": {
+        "runs": 17,
+        "symbols": [
+          "SOXL",
+          "TQQQ"
+        ],
+        "min_return_rate": 0.002499999711999976,
+        "max_return_rate": 0.6184439783874013,
+        "largest_reported_drawdown_rate": 0.43243195939622464
+      },
+      "LAOR_INFINITE_V2_NATIVE": {
+        "runs": 22,
+        "symbols": [
+          "SOXL",
+          "TQQQ"
+        ],
+        "min_return_rate": -0.11017784890109943,
+        "max_return_rate": 1.287415199816161,
+        "largest_reported_drawdown_rate": 0.45951956787858733
+      }
+    }
+  },
+  "data_quality": {
+    "cache_by_market": {
+      "KR": 14,
+      "US": 660
+    },
+    "cache_nonpositive_prices": 0,
+    "cache_invalid_ohlc": 0,
+    "cache_negative_volume": 0,
+    "position_negative_quantity": 0,
+    "position_evaluation_mismatch": 0
+  }
+}
