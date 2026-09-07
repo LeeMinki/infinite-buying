@@ -343,13 +343,7 @@ async function evaluateSellPath(userId, strategy, {
     // 실제 잔고는 그 관리수량의 상한으로만 사용해 외부 보유분을 절대 매도하지 않는다.
     const managed = managedLivePosition(userId, strategy, openTrade, positionBuyOrder, accountHoldingQuantity);
     holdingQuantity = managed.remainingQuantity;
-    averagePrice = Number(
-      openTrade?.entryPrice
-      || positionBuyOrder?.averageFilledPrice
-      || strategy.holdingAveragePrice
-      || balance.averagePrice
-      || 0
-    );
+    averagePrice = Number(positionBuyOrder?.averageFilledPrice || 0);
   }
 
   // (1) 직전 tick에 낸 매도 주문이 살아 있으면 체결 여부부터 확정한다.
@@ -392,6 +386,14 @@ async function evaluateSellPath(userId, strategy, {
   }
 
   if (holdingQuantity <= 0) {
+    if (positionWasLive) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', tradeId: openTrade?.id, tradeDate,
+        selectedSymbol: symbol, selectedExchange: exchange,
+        holdingQuantity: 0, liveOrderEnabled, evaluationSource,
+        reason: `${symbol} 전략 관리 잔고가 0이지만 주문별 매도 체결이 확정되지 않아 보유 기록과 손익을 유지하고 계좌 조정을 기다립니다.`
+      });
+    }
     // 잔고가 비었다(외부 매도·이미 체결 등). 미청산 매매가 남아 있으면 마지막 가격으로 닫고 보유를 해제한다.
     if (openTrade && openTrade.status !== 'CLOSED') {
       const exitReason = openTrade.exitReason || 'FORCE_CLOSE';
@@ -443,6 +445,10 @@ async function evaluateSellPath(userId, strategy, {
       orderId: working?.id,
       reason: `${symbol}은 실주문으로 만든 포지션이지만 서버 전역 실주문 차단이 켜져 있어 신규 매도·취소·재호가를 보내지 않습니다. 기존 주문과 잔고의 체결 상태 확인만 계속합니다.`
     });
+  }
+
+  if (positionWasLive && !(averagePrice > 0)) {
+    return saveUnconfirmedBuyPrice(userId, strategy, openTrade, positionBuyOrder, evaluationSource);
   }
 
   const forceCloseTriggered = isUsForceCloseTime(new Date(), strategy.forceCloseKst);
@@ -909,7 +915,7 @@ async function reconcileWorkingSell(userId, strategy, ctx) {
     refreshed = null;
   }
   const filledQty = Math.floor(Number(refreshed?.filledQuantity || 0));
-  const exitFillPrice = Number(refreshed?.averageFilledPrice || 0) || Number(working.orderPrice || currentPrice || 0);
+  const exitFillPrice = Number(refreshed?.averageFilledPrice || working.averageFilledPrice || 0);
 
   if (refreshed?.status === 'FILLED') {
     updateFilledOrderFromRefresh(userId, working, refreshed);
@@ -933,7 +939,7 @@ async function reconcileWorkingSell(userId, strategy, ctx) {
         averagePrice: managed.averagePrice,
         cashAvailable: managed.cashAvailable,
         exitFillPrice,
-        filledQty: filledQty > 0 ? filledQty : working.quantity
+        filledQty: Math.min(integerQuantity(working.quantity), Math.max(filledQty, integerQuantity(working.filledQuantity)))
       });
     }
     return { continueAfterCancellation: true, ...managed };
@@ -1089,6 +1095,20 @@ function finalizeSellClose(userId, strategy, ctx) {
     working, openTrade, symbol, exchange, tradeDate,
     averagePrice, exitFillPrice, filledQty, cashAvailable, liveOrderEnabled, evaluationSource
   } = ctx;
+  if (working?.liveOrderEnabled) {
+    const buyOrder = repo.getLatestBuyOrderForTrade(openTrade.id);
+    const confirmedBuyQuantity = managedBuyQuantityCap(buyOrder);
+    const confirmedSellQuantity = filledSellQuantityForTrade(userId, strategy.id, openTrade.id);
+    if (!(exitFillPrice > 0) || !(averagePrice > 0) || !(filledQty > 0)
+      || confirmedBuyQuantity <= 0 || confirmedSellQuantity < confirmedBuyQuantity) {
+      return saveDecision(userId, strategy, {
+        decision: 'SKIP', tradeId: openTrade.id, tradeDate,
+        selectedSymbol: symbol, selectedExchange: exchange,
+        liveOrderEnabled, evaluationSource, orderId: working.id,
+        reason: `${symbol} 실제 매도 체결수량·평균체결가를 모두 확인하지 못해 청산과 손익 확정을 보류합니다. 다음 체결 조회에서 다시 확인합니다.`
+      });
+    }
+  }
   const sellReason = working?.sellReason || openTrade.exitReason || 'FORCE_CLOSE';
   const profitRate = averagePrice > 0 && exitFillPrice > 0 ? (exitFillPrice - averagePrice) / averagePrice : 0;
   if (working) {
@@ -1156,7 +1176,7 @@ async function reconcileTargetSell(userId, strategy, ctx) {
     refreshed = null;
   }
   const filledQty = Math.floor(Number(refreshed?.filledQuantity || 0));
-  const exitFillPrice = Number(refreshed?.averageFilledPrice || 0) || Number(working.orderPrice || currentPrice || 0);
+  const exitFillPrice = Number(refreshed?.averageFilledPrice || working.averageFilledPrice || 0);
   if (refreshed?.status === 'FILLED') {
     updateFilledOrderFromRefresh(userId, working, refreshed);
     let managed;
@@ -1181,7 +1201,7 @@ async function reconcileTargetSell(userId, strategy, ctx) {
         averagePrice: managed.averagePrice,
         cashAvailable: managed.cashAvailable,
         exitFillPrice,
-        filledQty: filledQty > 0 ? filledQty : working.quantity
+        filledQty: Math.min(integerQuantity(working.quantity), Math.max(filledQty, integerQuantity(working.filledQuantity)))
       });
     }
     return { continueAfterCancellation: true, ...managed };
@@ -1264,15 +1284,14 @@ function updateFilledOrderFromRefresh(userId, order, refreshed) {
     integerQuantity(order.filledQuantity),
     integerQuantity(refreshed.filledQuantity)
   );
-  if (filledQuantity <= 0) filledQuantity = orderedQuantity;
   if (orderedQuantity > 0) filledQuantity = Math.min(filledQuantity, orderedQuantity);
   return repo.updateOrder(userId, order.id, {
     status: 'FILLED',
-    filledQuantity,
+    filledQuantity: filledQuantity > 0 ? filledQuantity : null,
     remainingQuantity: 0,
     averageFilledPrice: Number(refreshed.averageFilledPrice || 0) > 0
       ? Number(refreshed.averageFilledPrice)
-      : (order.averageFilledPrice ?? order.orderPrice ?? null),
+      : (order.averageFilledPrice ?? null),
     responsePayloadMasked: refreshed.responsePayloadMasked || null,
     errorMessage: null
   });
@@ -1377,7 +1396,9 @@ async function ensureUsTargetSellOrder(userId, trading, strategy, trade, buyOrde
   const symbol = trade.symbol || buyOrder.symbol;
   const exchange = trade.exchange || buyOrder.exchange || strategy.exchange;
   let quantity = Math.floor(Number(buyOrder.filledQuantity || trade.entryQuantity || buyOrder.quantity || 0));
-  const averageFilledPrice = Number(buyOrder.averageFilledPrice || trade.entryPrice || buyOrder.orderPrice || 0);
+  const averageFilledPrice = buyOrder.liveOrderEnabled
+    ? Number(buyOrder.averageFilledPrice || 0)
+    : Number(buyOrder.averageFilledPrice || trade.entryPrice || buyOrder.orderPrice || 0);
   if (quantity <= 0 || averageFilledPrice <= 0) return null;
   if (buyOrder.liveOrderEnabled) {
     // 사용자 토글은 기존 live 포지션의 보호 주문을 막지 않지만, global OFF는 모든 KIS 쓰기의
@@ -1433,6 +1454,16 @@ async function ensureUsTargetSellOrder(userId, trading, strategy, trade, buyOrde
   return placeOrder(userId, trading, baseOrder, {
     liveOrderEnabled: true,
     decisionReason
+  });
+}
+
+function saveUnconfirmedBuyPrice(userId, strategy, trade, buyOrder, evaluationSource) {
+  return saveDecision(userId, strategy, {
+    decision: 'SKIP', tradeId: trade.id, tradeDate: etTradeDate(), tradeSeq: trade.tradeSeq,
+    selectedSymbol: trade.symbol, selectedExchange: trade.exchange,
+    liveOrderEnabled: Boolean(buyOrder?.liveOrderEnabled && isGlobalLiveOrderEnabled()),
+    evaluationSource, orderId: buyOrder?.id,
+    reason: `${trade.symbol} 주문별 매수 체결수량은 확인됐지만 실제 평균체결가가 없어 계좌 평단이나 선택가로 대신 확정하지 않고 다음 체결 조회를 기다립니다.`
   });
 }
 
@@ -1550,7 +1581,8 @@ async function evaluateEntryPath(userId, strategy, {
       const filledQuantity = capObservedBuyQuantity(staleOrder, accountQuantity);
       const entryLiveOrderEnabled = Boolean(staleOrder.liveOrderEnabled && globalLiveOrderEnabled);
       if (filledQuantity > 0) {
-        const filledAvg = Number(staleOrder.averageFilledPrice || trade.entryPrice || balance.averagePrice || trade.selectedPrice || 0);
+        const filledAvg = Number(staleOrder.averageFilledPrice || 0);
+        if (!(filledAvg > 0)) return saveUnconfirmedBuyPrice(userId, strategy, trade, staleOrder, evaluationSource);
         repo.confirmTradeHolding(userId, strategy.id, trade.id, {
           symbol: trade.symbol,
           symbolName: trade.symbolName,
@@ -1607,7 +1639,7 @@ async function evaluateEntryPath(userId, strategy, {
         liveOrderEnabled: false,
         evaluationSource,
         orderId: staleOrder?.id,
-        reason: `${trade.symbol} 이전 거래일 실주문이 남아 있지만 서버 전역 실주문 차단 중이라 취소하지 않고 신규 매수도 시작하지 않습니다.`
+        reason: `${trade.symbol} 이전 거래일 주문의 취소를 확인하지 못해 매매를 유지하고 신규 매수도 시작하지 않습니다.`
       });
     }
     if (staleOrder?.liveOrderEnabled) {
@@ -1629,13 +1661,8 @@ async function evaluateEntryPath(userId, strategy, {
       const accountQuantity = integerQuantity(postCancelBalance.quantity);
       const filledQuantity = capObservedBuyQuantity(refreshedOrder, accountQuantity);
       if (filledQuantity > 0) {
-        const filledAvg = Number(
-          refreshedOrder.averageFilledPrice
-          || trade.entryPrice
-          || postCancelBalance.averagePrice
-          || trade.selectedPrice
-          || 0
-        );
+        const filledAvg = Number(refreshedOrder.averageFilledPrice || 0);
+        if (!(filledAvg > 0)) return saveUnconfirmedBuyPrice(userId, strategy, trade, refreshedOrder, evaluationSource);
         repo.confirmTradeHolding(userId, strategy.id, trade.id, {
           symbol: trade.symbol, symbolName: trade.symbolName,
           exchange: trade.exchange || strategy.exchange,
@@ -1730,7 +1757,7 @@ async function evaluateEntryPath(userId, strategy, {
     let accountQuantity = integerQuantity(balance.quantity);
     let filledQuantity = capObservedBuyQuantity(reconciledBuyOrder, accountQuantity);
     let partialBuyNote = '';
-    const buyCap = managedBuyQuantityCap(reconciledBuyOrder);
+    const buyCap = integerQuantity(reconciledBuyOrder?.quantity);
     const buyIsTerminal = ['FILLED', 'CANCELED', 'REJECTED'].includes(reconciledBuyOrder?.status);
     // 일부만 체결된 BUY의 잔량이 살아 있으면 목표가·손절 주문이 미체결 BUY에 막힌다.
     // global ON에서는 잔량 취소를 확정하고 잔고를 다시 읽은 뒤에만 포지션 수량을 굳힌다.
@@ -1766,7 +1793,10 @@ async function evaluateEntryPath(userId, strategy, {
       }
     }
     if (filledQuantity > 0) {
-      const filledAvg = Number(reconciledBuyOrder?.averageFilledPrice || trade.entryPrice || balance.averagePrice || trade.selectedPrice || 0);
+      const filledAvg = entryWasLive
+        ? Number(reconciledBuyOrder?.averageFilledPrice || 0)
+        : Number(reconciledBuyOrder?.averageFilledPrice || trade.entryPrice || balance.averagePrice || trade.selectedPrice || 0);
+      if (!(filledAvg > 0)) return saveUnconfirmedBuyPrice(userId, strategy, trade, reconciledBuyOrder, evaluationSource);
       repo.confirmTradeHolding(userId, strategy.id, trade.id, {
         symbol,
         symbolName: trade.symbolName,
@@ -1783,7 +1813,6 @@ async function evaluateEntryPath(userId, strategy, {
           entryQuantity: filledQuantity
         }, {
           ...buyOrder,
-          status: 'FILLED',
           filledQuantity,
           averageFilledPrice: filledAvg
         });
@@ -1824,7 +1853,8 @@ async function evaluateEntryPath(userId, strategy, {
         const refreshedBuy = repo.getOrder(userId, activeOrder.id) || activeOrder;
         const refilled = capObservedBuyQuantity(refreshedBuy, recheck.quantity);
         if (refilled > 0) {
-          const filledAvg = Number(refreshedBuy.averageFilledPrice || trade.entryPrice || recheck.averagePrice || trade.selectedPrice || 0);
+          const filledAvg = Number(refreshedBuy.averageFilledPrice || 0);
+          if (!(filledAvg > 0)) return saveUnconfirmedBuyPrice(userId, strategy, trade, refreshedBuy, evaluationSource);
           repo.confirmTradeHolding(userId, strategy.id, trade.id, {
             symbol, symbolName: trade.symbolName, exchange, quantity: refilled, averagePrice: filledAvg
           });
@@ -1878,7 +1908,11 @@ async function evaluateEntryPath(userId, strategy, {
       evaluationSource,
       reason: entryWasLive && !globalLiveOrderEnabled
         ? `${symbol} 실매수 주문의 체결 상태를 확인했지만 서버 전역 실주문 차단 중이라 취소·후속 주문 없이 상태 확인만 계속합니다.`
-        : `${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다. 체결을 기다립니다.`
+        : ['UNKNOWN', 'REQUESTED'].includes(activeOrder?.status)
+          ? `${symbol} 매수 주문의 접수 결과가 확인되지 않아 재전송과 보유 전환을 보류합니다. 계좌 잔고만으로 체결을 확정하지 않습니다.`
+          : accountQuantity > 0 && filledQuantity <= 0
+            ? `${symbol} 계좌 잔고는 있지만 이 매수 주문의 체결수량이 확인되지 않아 외부 보유분으로 간주하고 보유 전환을 보류합니다.`
+            : `${symbol} 매수 주문이 접수됐으나 아직 체결되지 않아 보유 전환을 보류합니다. 체결을 기다립니다.`
     });
   }
   const failedAttempts = repo.countFailedOrders(idempotencyKey);
@@ -2307,12 +2341,16 @@ function integerQuantity(value) {
   return Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
 }
 
-// 한 BUY 주문이 만들 수 있는 전략 포지션의 절대 상한. terminal 부분체결은 실제 확인된
-// filled_quantity만 인정하고, 진행 중 주문은 계좌 잔고가 먼저 반영될 수 있어 ordered quantity까지 허용한다.
+// live 포지션의 귀속은 주문번호가 있는 BUY의 확인된 체결수량으로만 증명한다.
+// 접수/체결 상태 문자열이나 주문수량, 이후 관찰된 계좌 잔고는 체결수량의 대체 증거가 아니다.
 function managedBuyQuantityCap(buyOrder) {
   if (!buyOrder) return 0;
   const ordered = integerQuantity(buyOrder.quantity);
   const filled = integerQuantity(buyOrder.filledQuantity);
+  if (buyOrder.liveOrderEnabled) {
+    if (!String(buyOrder.kisOrderNo || '').trim() || filled <= 0) return 0;
+    return ordered > 0 ? Math.min(ordered, filled) : filled;
+  }
   const terminal = ['FILLED', 'CANCELED', 'REJECTED'].includes(buyOrder.status);
   if (terminal && filled > 0) return ordered > 0 ? Math.min(ordered, filled) : filled;
   if (terminal && buyOrder.status === 'FILLED') return ordered;
@@ -2320,8 +2358,7 @@ function managedBuyQuantityCap(buyOrder) {
   return ordered || filled;
 }
 
-// BUY 직전 잔고 0 gate를 통과한 live 주문만 계좌 잔고 증가를 체결 증거로 쓴다.
-// 그래도 주문수량(terminal 부분체결이면 체결수량)을 넘지 않게 잘라 외부 보유분 혼입을 막는다.
+// 계좌 잔고는 이미 확인된 주문별 체결수량의 상한일 뿐, 신규 체결의 증거가 아니다.
 function capObservedBuyQuantity(buyOrder, accountQuantity) {
   const account = integerQuantity(accountQuantity);
   const cap = managedBuyQuantityCap(buyOrder);
@@ -2340,8 +2377,7 @@ function filledSellQuantityForTrade(userId, strategyId, tradeId) {
   return orders
     .filter((order) => order.tradeId === tradeId && order.side === 'SELL' && order.liveOrderEnabled)
     .reduce((sum, order) => {
-      let filled = integerQuantity(order.filledQuantity);
-      if (filled <= 0 && order.status === 'FILLED') filled = integerQuantity(order.quantity);
+      const filled = integerQuantity(order.filledQuantity);
       const ordered = integerQuantity(order.quantity);
       return sum + (ordered > 0 ? Math.min(filled, ordered) : filled);
     }, 0);
@@ -2388,14 +2424,7 @@ async function refreshManagedLivePosition(userId, strategy, trade, {
   );
   return {
     holdingQuantity: managed.remainingQuantity,
-    averagePrice: Number(
-      refreshedTrade.entryPrice
-      || buyOrder?.averageFilledPrice
-      || strategy.holdingAveragePrice
-      || balance.averagePrice
-      || averagePrice
-      || 0
-    ),
+    averagePrice: Number(buyOrder?.averageFilledPrice || 0),
     cashAvailable: Number(balance.cashAvailable || cashAvailable || 0)
   };
 }

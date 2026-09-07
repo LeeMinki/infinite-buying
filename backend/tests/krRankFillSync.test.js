@@ -34,16 +34,16 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-daily-ccld')) {
       state.historyCalls = (state.historyCalls || 0) + 1;
       state.historyUrls = [...(state.historyUrls || []), text];
-      return json({ rt_cd: '0', output1: state.history || [] });
+      return json({ rt_cd: '0', ctx_area_fk100: '', ctx_area_nk100: '', output1: state.history || [] });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-period-trade-profit')) {
       state.realizedCalls = (state.realizedCalls || 0) + 1;
       state.realizedUrls = [...(state.realizedUrls || []), text];
-      return json({ rt_cd: '0', output1: state.realized || [] });
+      return json({ rt_cd: '0', ctx_area_fk100: '', ctx_area_nk100: '', output1: state.realized || [] });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl')) {
       // 미체결 폴백 — 본 테스트에서는 사용되지 않으므로 빈 응답.
-      return json({ rt_cd: '0', output: [] });
+      return json({ rt_cd: '0', ctx_area_fk100: '', ctx_area_nk100: '', output: [] });
     }
     return json({ rt_cd: '0', output: {} });
   };

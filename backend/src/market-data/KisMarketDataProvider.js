@@ -1,5 +1,6 @@
 import { env } from '../config/env.js';
 import { getAuthContext } from '../services/kisAuthService.js';
+import { runKisRequest } from '../services/kisRequestQueue.js';
 
 const DEFAULT_EXCHANGE = 'NAS';
 const MARKET_ERROR_MESSAGE = '시세 조회에 실패했습니다. 종목, 기간, KIS API 상태를 확인하세요';
@@ -499,7 +500,7 @@ export class KisMarketDataProvider {
     for (const [key, value] of Object.entries(query || {})) {
       url.searchParams.set(key, value);
     }
-    return requestWithRetry(async () => {
+    return requestWithRetry(() => runKisRequest(context, async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), env.kisTimeoutMs);
       try {
@@ -516,7 +517,8 @@ export class KisMarketDataProvider {
           },
           signal: controller.signal
         });
-        const data = await response.json().catch(() => ({}));
+        const data = await response.json();
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('invalid KIS response');
         if (!response.ok || isFailureResponse(data)) {
           const status = response.status >= 400 ? response.status : 502;
           // KIS 응답 진단 필드(rt_cd, msg_cd, msg1)를 에러 메시지에 포함해야
@@ -530,7 +532,8 @@ export class KisMarketDataProvider {
           ].filter(Boolean).join(', ');
           const err = new Error(detail ? `${MARKET_ERROR_MESSAGE} (${detail})` : MARKET_ERROR_MESSAGE);
           err.status = status;
-          err.transient = status >= 500 || status === 429;
+          err.transient = response.status >= 500 || response.status === 429
+            || String(data?.msg_cd || '').startsWith('EGW');
           throw err;
         }
         return data;
@@ -550,7 +553,7 @@ export class KisMarketDataProvider {
       } finally {
         clearTimeout(timeout);
       }
-    });
+    }));
   }
 }
 
@@ -626,7 +629,7 @@ function normalizeSignedNumber(value) {
 
 function isFailureResponse(data) {
   const rtCd = data?.rt_cd ?? data?.rtCd;
-  return rtCd != null && String(rtCd) !== '0';
+  return String(rtCd ?? '') !== '0';
 }
 
 function normalizeSymbol(value) {

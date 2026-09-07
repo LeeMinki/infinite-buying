@@ -142,17 +142,17 @@ function withMockedFetch(state, run) {
       const openOrders = state.cancelCalls > 0 && state.openOrdersAfterCancel
         ? state.openOrdersAfterCancel
         : state.openOrders;
-      return json({ rt_cd: '0', output: openOrders || [] });
+      return json({ rt_cd: '0', ctx_area_fk100: '', ctx_area_nk100: '', output: openOrders || [] });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-daily-ccld')) {
       state.historyCalls = (state.historyCalls || 0) + 1;
       const history = state.cancelCalls > 0 && state.historyAfterCancel
         ? state.historyAfterCancel
         : state.history;
-      return json({ rt_cd: '0', output1: history || [] });
+      return json({ rt_cd: '0', ctx_area_fk100: '', ctx_area_nk100: '', output1: history || [] });
     }
     if (text.includes('/uapi/domestic-stock/v1/trading/inquire-balance')) {
-      return json({ rt_cd: '0', output1: state.holdings || [], output2: [{ dnca_tot_amt: String(state.cash ?? 0) }] });
+      return json({ rt_cd: '0', ctx_area_fk100: '', ctx_area_nk100: '', output1: state.holdings || [], output2: [{ dnca_tot_amt: String(state.cash ?? 0) }] });
     }
     if (options.method === 'POST' && text.includes('/uapi/domestic-stock/v1/trading/order-rvsecncl')) {
       state.cancelCalls = (state.cancelCalls || 0) + 1;
@@ -2678,8 +2678,15 @@ test('한국 랭킹: 주문 응답 timeout은 UNKNOWN intent를 남겨 같은 BU
       });
       await withMockedDate('2026-07-21T00:11:00Z', async () => {
         const next = await service.evaluateStrategy(user.id, strategy.id);
-        assert.equal(next.decision.decision, 'SKIP');
-        assert.match(next.decision.reason, /아직 체결되지 않아 보유 전환을 보류/);
+        assert.equal(next.decision.decision, 'ERROR');
+        assert.match(next.decision.reason, /2026-07-21.*접수 여부/);
+        assert.equal(next.strategy.status, 'RUNNING');
+        assert.equal(next.strategy.lastErrorMessage, next.decision.reason);
+        assert.equal(next.strategy.orderAttention.status, 'UNKNOWN');
+        const repeated = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+        assert.equal(repeated.decision, null);
+        assert.equal(repeated.strategy.lastDecision, 'ERROR');
+        assert.equal(repeated.strategy.holdingSymbol, null);
       });
     });
 

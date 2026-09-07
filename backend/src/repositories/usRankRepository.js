@@ -407,7 +407,8 @@ export function listOrders(userId, { strategyId = null, limit = 50, offset = 0 }
 
 // 실주문 중 KIS 체결조회로 average_filled_price를 채워야 하는 후보.
 // kis_order_no가 비어 있으면 매칭할 수 없으므로 제외한다. 이미 FILLED로 끝난 과거 주문도
-// 실체결가/체결수량이 비어 있으면 한 번 더 조회해 화면 가격을 KIS 앱과 맞춘다.
+// 실체결가/체결수량이 비어 있으면 다시 조회한다. 부분체결 후 취소·거부된 주문도
+// 체결가가 늦게 도착할 수 있으므로 양수 체결수량이 있으면 가격 보정 대상에 포함한다.
 export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 } = {}) {
   const params = [userId];
   let where = `
@@ -425,6 +426,11 @@ export function listFillSyncCandidates(userId, { strategyId = null, limit = 20 }
           OR filled_quantity IS NULL
           OR filled_quantity <= 0
         )
+      )
+      OR (
+        status IN ('CANCELED', 'REJECTED')
+        AND COALESCE(filled_quantity, 0) > 0
+        AND (average_filled_price IS NULL OR average_filled_price <= 0)
       )
     )
   `;

@@ -34,7 +34,7 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-ccnl')) {
       state.historyCalls = (state.historyCalls || 0) + 1;
       state.historyUrls = [...(state.historyUrls || []), text];
-      return json({ rt_cd: '0', output: state.history || [] });
+      return json({ rt_cd: '0', ctx_area_fk200: '', ctx_area_nk200: '', output: state.history || [] });
     }
     return json({ rt_cd: '0', output: {} });
   };
@@ -239,6 +239,45 @@ test('syncOrderFills (US): 체결 0인 취소·거부 상태도 ACCEPTED에서 t
 
   assert.equal(repo.getOrder(user.id, canceled.id).status, 'CANCELED');
   assert.equal(repo.getOrder(user.id, rejected.id).status, 'REJECTED');
+});
+
+test('syncOrderFills (US): 취소·거부된 부분체결 주문도 늦게 도착한 실제 체결가를 보완한다', async () => {
+  const strategy = createStrategy();
+  const trade = createTrade(strategy.id, { symbol: 'LATEPRICE' });
+  const orders = ['CANCELED', 'REJECTED'].map((status) => {
+    const order = createAcceptedSellOrder(strategy.id, {
+      tradeId: trade.id, symbol: 'LATEPRICE', kisOrderNo: `LATE-${status}`, quantity: 10
+    });
+    return repo.updateOrder(user.id, order.id, {
+      status, filledQuantity: 4, remainingQuantity: 0, averageFilledPrice: null
+    });
+  });
+  const canceledUnfilled = createAcceptedSellOrder(strategy.id, {
+    tradeId: trade.id, symbol: 'LATEPRICE', kisOrderNo: 'UNFILLED-CANCEL', quantity: 10
+  });
+  repo.updateOrder(user.id, canceledUnfilled.id, {
+    status: 'CANCELED', filledQuantity: 0, remainingQuantity: 0, averageFilledPrice: null
+  });
+  const candidates = repo.listFillSyncCandidates(user.id, { strategyId: strategy.id });
+  assert.deepEqual(candidates.map((order) => order.id).sort((a, b) => a - b), orders.map((order) => order.id));
+  const state = {
+    history: [
+      { odno: 'LATE-CANCELED', ft_ord_qty: '10', ft_ccld_qty: '4', nccs_qty: '0', ft_ccld_unpr3: '49', rvse_cncl_dvsn: '02', prcs_stat_name: '완료' },
+      { odno: 'LATE-REJECTED', ft_ord_qty: '10', ft_ccld_qty: '4', nccs_qty: '0', ft_ccld_unpr3: '49', prcs_stat_name: '거부', rjct_rson: 'ORDER_REJECTED' }
+    ]
+  };
+  await withMockedFetch(state, async () => {
+    const updated = await usRankService.syncOrderFills(user.id, { strategyId: strategy.id });
+    assert.equal(updated.length, 2);
+    assert.equal(state.historyCalls, 1);
+  });
+  for (const order of orders) {
+    const corrected = repo.getOrder(user.id, order.id);
+    assert.equal(corrected.status, order.status);
+    assert.equal(corrected.filledQuantity, 4);
+    assert.equal(corrected.averageFilledPrice, 49);
+  }
+  assert.equal(repo.listFillSyncCandidates(user.id, { strategyId: strategy.id }).length, 0);
 });
 
 test('syncOrderFills (US): 원주문 부분체결과 별도 취소 행을 병합해 수량·평단을 보존한다', async () => {

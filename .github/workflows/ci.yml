@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run backend tests
+      - name: Run backend and frontend tests
         run: npm test
 
       - name: Build frontend

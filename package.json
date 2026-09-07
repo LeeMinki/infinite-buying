@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "dev": "npm --workspace backend run dev & npm --workspace frontend run dev; wait",
-    "test": "npm --workspace backend test",
+    "test": "npm --workspace backend test && node --test frontend/tests/*.test.js",
     "build": "npm --workspace frontend run build",
     "migrate": "npm --workspace backend run migrate"
   },
