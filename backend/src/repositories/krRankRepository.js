@@ -1115,10 +1115,33 @@ function toStrategy(row) {
     lastEvaluatedAt: row.last_evaluated_at,
     lastDecision: row.last_decision,
     lastErrorMessage: row.last_error_message,
+    orderAttention: getOrderAttention(row.user_id, row.id),
     deletedAt: row.deleted_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+// 최근 거래 목록의 페이지 크기와 무관하게 오래된 미확정 주문을 표시한다.
+export function getOrderAttention(userId, strategyId) {
+  const rows = getDb().prepare(`
+    SELECT status, side, symbol, symbol_name, created_at, response_payload_masked
+    FROM kr_rank_orders
+    WHERE user_id = ? AND strategy_id = ? AND live_order_enabled = 1
+      AND (status = 'UNKNOWN' OR (status = 'REQUESTED' AND created_at <= datetime('now', '-2 minutes')))
+    ORDER BY created_at ASC, id ASC
+  `).all(userId, strategyId);
+  if (!rows.length) return null;
+  const row = rows[0];
+  return {
+    status: row.status, side: row.side, symbol: row.symbol, symbolName: row.symbol_name,
+    createdAt: row.created_at, errorCode: getSafeOrderErrorCode(row.response_payload_masked), count: rows.length
+  };
+}
+
+export function getSafeOrderErrorCode(payload) {
+  const code = parseJson(payload)?.msg_cd;
+  return typeof code === 'string' && /^[A-Z]{3,5}[0-9]{4,6}$/.test(code) ? code : null;
 }
 
 function toRoundTripOrder(row) {

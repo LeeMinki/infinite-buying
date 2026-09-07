@@ -197,13 +197,13 @@ function mockKis({ orderOk = true } = {}) {
       return { ok: true, status: 200, json: async () => ({ rt_cd: '0', output: { last: '50' } }) };
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-balance')) {
-      return { ok: true, status: 200, json: async () => ({ rt_cd: '0', output1: [], output2: [{ frcr_buy_psbl_amt1: '10000' }] }) };
+      return { ok: true, status: 200, json: async () => ({ rt_cd: '0', ctx_area_fk200: '', ctx_area_nk200: '', output1: [], output2: [{ frcr_buy_psbl_amt1: '10000' }] }) };
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-psamount')) {
       return { ok: true, status: 200, json: async () => ({ rt_cd: '0', output: { ovrs_ord_psbl_amt: '10000', max_ord_psbl_qty: '200' } }) };
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-nccs')) {
-      return { ok: true, status: 200, json: async () => ({ rt_cd: '0', output: [] }) };
+      return { ok: true, status: 200, json: async () => ({ rt_cd: '0', ctx_area_fk200: '', ctx_area_nk200: '', output: [] }) };
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/order')) {
       return {

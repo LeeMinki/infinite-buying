@@ -193,16 +193,16 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
     }
   }
 
+  const todayKst = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
   const todayEntries = useMemo(() => {
     const entries = entriesList.items;
     if (!entries.length) return {};
-    const latestDate = entries[0]?.tradeDate;
     const map = {};
     for (const entry of entries) {
-      if (entry.tradeDate === latestDate) map[entry.entryWindow] = entry;
+      if (entry.tradeDate === todayKst) map[entry.entryWindow] = entry;
     }
-    return { date: latestDate, ...map };
-  }, [entriesList.items]);
+    return map;
+  }, [entriesList.items, todayKst]);
 
   return (
     <>
@@ -211,6 +211,8 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
           실주문 실행 설정이 꺼져 있어 <b>실제 주문 없이 기록만 저장 중</b>입니다. 랭킹 조회·종목 선택·판단·주문 예정 기록은 그대로 남습니다.
         </p>
       )}
+
+      <KrRankOrderAttentionNotice attention={selected?.orderAttention} />
 
       <KrRankAccountSummaryPanel
         summary={accountSummary}
@@ -372,8 +374,8 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
                       : `오전 ${formatKrw(strategy.morningBudget)}${strategy.lunchEntryEnabled ? ` · 점심 ${formatKrw(strategy.lunchBudget)}` : ''}`}
                   </span>
                 </span>
-                <span className={`badge ${strategy.status === 'RUNNING' ? 'active' : strategy.status === 'ERROR' ? 'danger' : 'warning'}`}>
-                  {strategy.status}
+                <span className={`badge ${strategy.orderAttention || strategy.status === 'ERROR' ? 'danger' : strategy.status === 'RUNNING' ? 'active' : 'warning'}`}>
+                  {strategy.orderAttention ? '주문 확인 필요' : strategy.status}
                 </span>
               </button>
               <button type="button" className="ghost danger-button sm strategy-chip-delete"
@@ -397,7 +399,7 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
         {selected ? (
           <>
             <div className="metric-grid compact-grid">
-              <Metric label="상태" value={selected.status} hint={selected.lastErrorMessage || '정상'} />
+              <Metric label="상태" value={selected.status} hint={selected.orderAttention ? '주문 확인으로 신규 매수 보류' : (selected.lastErrorMessage || '정상')} />
               <Metric
                 label="오전 진입"
                 value={selected.autoBudgetEnabled ? '전액 사용' : formatKrw(selected.morningBudget)}
@@ -408,12 +410,12 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
                 value={selected.lunchEntryEnabled ? (selected.autoBudgetEnabled ? '전액 사용' : formatKrw(selected.lunchBudget)) : '미사용'}
                 hint={selected.lunchEntryEnabled ? `목표 +${pct(selected.lunchTargetProfitRate)} / 손절 -${pct(selected.lunchStopLossRate)}${selected.lunchLiquidateTime ? ` / 청산 ${selected.lunchLiquidateTime} KST` : ''}` : '오전 진입만'}
               />
-              <Metric label="현재 보유" value={selected.holdingSymbol ? `${selected.holdingSymbolName || selected.holdingSymbol}` : '무보유'} hint={selected.holdingSymbol ? `${ENTRY_WINDOW_LABEL[selected.holdingEntryWindow] || ''}로 매수` : '진입 대기'} />
+              <Metric label="현재 보유" value={selected.holdingSymbol ? `${selected.holdingSymbolName || selected.holdingSymbol}` : '무보유'} hint={selected.holdingSymbol ? `${ENTRY_WINDOW_LABEL[selected.holdingEntryWindow] || ''}로 매수` : (selected.orderAttention ? '신규 매수 보류' : '진입 대기')} />
             </div>
             <div className="metric-grid compact-grid">
               <Metric label="오전 진입 (오늘)" value={entryStatusLabel(todayEntries.MORNING)} hint={entrySymbolHint(todayEntries.MORNING)} />
               <Metric label="점심 진입 (오늘)" value={selected.lunchEntryEnabled ? entryStatusLabel(todayEntries.LUNCH) : '미사용'} hint={selected.lunchEntryEnabled ? entrySymbolHint(todayEntries.LUNCH) : '점심 진입 꺼짐'} />
-              <Metric label="마지막 판단" value={selected.lastDecision || '-'} hint={selected.lastEvaluatedAt ? formatDate(selected.lastEvaluatedAt) : '아직 없음'} />
+              <Metric label="마지막 판단" value={selected.orderAttention ? '주문 확인 필요' : (selected.lastDecision || '-')} hint={selected.lastEvaluatedAt ? formatDate(selected.lastEvaluatedAt) : '아직 없음'} />
               <Metric label="실주문" value={liveOrderEnabled ? '켜짐' : '꺼짐'} hint={liveOrderEnabled ? '검증 후 실제 주문' : '기록만 저장'} />
             </div>
             <div className="auto-action-row">
@@ -443,6 +445,25 @@ export function KrRankAutoTradingPanel({ liveOrderEnabled, periodReturns, onPeri
       {message && <p className="success">{message}</p>}
       {error && <p className="error">{error}</p>}
     </>
+  );
+}
+
+export function KrRankOrderAttentionNotice({ attention }) {
+  if (!attention) return null;
+  const symbol = attention.symbolName
+    ? `${attention.symbolName} (${attention.symbol})`
+    : attention.symbol;
+  return (
+    <section className="risk-notice risk-notice-danger" role="alert" aria-label="주문 접수 확인 필요">
+      <strong>주문 접수 확인 필요 · 신규 매수 보류</strong>
+      <p>
+        {symbol} {attention.side === 'SELL' ? '매도' : '매수'} 주문의 처리 결과를 확인하지 못했습니다.
+        {' '}주문 발생: {formatDate(attention.createdAt)} KST
+        {attention.errorCode ? ` · 오류 ${attention.errorCode}` : ''}
+      </p>
+      {attention.count > 1 && <p>확인이 필요한 주문은 총 {attention.count}건이며, 가장 오래된 주문을 표시했습니다.</p>}
+      <p>중복 주문을 막기 위해 신규 매수를 보류하고 있습니다. 한국투자증권 앱에서 주문·체결 내역과 잔고를 확인하세요. 확인되지 않은 주문은 자동으로 재전송하지 않습니다.</p>
+    </section>
   );
 }
 
@@ -590,14 +611,14 @@ function DecisionLogTable({ list, onLoadMore }) {
   );
 }
 
-function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId, replay }) {
+export function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId, replay }) {
   const orders = list.items;
   return (
     <section className="subsection">
       <div className="subsection-heading-row">
         <div>
           <h4>주문 이력</h4>
-          <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 아직 보유 중이면 매도 정보는 진행 중으로 표시됩니다.</p>
+          <p className="helper">매수부터 매도까지 한 행으로 묶어 봅니다. 접수 여부나 체결을 확인하지 못한 주문은 보유 중인 거래와 구분해 표시합니다.</p>
         </div>
         <button type="button" className="ghost sm" disabled={syncing} onClick={onSync}>
           {syncing ? '확인 중…' : 'KIS 체결·실현손익 새로 확인'}
@@ -621,18 +642,20 @@ function OrdersTable({ list, onLoadMore, onSync, syncing, onReplay, replayBusyId
           <tbody>
             {orders.map((order) => {
               const profit = Number(order.profitRate);
-              const hasProfit = Number.isFinite(profit);
+              const hasProfit = order.profitRate != null && order.profitRate !== '' && Number.isFinite(profit);
               const realizedProfit = Number(order.realizedProfitRate);
-              const hasRealizedProfit = Number.isFinite(realizedProfit);
+              const hasRealizedProfit = order.realizedProfitRate != null && order.realizedProfitRate !== '' && Number.isFinite(realizedProfit);
+              const buyNeedsConfirmation = ['UNKNOWN', 'REQUESTED'].includes(order.buyStatus);
+              const sellNeedsConfirmation = ['UNKNOWN', 'REQUESTED'].includes(order.sellStatus);
               const replayOpen = replay?.buyOrderId === order.buyOrderId;
               return (
                 <React.Fragment key={`${order.buyOrderId}-${order.sellOrderId || 'open'}`}>
                   <tr className={replayOpen ? 'selected-row' : ''}>
                     <td className="muted">{formatDate(order.buyTime)}</td>
                     <td>{order.symbolName ? `${order.symbolName} ${order.symbol}` : order.symbol}</td>
-                    <td>{formatFillPrice(order.buyPrice)}</td>
-                    <td className="muted">{order.sellTime ? formatDate(order.sellTime) : '진행 중'}</td>
-                    <td>{order.sellTime ? formatFillPrice(order.sellPrice) : '-'}</td>
+                    <td>{buyNeedsConfirmation && !(Number(order.buyPrice) > 0) ? '접수 확인 필요' : formatFillPrice(order.buyPrice)}</td>
+                    <td className="muted">{order.sellTime ? formatDate(order.sellTime) : (order.buyStatus === 'FILLED' || order.buyStatus === 'DRY_RUN' ? '진행 중' : '-')}</td>
+                    <td>{sellNeedsConfirmation && !(Number(order.sellPrice) > 0) ? '접수 확인 필요' : (order.sellTime ? formatFillPrice(order.sellPrice) : '-')}</td>
                     <td>{rankOrderReasonText(order)}</td>
                     <td className={hasProfit ? (profit >= 0 ? 'positive' : 'negative') : 'neutral'}>
                       {hasProfit ? `${profit >= 0 ? '+' : ''}${(profit * 100).toFixed(2)}%` : (order.sellTime ? '체결 확인 중' : '-')}
@@ -720,7 +743,21 @@ function sellReasonLabel(reason) {
 }
 
 function rankOrderReasonText(order) {
-  if (!order.sellReason) return '보유 중';
+  if (['UNKNOWN', 'REQUESTED'].includes(order.buyStatus)) return '매수 주문 접수 확인 필요';
+  if (['UNKNOWN', 'REQUESTED'].includes(order.sellStatus)) return '매도 주문 접수 확인 필요';
+  if (order.buyStatus === 'ACCEPTED') return '매수 체결 확인 중';
+  // buyQuantity는 요청수량이다. 실제 체결수량 또는 확인된 평균체결가만 증거로 쓴다.
+  const hasBuyFill = Number(order.buyFilledQuantity) > 0 || Number(order.buyPrice) > 0;
+  if (!hasBuyFill) {
+    if (order.buyStatus === 'FAILED') return '매수 실패';
+    if (order.buyStatus === 'REJECTED') return '매수 거절';
+    if (order.buyStatus === 'CANCELED') return '매수 취소';
+  }
+  if (order.buyStatus === 'CANCELED' && !order.sellReason) return '체결분 보유 · 잔여 매수 취소';
+  if (order.buyStatus === 'PARTIALLY_FILLED' && !order.sellReason) return '매수 일부 체결';
+  if (!order.sellReason) {
+    return hasBuyFill || ['FILLED', 'DRY_RUN'].includes(order.buyStatus) ? '보유 중' : '매수 체결 확인 중';
+  }
   if (order.sellReason === 'TARGET' && !order.sellPrice && order.sellStatus && order.sellStatus !== 'FILLED') {
     return `목표 수익 주문 ${orderStatusLabel(order.sellStatus)}`;
   }

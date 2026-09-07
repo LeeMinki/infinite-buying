@@ -1023,6 +1023,16 @@ async function evaluateEntryPath(userId, strategy, {
         liveOrderEnabled: entryWasLive, evaluationSource, reason: `${label} 진입: ${symbol} 매수 기록이 이미 있어 보유로 둡니다(기록 모드).`
       });
     }
+    if (['UNKNOWN', 'REQUESTED'].includes(buyOrder?.status)
+      && !buyOrder.kisOrderNo && !(Number(buyOrder.filledQuantity) > 0)) {
+      const errorCode = repo.getSafeOrderErrorCode(buyOrder.responsePayloadMasked);
+      const reason = `${entry.tradeDate} ${label} ${symbol} 매수 주문의 접수 여부를 확인하지 못했습니다${errorCode ? ` (${errorCode})` : ''}. 주문번호가 없어 자동 재주문을 보류합니다. 증권사 주문 내역과 잔고를 확인한 뒤 운영자 대사가 필요합니다.`;
+      return saveDecision(userId, strategy, {
+        decision: 'ERROR', entryWindow, selectedSymbol: symbol, selectedSymbolName: symbolName,
+        liveOrderEnabled: entryWasLive, evaluationSource, orderId: buyOrder.id, reason,
+        noLog: evaluationSource !== 'MANUAL' && strategy.lastDecision === 'ERROR' && strategy.lastErrorMessage === reason
+      });
+    }
     let balance = await trading.getBalance(symbol, { market: 'KR', currency: 'KRW' });
     let accountQuantity = Math.floor(Number(balance.quantity || 0));
     let filledQuantity = Math.min(

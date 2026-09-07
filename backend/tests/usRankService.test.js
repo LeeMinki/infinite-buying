@@ -103,11 +103,11 @@ function withMockedFetch(state, run) {
       if (state.openOrdersError) {
         return json({ rt_cd: '1', msg_cd: 'TEST_OPEN_ORDERS', msg1: '미체결 조회 실패' });
       }
-      return json({ rt_cd: '0', output: state.openOrders || [] });
+      return json({ rt_cd: '0', ctx_area_fk200: '', ctx_area_nk200: '', output: state.openOrders || [] });
     }
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-ccnl')) {
       // 체결조회(TTTS3035R) — 매도 체결 확인용. state.orderHistory로 체결 내역을 재정의한다.
-      return json({ rt_cd: '0', output: [
+      return json({ rt_cd: '0', ctx_area_fk200: '', ctx_area_nk200: '', output: [
         ...(state.orderHistory || []),
         ...(state.cancelHistoryRows || [])
       ] });
@@ -138,6 +138,8 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/overseas-stock/v1/trading/inquire-balance')) {
       return json({
         rt_cd: '0',
+        ctx_area_fk200: '',
+        ctx_area_nk200: '',
         output1: state.balanceQuantity > 0
           ? [{ ovrs_pdno: state.symbol || 'HOT1', ovrs_cblc_qty: String(state.balanceQuantity), pchs_avg_pric: String(state.averagePrice || 50), now_pric2: String(state.price ?? 50) }]
           : [],
@@ -711,9 +713,10 @@ test('실주문 매수는 접수만으로 보유 전환하지 않고 KIS 체결 
       });
       assert.equal(repo.getStrategy(user.id, strategy.id).holdingSymbol, null);
 
-      // tick3: KIS 잔고에 체결분이 잡힘 → 보유로 전환
+      // tick3: 주문별 체결수량·평균체결가와 잔고가 함께 확인되면 보유로 전환한다.
       state.balanceQuantity = 20;
       state.averagePrice = 50;
+      state.orderHistory = [{ odno: 'ORD1', ft_ord_qty: '20', ft_ccld_qty: '20', nccs_qty: '0', ft_ccld_unpr3: '50', sll_buy_dvsn_cd: '02' }];
       await withMockedDate('2026-05-18T14:02:00Z', async () => {
         const confirmed = await service.evaluateStrategy(user.id, strategy.id);
         assert.equal(confirmed.decision.decision, 'SKIP');
@@ -1829,6 +1832,8 @@ test('미국 랭킹: BUY 체결 확인은 계좌 전체 잔고가 아니라 해�
       });
       // 주문 뒤 같은 종목 외부 보유가 더해져 계좌에는 30주가 보여도 이 BUY의 상한은 20주다.
       state.balanceQuantity = 30;
+      state.averagePrice = 75;
+      state.orderHistory = [{ odno: 'ORD1', ft_ord_qty: '20', ft_ccld_qty: '20', nccs_qty: '0', ft_ccld_unpr3: '50', sll_buy_dvsn_cd: '02' }];
       await withMockedDate('2026-05-21T15:00:30Z', async () => {
         const confirmed = await service.evaluateStrategy(cappedUser.id, strategy.id);
         assert.match(confirmed.decision.reason, /매수 체결 확인\(20주/);
@@ -1840,6 +1845,8 @@ test('미국 랭킹: BUY 체결 확인은 계좌 전체 잔고가 아니라 해�
         .find((order) => order.side === 'SELL' && order.sellReason === 'TARGET');
       assert.ok(target);
       assert.equal(target.quantity, 20);
+      assert.equal(target.orderPrice, 51);
+      assert.equal(held.holdingAveragePrice, 50);
     });
   } finally {
     autoTradingRepo.updateLiveOrderSetting(cappedUser.id, false);
@@ -1930,7 +1937,7 @@ test('미국 랭킹: 이전 SELL 4주 체결 뒤 외부 잔고가 섞여도 관�
   }
 });
 
-test('미국 랭킹: 전일 ACCEPTED BUY는 DB 체결수량이 없어도 실제 잔고를 복구한다', async () => {
+test('미국 랭킹: 전일 ACCEPTED BUY는 과거 주문 체결조회로 확인된 수량만 복구한다', async () => {
   const staleAcceptedUser = createUser(db, 'us-rank-stale-accepted-balance@example.com');
   credentialService.saveSettings(staleAcceptedUser.id, {
     appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
@@ -1943,7 +1950,12 @@ test('미국 랭킹: 전일 ACCEPTED BUY는 DB 체결수량이 없어도 실제 
     averagePrice: 50,
     symbol: 'STALEACCEPT',
     rankingTopSymbol: 'STALEACCEPT',
-    openOrders: []
+    openOrders: [],
+    orderHistory: [{
+      odno: 'STALE-ACCEPTED-BUY-1', ovrs_pdno: 'STALEACCEPT', ft_ord_qty: '10',
+      ft_ccld_qty: '4', nccs_qty: '0', ft_ccld_unpr3: '50', sll_buy_dvsn_cd: '02',
+      rvse_cncl_dvsn: '02', prcs_stat_name: '완료'
+    }]
   };
 
   try {
@@ -2084,9 +2096,153 @@ test('미국 랭킹: 체결 0으로 취소된 BUY의 과거 holding 수량으로
         assert.equal(result.order, null);
       });
       assert.equal(state.orderCalls || 0, 0);
-      assert.equal(repo.getStrategy(canceledBuyUser.id, strategy.id).holdingSymbol, null);
+      // 외부 잔고를 팔지 않고, 모순된 과거 보유 기록은 체결 조정 전까지 임의 청산하지 않는다.
+      assert.equal(repo.getStrategy(canceledBuyUser.id, strategy.id).holdingSymbol, 'CANCELEDBUY');
+      assert.equal(repo.getOpenTrade(strategy.id).status, 'BOUGHT');
     });
   } finally {
     autoTradingRepo.updateLiveOrderSetting(canceledBuyUser.id, false);
   }
+});
+
+test('미국 랭킹: 주문별 체결 증거 없는 BUY 뒤 외부 잔고를 보유·목표 매도로 채택하지 않는다', async (t) => {
+  for (const sample of [
+    { status: 'UNKNOWN', orderNo: null, filledQuantity: null },
+    { status: 'REQUESTED', orderNo: null, filledQuantity: null },
+    { status: 'ACCEPTED', orderNo: 'UNFILLED-BUY', filledQuantity: null },
+    { status: 'FILLED', orderNo: 'MISSING-FILL-QTY', filledQuantity: null },
+    { status: 'FILLED', orderNo: null, filledQuantity: 5 }
+  ]) {
+    await t.test(`${sample.status}/${sample.orderNo || 'no-number'}`, async () => {
+      const owner = createUser(db);
+      credentialService.saveSettings(owner.id, {
+        appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+      });
+      autoTradingRepo.updateLiveOrderSetting(owner.id, true);
+      const state = { price: 50, cash: 0, balanceQuantity: 5, averagePrice: 75, symbol: 'EXTERNAL', openOrders: [] };
+      await withMockedFetch(state, async () => {
+        const strategy = service.createStrategy(owner.id, {
+          targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+        });
+        repo.startStrategy(owner.id, strategy.id);
+        const trade = repo.createTrade(owner.id, {
+          strategyId: strategy.id, tradeDate: '2026-05-21', tradeSeq: 1,
+          symbol: 'EXTERNAL', exchange: 'NAS', selectedPrice: 50, status: 'SELECTED'
+        });
+        const buy = repo.createOrder(owner.id, {
+          strategyId: strategy.id, tradeId: trade.id, symbol: 'EXTERNAL', exchange: 'NAS',
+          side: 'BUY', quantity: 5, orderPrice: 50, estimatedAmount: 250,
+          kisOrderNo: sample.orderNo, status: sample.status, filledQuantity: sample.filledQuantity,
+          idempotencyKey: `20260521-${strategy.id}-1-BUY`, decisionReason: '외부 잔고 귀속 회귀', liveOrderEnabled: true
+        });
+        await withMockedDate('2026-05-21T15:00:00Z', () => service.evaluateStrategy(owner.id, strategy.id));
+        assert.equal(state.orderCalls || 0, 0);
+        assert.equal(repo.getStrategy(owner.id, strategy.id).holdingSymbol, null);
+        assert.equal(repo.getTradeById(trade.id).status, 'SELECTED');
+        assert.equal(repo.getOrder(owner.id, buy.id).status, sample.status);
+      });
+    });
+  }
+});
+
+test('미국 랭킹: SELL 체결가 누락은 지정가로 확정하지 않고 실제 가격 동기화 뒤 청산한다', async () => {
+  const owner = createUser(db);
+  credentialService.saveSettings(owner.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(owner.id, true);
+  const state = {
+    price: 51, cash: 500, balanceQuantity: 0, symbol: 'MISSINGPRICE', openOrders: [],
+    orderHistory: [{ odno: 'NO-PRICE-SELL', ft_ord_qty: '10', ft_ccld_qty: '10', nccs_qty: '0', ft_ccld_unpr3: '0' }]
+  };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(owner.id, {
+      targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    repo.startStrategy(owner.id, strategy.id);
+    const { trade, target } = createHeldTradeWithTarget(owner.id, strategy, {
+      symbol: 'MISSINGPRICE', symbolName: 'Missing Price', orderNo: 'NO-PRICE-SELL'
+    });
+    await withMockedDate('2026-05-21T15:00:00Z', () => service.evaluateStrategy(owner.id, strategy.id));
+    const withoutPrice = repo.getOrder(owner.id, target.id);
+    assert.equal(withoutPrice.status, 'FILLED');
+    assert.equal(withoutPrice.filledQuantity, 10);
+    assert.equal(withoutPrice.averageFilledPrice, null);
+    assert.equal(repo.getTradeById(trade.id).status, 'BOUGHT');
+    assert.equal(repo.getTradeById(trade.id).exitPrice, null);
+    assert.ok(repo.listFillSyncCandidates(owner.id, { strategyId: strategy.id }).some((order) => order.id === target.id));
+
+    state.orderHistory[0].ft_ccld_unpr3 = '51.25';
+    await withMockedDate('2026-05-21T15:00:30Z', () => service.evaluateStrategy(owner.id, strategy.id));
+    assert.equal(repo.getOrder(owner.id, target.id).averageFilledPrice, 51.25);
+    assert.equal(repo.getTradeById(trade.id).status, 'CLOSED');
+    assert.equal(repo.getTradeById(trade.id).exitPrice, 51.25);
+    assert.equal(state.orderCalls || 0, 0);
+  });
+});
+
+test('미국 랭킹: 계좌 잔고 0만으로 실제 매도·손익을 확정하지 않는다', async () => {
+  const owner = createUser(db);
+  credentialService.saveSettings(owner.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(owner.id, true);
+  const state = { price: 60, cash: 600, balanceQuantity: 0, symbol: 'ZEROBALANCE', openOrders: [] };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(owner.id, {
+      targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    repo.startStrategy(owner.id, strategy.id);
+    const { trade } = createHeldTradeWithBuy(owner.id, strategy, {
+      symbol: 'ZEROBALANCE', symbolName: 'Zero Balance'
+    });
+    const result = await withMockedDate('2026-05-21T15:00:00Z', () => service.evaluateStrategy(owner.id, strategy.id));
+    assert.equal(result.decision.decision, 'SKIP');
+    assert.equal(repo.getTradeById(trade.id).status, 'BOUGHT');
+    assert.equal(repo.getTradeById(trade.id).exitPrice, null);
+    assert.equal(repo.getStrategy(owner.id, strategy.id).holdingSymbol, 'ZEROBALANCE');
+    assert.equal(repo.sumRealizedProfitUsd(strategy.id), 0);
+    assert.equal(state.orderCalls || 0, 0);
+  });
+});
+
+test('미국 랭킹: BUY 실제 체결가가 없으면 외부 계좌 평단으로 목표가를 만들지 않는다', async () => {
+  const owner = createUser(db);
+  credentialService.saveSettings(owner.id, {
+    appKey: 'app', appSecret: 'secret', accountNumber: '12345678', accountProductCode: '01'
+  });
+  autoTradingRepo.updateLiveOrderSetting(owner.id, true);
+  const state = {
+    price: 50, cash: 0, balanceQuantity: 10, averagePrice: 75, symbol: 'NOPRICEBUY', openOrders: [],
+    orderHistory: [{ odno: 'NO-PRICE-BUY', ft_ord_qty: '5', ft_ccld_qty: '5', nccs_qty: '0', ft_ccld_unpr3: '0' }]
+  };
+  await withMockedFetch(state, async () => {
+    const strategy = service.createStrategy(owner.id, {
+      targetProfitRate: 0.02, stopLossRate: 0.05, forceCloseKst: '04:30', exchange: 'NAS'
+    });
+    repo.startStrategy(owner.id, strategy.id);
+    const trade = repo.createTrade(owner.id, {
+      strategyId: strategy.id, tradeDate: '2026-05-21', tradeSeq: 1,
+      symbol: 'NOPRICEBUY', exchange: 'NAS', selectedPrice: 50, status: 'SELECTED'
+    });
+    const buy = repo.createOrder(owner.id, {
+      strategyId: strategy.id, tradeId: trade.id, symbol: 'NOPRICEBUY', exchange: 'NAS',
+      side: 'BUY', quantity: 5, orderPrice: 50, estimatedAmount: 250, kisOrderNo: 'NO-PRICE-BUY',
+      status: 'ACCEPTED', idempotencyKey: `20260521-${strategy.id}-1-BUY`,
+      decisionReason: '매수가 미확정', liveOrderEnabled: true
+    });
+    await withMockedDate('2026-05-21T15:00:00Z', () => service.evaluateStrategy(owner.id, strategy.id));
+    assert.equal(repo.getOrder(owner.id, buy.id).averageFilledPrice, null);
+    assert.equal(repo.getStrategy(owner.id, strategy.id).holdingSymbol, null);
+    assert.equal(repo.getTradeById(trade.id).entryPrice, null);
+    assert.equal(state.orderCalls || 0, 0);
+
+    state.orderHistory[0].ft_ccld_unpr3 = '49';
+    await withMockedDate('2026-05-21T15:00:30Z', () => service.evaluateStrategy(owner.id, strategy.id));
+    assert.equal(repo.getStrategy(owner.id, strategy.id).holdingQuantity, 5);
+    assert.equal(repo.getStrategy(owner.id, strategy.id).holdingAveragePrice, 49);
+    const target = repo.getActiveTargetSellOrder(trade.id);
+    assert.equal(target.quantity, 5);
+    assert.equal(target.orderPrice, 49 * 1.02);
+  });
 });

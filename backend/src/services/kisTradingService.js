@@ -1,9 +1,12 @@
 import { env } from '../config/env.js';
 import { KisMarketDataProvider } from '../market-data/KisMarketDataProvider.js';
 import { getAuthContext } from './kisTokenManager.js';
+import { runKisRequest } from './kisRequestQueue.js';
 
 const MARKET_ERROR = 'KIS 계좌 정보를 조회하지 못했습니다. KIS 설정과 계좌 정보를 확인하세요.';
 const ORDER_ERROR = 'KIS 주문 요청에 실패했습니다.';
+const CONTINUATION = Symbol('kisContinuation');
+const MAX_QUERY_PAGES = 100;
 
 export class KisTradingService {
   constructor(userId) {
@@ -137,7 +140,7 @@ export class KisTradingService {
   }
 
   async getDomesticBalance(context, symbol) {
-    const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-balance', {
+    const data = await this.requestAllPages('/uapi/domestic-stock/v1/trading/inquire-balance', {
       method: 'GET',
       trId: 'TTTC8434R',
       context,
@@ -156,27 +159,27 @@ export class KisTradingService {
       }
     });
     const rows = pickArray(data.output1 || data.output || data);
-    const item = rows.find((row) => String(row.pdno || row.prdt_code || '').trim() === symbol) || {};
+    const items = validatedBalanceRows(rows, 'KR').filter((row) => balanceSymbol(row, 'KR') === String(symbol).trim());
     const summary = Array.isArray(data.output2) ? data.output2[0] || {} : data.output2 || {};
-    const quantity = num(item.hldg_qty ?? item.qty);
-    const averagePrice = num(item.pchs_avg_pric ?? item.avg_prvs);
-    const currentPrice = num(item.prpr ?? item.stck_prpr);
+    const quantity = items.reduce((sum, row) => sum + balanceQuantity(row, 'KR'), 0);
+    const averagePrice = quantity > 0
+      ? items.reduce((sum, row) => sum + balanceQuantity(row, 'KR') * num(row.pchs_avg_pric ?? row.avg_prvs), 0) / quantity : 0;
     return {
       symbol,
       market: 'KR',
       currency: 'KRW',
       quantity,
       averagePrice,
-      evaluationAmount: num(item.evlu_amt) || quantity * currentPrice,
-      unrealizedProfit: num(item.evlu_pfls_amt),
-      unrealizedProfitRate: normalizeRate(item.evlu_pfls_rt),
+      evaluationAmount: items.reduce((sum, row) => sum + (num(row.evlu_amt) || balanceQuantity(row, 'KR') * num(row.prpr ?? row.stck_prpr)), 0),
+      unrealizedProfit: items.reduce((sum, row) => sum + signedNum(row.evlu_pfls_amt), 0),
+      unrealizedProfitRate: weightedBalanceRate(items, 'KR'),
       cashAvailable: num(summary.dnca_tot_amt ?? summary.prvs_rcdl_excc_amt),
       source: 'KIS'
     };
   }
 
   async getOverseasBalance(context, symbol, options = {}) {
-    const data = await this.requestJson('/uapi/overseas-stock/v1/trading/inquire-balance', {
+    const data = await this.requestAllPages('/uapi/overseas-stock/v1/trading/inquire-balance', {
       method: 'GET',
       trId: 'TTTS3012R',
       context,
@@ -190,20 +193,20 @@ export class KisTradingService {
       }
     });
     const rows = pickArray(data.output1 || data.output || data);
-    const item = rows.find((row) => String(row.ovrs_pdno || row.pdno || '').trim().toUpperCase() === symbol.toUpperCase()) || {};
+    const items = validatedBalanceRows(rows, 'US').filter((row) => balanceSymbol(row, 'US') === String(symbol).trim().toUpperCase());
     const summary = Array.isArray(data.output2) ? data.output2[0] || {} : data.output2 || {};
-    const quantity = num(item.ovrs_cblc_qty ?? item.hldg_qty ?? item.qty);
-    const averagePrice = num(item.pchs_avg_pric ?? item.avg_unpr);
-    const currentPrice = num(item.now_pric2 ?? item.ovrs_now_pric1 ?? item.last);
+    const quantity = items.reduce((sum, row) => sum + balanceQuantity(row, 'US'), 0);
+    const averagePrice = quantity > 0
+      ? items.reduce((sum, row) => sum + balanceQuantity(row, 'US') * num(row.pchs_avg_pric ?? row.avg_unpr), 0) / quantity : 0;
     return {
       symbol,
       market: 'US',
       currency: 'USD',
       quantity,
       averagePrice,
-      evaluationAmount: num(item.ovrs_stck_evlu_amt) || quantity * currentPrice,
-      unrealizedProfit: num(item.evlu_pfls_amt),
-      unrealizedProfitRate: normalizeRate(item.evlu_pfls_rt),
+      evaluationAmount: items.reduce((sum, row) => sum + (num(row.ovrs_stck_evlu_amt) || balanceQuantity(row, 'US') * num(row.now_pric2 ?? row.ovrs_now_pric1 ?? row.last)), 0),
+      unrealizedProfit: items.reduce((sum, row) => sum + signedNum(row.frcr_evlu_pfls_amt ?? row.evlu_pfls_amt), 0),
+      unrealizedProfitRate: weightedBalanceRate(items, 'US'),
       cashAvailable: num(summary.frcr_buy_psbl_amt1 ?? summary.tot_evlu_pfls_amt),
       source: 'KIS'
     };
@@ -275,7 +278,7 @@ export class KisTradingService {
   }
 
   async getDomesticOpenOrders(context, symbol) {
-    const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl', {
+    const data = await this.requestAllPages('/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl', {
       method: 'GET',
       trId: 'TTTC0084R',
       context,
@@ -294,7 +297,7 @@ export class KisTradingService {
   }
 
   async getOverseasOpenOrders(context, symbol, options = {}) {
-    const data = await this.requestJson('/uapi/overseas-stock/v1/trading/inquire-nccs', {
+    const data = await this.requestAllPages('/uapi/overseas-stock/v1/trading/inquire-nccs', {
       method: 'GET',
       trId: 'TTTS3018R',
       context,
@@ -306,46 +309,52 @@ export class KisTradingService {
         CTX_AREA_FK200: '',
         CTX_AREA_NK200: ''
       }
-    });
+    }, { continuation: 'cursor' });
     return pickArray(data.output || data.output1 || data)
       .filter((row) => !symbol || String(row.pdno || row.ovrs_pdno || '').trim().toUpperCase() === symbol.toUpperCase())
       .map((row) => normalizeOrderRow(row, 'US', 'USD'));
   }
 
   async getDomesticOrderHistory(context, symbol, options = {}) {
-    // KIS 주식일별주문체결조회(TTTC0081R). 주문일 범위를 지정해 과거 체결도 보정한다.
-    // EXCG_ID_DVSN_CD는 신규 필수 파라미터로, 거래소 통합 조회 시 'KRX'를 사용한다(모의투자는 KRX만 제공).
-    const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
-    const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
-    const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-daily-ccld', {
-      method: 'GET',
-      trId: 'TTTC0081R',
-      context,
-      query: {
-        CANO: context.accountNumber,
-        ACNT_PRDT_CD: context.accountProductCode,
-        INQR_STRT_DT: startDate,
-        INQR_END_DT: endDate,
-        SLL_BUY_DVSN_CD: '00',
-        INQR_DVSN: '00',
-        PDNO: symbol,
-        CCLD_DVSN: '00',
-        ORD_GNO_BRNO: '',
-        ODNO: '',
-        INQR_DVSN_3: '00',
-        INQR_DVSN_1: '',
-        EXCG_ID_DVSN_CD: 'KRX',
-        CTX_AREA_FK100: '',
-        CTX_AREA_NK100: ''
-      }
-    });
-    return pickArray(data.output1 || data.output || data).map((row) => normalizeOrderRow(row, 'KR', 'KRW'));
+    // 공식 엑셀 주식일별주문체결조회: 최근 3개월 TTTC0081R, 이전 CTSC9215R.
+    // ALL은 KRX/NXT/SOR 통합 조회이며 KRX와 다르다. 기존 호출의 기본값은 유지한다.
+    const exchange = String(options.exchange || 'KRX').trim().toUpperCase();
+    if (!['KRX', 'NXT', 'SOR', 'ALL'].includes(exchange)) {
+      throw queryError('국내 주문 이력 조회 거래소가 올바르지 않습니다.');
+    }
+    const rows = [];
+    for (const window of domesticHistoryWindows(options)) {
+      const data = await this.requestAllPages('/uapi/domestic-stock/v1/trading/inquire-daily-ccld', {
+        method: 'GET',
+        trId: window.trId,
+        context,
+        query: {
+          CANO: context.accountNumber,
+          ACNT_PRDT_CD: context.accountProductCode,
+          INQR_STRT_DT: window.startDate,
+          INQR_END_DT: window.endDate,
+          SLL_BUY_DVSN_CD: '00',
+          INQR_DVSN: '00',
+          PDNO: symbol || '',
+          CCLD_DVSN: '00',
+          ORD_GNO_BRNO: '',
+          ODNO: '',
+          INQR_DVSN_3: '00',
+          INQR_DVSN_1: '',
+          EXCG_ID_DVSN_CD: exchange,
+          CTX_AREA_FK100: '',
+          CTX_AREA_NK100: ''
+        }
+      });
+      rows.push(...pickArray(data.output1 || data.output || data));
+    }
+    return rows.map((row) => normalizeOrderRow(row, 'KR', 'KRW'));
   }
 
   async getDomesticRealizedProfits(context, options = {}) {
     const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
     const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
-    const data = await this.requestJson('/uapi/domestic-stock/v1/trading/inquire-period-trade-profit', {
+    const data = await this.requestAllPages('/uapi/domestic-stock/v1/trading/inquire-period-trade-profit', {
       method: 'GET',
       trId: 'TTTC8715R',
       context,
@@ -367,7 +376,7 @@ export class KisTradingService {
   async getOverseasOrderHistory(context, symbol, options = {}) {
     const startDate = normalizeCompactDate(options.startDate || options.fromDate) || todayCompact();
     const endDate = normalizeCompactDate(options.endDate || options.toDate) || startDate;
-    const data = await this.requestJson('/uapi/overseas-stock/v1/trading/inquire-ccnl', {
+    const data = await this.requestAllPages('/uapi/overseas-stock/v1/trading/inquire-ccnl', {
       method: 'GET',
       trId: 'TTTS3035R',
       context,
@@ -479,14 +488,72 @@ export class KisTradingService {
     return context;
   }
 
-  async requestJson(path, options) {
-    // KIS는 초당 거래건수 제한(EGW00201)이 있다. 우리 측에서:
-    //   1) 직전 호출과 최소 간격(MIN_INTERVAL_MS)을 두어 같은 초에 호출이 몰리지 않게 한다.
-    //   2) rate-limit / 5xx 같은 일시 오류는 짧은 backoff로 재시도한다 (주문은 멱등성 때문에 재시도 안 함).
-    return runRateLimited(this.userId, () => this.requestJsonOnce(path, options));
+  async requestAllPages(path, options, { continuation = 'header' } = {}) {
+    const fk = Object.keys(options.query).find((key) => /^CTX_AREA_FK\d+$/.test(key));
+    const nk = Object.keys(options.query).find((key) => /^CTX_AREA_NK\d+$/.test(key));
+    if (!fk || !nk) throw queryError('연속조회 검색 조건이 없습니다.');
+    let query = { ...options.query };
+    let trCont = '';
+    let combined = null;
+    let rowKey = null;
+    const seen = new Set();
+    for (let page = 0; page < MAX_QUERY_PAGES; page += 1) {
+      const data = await this.requestJson(path, { ...options, query, trCont });
+      if (String(data?.rt_cd ?? data?.rtCd ?? '') !== '0') {
+        throw queryError('KIS 조회 성공 여부를 확인할 수 없습니다.');
+      }
+      if (isDocumentedEmptyOverseasHistory(data, options.trId)) data.output = [];
+      const currentKey = ['output1', 'output'].find((key) => Array.isArray(data?.[key]));
+      if (!currentKey || (rowKey && currentKey !== rowKey)) {
+        throw queryError('조회 응답 목록이 없어 전체 결과를 확인할 수 없습니다.');
+      }
+      rowKey = currentKey;
+      if (!combined) combined = { ...data, [rowKey]: [] };
+      combined[rowKey].push(...data[rowKey]);
+      const header = String(data[CONTINUATION] || '').trim().toUpperCase();
+      const nextFk = data[fk.toLowerCase()] ?? data[fk];
+      const nextNk = data[nk.toLowerCase()] ?? data[nk];
+      if (typeof nextFk !== 'string' || typeof nextNk !== 'string') {
+        throw queryError('연속조회 검색 키 응답이 없어 전체 결과를 확인할 수 없습니다.');
+      }
+      const hasNextKey = typeof nextNk === 'string' && nextNk.trim() !== '';
+      if (!['', 'F', 'M', 'D', 'E'].includes(header)) {
+        throw queryError('연속조회 응답 상태를 확인할 수 없습니다.');
+      }
+      // 해외 미체결 TTTS3018R는 문서상 tr_cont를 사용하지 않고 NK200으로 다음조회한다.
+      const more = continuation === 'cursor' ? hasNextKey : ['F', 'M'].includes(header);
+      if (!more) {
+        if ((continuation === 'header' && !header && hasNextKey)
+          || (['F', 'M'].includes(header) && !hasNextKey)) {
+          throw queryError('연속조회 여부와 검색 키가 일치하지 않습니다.');
+        }
+        return combined;
+      }
+      if (typeof nextFk !== 'string' || !hasNextKey) {
+        throw queryError('다음 페이지 검색 키가 없어 전체 결과를 확인할 수 없습니다.');
+      }
+      const cursor = JSON.stringify([nextFk.trim(), nextNk.trim()]);
+      if (seen.has(cursor)) throw queryError('연속조회 검색 키가 반복되어 조회를 중단했습니다.');
+      seen.add(cursor);
+      query = { ...query, [fk]: nextFk, [nk]: nextNk };
+      trCont = continuation === 'header' ? 'N' : '';
+    }
+    throw queryError('연속조회 페이지 한도를 넘어 전체 결과를 확인하지 못했습니다.');
   }
 
-  async requestJsonOnce(path, { method, trId, context, query = null, body = null }, attempt = 0) {
+  async requestJson(path, options) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // 각 재시도도 시세와 공유하는 호출 예산을 사용한다. POST는 재시도하지 않는다.
+        return await runKisRequest(options.context, () => this.requestJsonOnce(path, options));
+      } catch (error) {
+        if (options.method === 'POST' || !error.transient || attempt >= KIS_RETRY_BACKOFF_MS.length) throw error;
+        await sleep(KIS_RETRY_BACKOFF_MS[attempt]);
+      }
+    }
+  }
+
+  async requestJsonOnce(path, { method, trId, context, query = null, body = null, trCont = '' }) {
     const url = new URL(`${context.baseUrl}${path}`);
     if (query) {
       for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value ?? '');
@@ -501,24 +568,25 @@ export class KisTradingService {
           authorization: `Bearer ${context.accessToken}`,
           appkey: context.appKey,
           appsecret: context.appSecret,
-          tr_id: trId
+          tr_id: trId,
+          custtype: 'P',
+          ...(trCont ? { tr_cont: trCont } : {})
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal
       });
-      const data = await response.json().catch(() => ({}));
+      // 불완전 JSON을 {}로 바꾸면 잔고 0/미체결 없음으로 오인한다.
+      const data = await response.json();
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw queryError('KIS 조회 응답 형식이 올바르지 않습니다.');
+      }
       if (!response.ok || isFailureResponse(data)) {
         const baseMsg = method === 'POST' ? ORDER_ERROR : MARKET_ERROR;
         const detail = describeKisError(data, response.status);
         const transient = isTransientFailure(data, response.status);
-        // 조회 API에 한해 EGW00201 / 5xx / 429를 backoff 후 재시도. 주문 API(POST)는 위험하므로 절대 재시도 안 함.
-        if (method !== 'POST' && transient && attempt < KIS_RETRY_BACKOFF_MS.length) {
-          clearTimeout(timeout);
-          await sleep(KIS_RETRY_BACKOFF_MS[attempt]);
-          return this.requestJsonOnce(path, { method, trId, context, query, body }, attempt + 1);
-        }
         const error = new Error(detail ? `${baseMsg} (${detail})` : baseMsg);
         error.status = response.status >= 400 ? response.status : 502;
+        error.transient = transient;
         error.safePayload = maskPayload(data);
         // HTTP 200의 비일시 업무 거절만 "미접수 확정"으로 분류한다. EGW/429/5xx는
         // gateway 경계에서 실제 접수 여부를 확정할 수 없으므로 UNKNOWN이어야 한다.
@@ -529,11 +597,17 @@ export class KisTradingService {
         }
         throw error;
       }
+      // 헤더를 기존 JSON API와 마스킹 payload에 노출하지 않고 페이지 수집기에 전달한다.
+      Object.defineProperty(data, CONTINUATION, { value: response.headers?.get?.('tr_cont') || '' });
       return data;
     } catch (error) {
-      if (error.status) throw error;
+      if (error.status) {
+        if (method === 'POST' && !error.orderOutcome) error.orderOutcome = 'UNKNOWN';
+        throw error;
+      }
       const wrapped = new Error(method === 'POST' ? ORDER_ERROR : MARKET_ERROR);
       wrapped.status = error.name === 'AbortError' ? 504 : 502;
+      wrapped.transient = method !== 'POST';
       if (method === 'POST') wrapped.orderOutcome = 'UNKNOWN';
       throw wrapped;
     } finally {
@@ -583,32 +657,9 @@ function mergeCanceledOrderRow(canceled, direct) {
 }
 
 const KIS_RETRY_BACKOFF_MS = [400, 900, 1800];
-const KIS_MIN_INTERVAL_MS = 220; // 안전 마진 — 일반 KIS 계정 5건/초 한도 아래로 유지.
-const rateLimitQueue = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// 사용자별로 KIS 호출 사이에 최소 간격을 보장한다.
-async function runRateLimited(userId, work) {
-  const key = userId || 'anon';
-  const prev = rateLimitQueue.get(key) || Promise.resolve(0);
-  const next = prev.then(async () => {
-    const now = Date.now();
-    const lastEnd = await prev;
-    const gap = now - (lastEnd || 0);
-    if (gap >= 0 && gap < KIS_MIN_INTERVAL_MS) await sleep(KIS_MIN_INTERVAL_MS - gap);
-    try {
-      return await work();
-    } finally {
-      // chained Promise 가 다음 호출의 시작 시점을 알도록 끝 시각을 흘려보낸다.
-    }
-  });
-  // 다음 호출이 기다릴 종료 시각을 별도 promise 로 연결.
-  const tail = next.then(() => Date.now(), () => Date.now());
-  rateLimitQueue.set(key, tail);
-  return next;
 }
 
 function isTransientFailure(data, status) {
@@ -661,7 +712,7 @@ function maskValue(value) {
   if (!value || typeof value !== 'object') return value;
   const masked = {};
   for (const [key, val] of Object.entries(value)) {
-    if (/appsecret|appkey|authorization|token|cano|acnt|account/i.test(key)) {
+    if (/appsecret|appkey|authorization|token|cano|acnt|account|ctx_area/i.test(key)) {
       masked[key] = '[MASKED]';
     } else {
       masked[key] = maskValue(val);
@@ -693,6 +744,11 @@ export function normalizeOrderRow(row, market, currency) {
     filledQuantity,
     remainingQuantity,
     averageFilledPrice: num(row.avg_prvs ?? row.ft_ccld_unpr3 ?? row.ccld_unpr),
+    orderedQuantity,
+    orderPrice: num(row.ord_unpr ?? row.ft_ord_unpr3),
+    orderDate: String(row.ord_dt ?? '').trim() || null,
+    orderTime: String(row.ord_tmd ?? '').trim() || null,
+    exchange: String(row.excg_id_dvsn_cd ?? row.excg_id_dvsn_Cd ?? row.ovrs_excg_cd ?? '').trim() || null,
     responsePayloadMasked: maskPayload(row)
   };
 }
@@ -801,7 +857,63 @@ function normalizeSide(value) {
 
 function isFailureResponse(data) {
   const rtCd = data?.rt_cd ?? data?.rtCd;
-  return rtCd != null && String(rtCd) !== '0';
+  return String(rtCd ?? '') !== '0';
+}
+
+function balanceSymbol(row, market) {
+  const value = market === 'KR' ? row?.pdno ?? row?.prdt_code : row?.ovrs_pdno ?? row?.pdno;
+  return typeof value === 'string' ? value.trim().toUpperCase() : '';
+}
+
+function balanceQuantity(row, market) {
+  const value = market === 'KR' ? row?.hldg_qty ?? row?.qty : row?.ovrs_cblc_qty ?? row?.hldg_qty ?? row?.qty;
+  if ((typeof value !== 'string' && typeof value !== 'number') || String(value).trim() === '') return NaN;
+  return Number(String(value).replaceAll(',', ''));
+}
+
+function validatedBalanceRows(rows, market) {
+  const valid = [];
+  for (const row of rows) {
+    // 공식 해외 잔고 예시에 모든 필드가 공백/0인 빈 종목 행이 포함된다.
+    // 종목 필드 누락이나 양수·불명 수량을 가진 행까지 빈 잔고로 치환하지 않는다.
+    if (market === 'US' && row?.ovrs_pdno === '' && balanceQuantity(row, market) === 0
+      && Object.values(row).every(isBlankOrZero)) continue;
+    const quantity = balanceQuantity(row, market);
+    if (!balanceSymbol(row, market) || !Number.isFinite(quantity) || quantity < 0) {
+      throw queryError('잔고의 종목 또는 수량을 확인할 수 없어 조회를 중단했습니다.');
+    }
+    valid.push(row);
+  }
+  return valid;
+}
+
+function weightedBalanceRate(rows, market) {
+  let cost = 0;
+  let weightedRate = 0;
+  for (const row of rows) {
+    const amount = balanceQuantity(row, market) * num(row.pchs_avg_pric ?? row.avg_prvs ?? row.avg_unpr);
+    cost += amount;
+    weightedRate += amount * normalizeSignedRate(row.evlu_pfls_rt);
+  }
+  return cost > 0 ? weightedRate / cost : 0;
+}
+
+function isBlankOrZero(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return false;
+  const text = String(value).trim();
+  return text === '' || (/^[+-]?0+(?:\.0+)?$/.test(text));
+}
+
+function isDocumentedEmptyOverseasHistory(data, trId) {
+  // 공식 해외주식 주문체결내역 예시: 조회없음 KIOK0560은 output을 객체로 반환한다.
+  const row = data?.output;
+  if (trId !== 'TTTS3035R' || data.msg_cd !== 'KIOK0560'
+    || !row || typeof row !== 'object' || Array.isArray(row)) return false;
+  return ['odno', 'orgn_odno', 'pdno', 'ord_dt', 'ord_tmd'].every((key) => typeof row[key] === 'string' && row[key].trim() === '')
+    && ['ft_ord_qty', 'ft_ccld_qty', 'nccs_qty', 'ft_ord_unpr3', 'ft_ccld_unpr3', 'ft_ccld_amt3'].every((key) => (
+      (typeof row[key] === 'string' || typeof row[key] === 'number')
+      && String(row[key]).trim() !== '' && isBlankOrZero(row[key])
+    ));
 }
 
 function pickArray(value) {
@@ -876,11 +988,6 @@ function signedNum(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function normalizeRate(value) {
-  const n = num(value);
-  return n > 1 ? n / 100 : n;
-}
-
 function normalizeSignedRate(value) {
   const n = signedNum(value);
   // KIS *_rt fields are percentage values even when their absolute value is below 1
@@ -890,6 +997,46 @@ function normalizeSignedRate(value) {
 
 function todayCompact() {
   return new Date().toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+function queryError(message, status = 502) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+export function domesticHistoryWindows(options = {}, now = new Date()) {
+  const today = compactDateInTimeZone(now, 'Asia/Seoul');
+  const startDate = historyDate(options.startDate || options.fromDate, today);
+  const endDate = historyDate(options.endDate || options.toDate, startDate);
+  if (startDate > endDate) throw queryError('주문 조회 시작일이 종료일보다 늦습니다.', 400);
+  const year = Number(today.slice(0, 4));
+  const month = Number(today.slice(4, 6)) - 1;
+  const day = Number(today.slice(6, 8));
+  const first = new Date(Date.UTC(year, month - 3, 1));
+  const lastDay = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  first.setUTCDate(Math.min(day, lastDay));
+  const boundary = first.toISOString().slice(0, 10).replaceAll('-', '');
+  const previous = addDays(first, -1).toISOString().slice(0, 10).replaceAll('-', '');
+  const windows = [];
+  if (startDate < boundary) windows.push({
+    trId: 'CTSC9215R', startDate, endDate: endDate < boundary ? endDate : previous
+  });
+  if (endDate >= boundary) windows.push({
+    trId: 'TTTC0081R', startDate: startDate < boundary ? boundary : startDate, endDate
+  });
+  return windows;
+}
+
+function historyDate(value, fallback) {
+  if (value == null || value === '') return fallback;
+  const compact = normalizeCompactDate(value);
+  const parsed = compact && new Date(`${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}T00:00:00Z`);
+  if (!parsed || Number.isNaN(parsed.getTime())
+    || parsed.toISOString().slice(0, 10).replaceAll('-', '') !== compact) {
+    throw queryError('주문 조회 날짜가 올바르지 않습니다.', 400);
+  }
+  return compact;
 }
 
 function normalizeCompactDate(value) {

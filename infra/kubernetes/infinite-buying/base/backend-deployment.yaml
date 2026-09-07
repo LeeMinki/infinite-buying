@@ -6,10 +6,9 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+    # SQLite와 프로세스별 KIS 호출 큐를 공유하는 scheduler는 한 번에 하나만 실행한다.
+    # 배포 중 짧은 API 중단을 허용하고 이전 Pod 종료 후 새 Pod를 시작한다.
+    type: Recreate
   selector:
     matchLabels:
       app: infinite-buying-backend

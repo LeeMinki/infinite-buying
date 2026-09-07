@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { performance } from 'node:perf_hooks';
 import { useTempDb, bootstrapDb, createUser } from './_helpers/dbHarness.js';
 
 const tmp = useTempDb();
 const db = await bootstrapDb();
 const credentialService = await import('../src/services/kisCredentialService.js');
 const { KisMarketDataProvider } = await import('../src/market-data/KisMarketDataProvider.js');
+const { KisTradingService } = await import('../src/services/kisTradingService.js');
+const { env } = await import('../src/config/env.js');
 
 const alice = createUser(db, 'alice-market@example.com');
 credentialService.saveSettings(alice.id, { appKey: 'app-market', appSecret: 'sec-market' });
@@ -210,5 +213,35 @@ test('KIS provider returns empty overseas ranking response as an empty list', as
     const provider = new KisMarketDataProvider(alice.id);
     const rows = await provider.getOverseasFluctuationRanking({ exchange: 'NAS' });
     assert.deepEqual(rows, []);
+  });
+});
+
+test('시세·거래 조회와 양쪽 EGW 재시도가 같은 App Key 호출 간격을 공유한다', async () => {
+  const starts = [];
+  const attempts = new Map();
+  await withMockedFetch(async (url) => {
+    const path = new URL(url).pathname;
+    if (path === '/oauth2/tokenP') {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'mock-token', expires_in: 3600 }) };
+    }
+    starts.push(performance.now());
+    attempts.set(path, (attempts.get(path) || 0) + 1);
+    return {
+      ok: true, status: 200,
+      json: async () => attempts.get(path) === 1
+        ? { rt_cd: '1', msg_cd: 'EGW00201' }
+        : { rt_cd: '0', output: [] }
+    };
+  }, async () => {
+    const context = { baseUrl: env.kisApiBaseUrl, appKey: 'app-market', appSecret: 'sec-market', accessToken: 'mock-token' };
+    await Promise.all([
+      new KisMarketDataProvider(alice.id).requestJson('/queue-market-test', { trId: 'TEST' }),
+      new KisTradingService(alice.id).requestJson('/queue-trading-test', { method: 'GET', trId: 'TEST', context })
+    ]);
+    assert.deepEqual([...attempts.values()], [2, 2]);
+    assert.equal(starts.length, 4);
+    for (let i = 1; i < starts.length; i += 1) {
+      assert.ok(starts[i] - starts[i - 1] >= 200, `shared interval: ${starts[i] - starts[i - 1]}`);
+    }
   });
 });
