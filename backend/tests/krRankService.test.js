@@ -101,6 +101,7 @@ function withMockedFetch(state, run) {
     }
     if (text.includes('/uapi/domestic-stock/v1/ranking/fluctuation')) {
       state.rankingCalls = (state.rankingCalls || 0) + 1;
+      if (state.rankingError) return json({ rt_cd: '1', msg_cd: 'TEST_RANKING', msg1: '랭킹 조회 실패' });
       return json({
         rt_cd: '0',
         output: state.rankingRows || [
@@ -112,6 +113,7 @@ function withMockedFetch(state, run) {
     if (text.includes('/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice')) {
       // 분봉 종가는 같은 종목의 현재가(inquire-price)와 같은 스케일이어야 진입 슬리피지 가드를 통과한다.
       const symbol = parsed.searchParams.get('FID_INPUT_ISCD');
+      if (state.minuteError) return json({ rt_cd: '1', msg_cd: 'TEST_MINUTE', msg1: '분봉 조회 실패' });
       if (state.onMinuteCandles) await state.onMinuteCandles({ symbol });
       const minuteRows = state.minuteRows?.[symbol] || state.minuteRows;
       if (minuteRows) {
@@ -1843,7 +1845,7 @@ test('한국 랭킹: core fallback allowlist 밖 전략은 동일한 완화 후�
       await withMockedFetch(state, async () => {
         await withMockedDate('2026-08-31T00:10:00Z', async () => {
           const result = await service.evaluateStrategy(user.id, strategy.id);
-          assert.match(result.decision.reason, /지속적으로 확인된 매수 대상이 아직 없습니다/);
+          assert.match(result.decision.reason, /반복 출현 조건 통과 0개/);
           assert.equal(result.order, null);
           assert.equal(state.orderCalls || 0, 0);
         });
@@ -3297,4 +3299,132 @@ test('한국 랭킹: 오전 BUY 거절 5회 entry를 닫고 다음 tick 점심 �
   });
 
   assert.equal(repo.getEntry(strategy.id, tradeDate, 'LUNCH').status, 'SELECTED');
+});
+
+test('한국 랭킹: 자동 평가의 조건 탈락을 저장하고 정상 판단 후 이전 오류를 지운다', async () => {
+  const strategy = createRunningStrategy();
+  repo.markEvaluation(user.id, strategy.id, { decision: 'ERROR', errorMessage: '이전 조회 오류' });
+  const state = { rankingRows: [
+    { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '25' }
+  ] };
+  await withMockedFetch(state, async () => {
+    await withMockedDate('2026-09-08T00:10:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision.decision, 'SKIP');
+      assert.match(result.decision.reason, /상품·등락률 조건.*통과 0개/);
+      assert.equal(result.decision.rankingSnapshot[0].symbol, '005930');
+      assert.equal(result.strategy.lastDecision, 'SKIP');
+      assert.equal(result.strategy.lastErrorMessage, null);
+    });
+    await withMockedDate('2026-09-08T00:10:30Z', async () => {
+      state.rankingRows[0].prdy_ctrt = '16';
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.match(result.decision.reason, /통과 1개.*반복 출현 조건 통과 0개/);
+    });
+  });
+  assert.equal(repo.countDecisionLogs(user.id, strategy.id), 2);
+  assert.equal(state.orderCalls || 0, 0);
+});
+
+test('한국 랭킹: 자동 후보 검사의 분봉 장애와 예산 부족을 구분해 저장한다', async () => {
+  for (const [patch, decision, reason] of [
+    [{ minuteError: true }, 'ERROR', /기본 조건 · 삼성전자\(005930\): 분봉 조회 실패/],
+    [{ cash: 0 }, 'SKIP', /기본 조건 · 삼성전자\(005930\): .*1주도 살 수 없음/]
+  ]) {
+    const strategy = createRunningStrategy();
+    seedStableObservations(strategy, '2026-09-08', 'MORNING', [
+      { symbol: '005930', name: '삼성전자', price: 70_000, fluctuationRate: 0.16 }
+    ]);
+    const state = { rankingRows: [
+      { stck_shrn_iscd: '005930', hts_kor_isnm: '삼성전자', stck_prpr: '70000', prdy_ctrt: '16' }
+    ], ...patch };
+    await withMockedFetch(state, () => withMockedDate('2026-09-08T00:10:00Z', async () => {
+      const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+      assert.equal(result.decision.decision, decision);
+      assert.match(result.decision.reason, reason);
+      assert.equal(result.strategy.lastErrorMessage, decision === 'ERROR' ? result.decision.reason : null);
+      assert.equal(repo.countDecisionLogs(user.id, strategy.id), 1);
+      assert.equal(repo.getEntry(strategy.id, '2026-09-08', 'MORNING'), null);
+      assert.equal(state.orderCalls || 0, 0);
+    }));
+  }
+});
+
+test('한국 랭킹: 마감 판단은 같은 사용자·전략·거래일·구간의 마지막 원인과 랭킹을 보존한다', async () => {
+  const strategy = createRunningStrategy();
+  const rankingSnapshot = [{ symbol: '005930', name: '삼성전자', price: 70000, fluctuationRate: 0.16 }];
+  const reason = '분봉 조회 실패로 주문 전송을 보류했습니다.';
+  const addLog = (owner, strategyId, entryWindow, createdAt, reasonText) => {
+    const log = repo.createDecisionLog(owner, { strategyId, entryWindow, decision: 'SKIP', reason: reasonText });
+    db.prepare('UPDATE kr_rank_decision_logs SET created_at = ? WHERE id = ?').run(createdAt, log.id);
+  };
+  addLog(user.id, strategy.id, 'MORNING', '2026-09-08 00:14:30', reason);
+  addLog(user.id, strategy.id, 'MORNING', '2026-09-07 00:14:30', '전일 기록');
+  addLog(user.id, strategy.id, 'LUNCH', '2026-09-08 00:14:40', '다른 구간 기록');
+  const other = createUser(db, 'kr-diagnostic-isolation@example.com');
+  const otherStrategy = repo.createStrategy(other.id, {
+    morningBudget: 1_000_000, morningTargetProfitRate: 0.02, morningStopLossRate: 0.05,
+    lunchEntryEnabled: false, lunchBudget: 0, lunchTargetProfitRate: 0.02,
+    lunchStopLossRate: 0.05, autoBudgetEnabled: false
+  });
+  addLog(other.id, otherStrategy.id, 'MORNING', '2026-09-08 00:14:50', '다른 사용자 기록');
+  assert.equal(repo.getLatestEntryDecision(other.id, strategy.id, '2026-09-08', 'MORNING'), null);
+  repo.createObservation(user.id, {
+    strategyId: strategy.id, tradeDate: '2026-09-08', entryWindow: 'MORNING',
+    rankingSnapshot, observedAt: '2026-09-08T00:14:30Z'
+  });
+  const state = {};
+  await withMockedFetch(state, () => withMockedDate('2026-09-08T00:15:00Z', async () => {
+    const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+    assert.match(result.decision.reason, new RegExp(reason));
+    assert.doesNotMatch(result.decision.reason, /전일 기록|다른 구간 기록|다른 사용자 기록/);
+    assert.deepEqual(result.decision.rankingSnapshot, rankingSnapshot);
+    assert.deepEqual(repo.getEntry(strategy.id, '2026-09-08', 'MORNING').rankingSnapshot, rankingSnapshot);
+  }));
+  assert.equal(state.rankingCalls || 0, 0);
+  assert.equal(state.orderCalls || 0, 0);
+});
+
+test('한국 랭킹: idle tick은 마지막 의미 있는 판단과 오류를 덮어쓰지 않는다', async () => {
+  const strategy = createRunningStrategy();
+  repo.markEvaluation(user.id, strategy.id, { decision: 'ERROR', errorMessage: '확인 중인 오류' });
+  await withMockedFetch({}, () => withMockedDate('2026-09-08T01:30:00Z', async () => {
+    const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+    assert.equal(result.decision, null);
+    assert.equal(result.strategy.lastDecision, 'ERROR');
+    assert.equal(result.strategy.lastErrorMessage, '확인 중인 오류');
+  }));
+});
+
+test('한국 랭킹: 후보 탐색 조회 오류에도 진입 구간을 기록해 마감 원인에서 찾을 수 있다', async () => {
+  const strategy = createRunningStrategy();
+  await withMockedFetch({ rankingError: true }, () => withMockedDate('2026-09-08T00:10:00Z', async () => {
+    const result = await service.evaluateStrategy(user.id, strategy.id, { scheduled: true });
+    assert.equal(result.decision.decision, 'ERROR');
+    assert.equal(result.decision.entryWindow, 'MORNING');
+    assert.match(result.decision.reason, /랭킹 조회 실패/);
+    assert.equal(result.strategy.status, 'RUNNING');
+    assert.equal(result.order, null);
+  }));
+});
+
+test('한국 랭킹: 사전 관찰 중 발생한 스케줄러 예외도 판단 이력에 남긴다', async () => {
+  const running = repo.listRunningStrategies();
+  for (const s of running) db.prepare("UPDATE kr_rank_strategies SET status = 'STOPPED' WHERE id = ?").run(s.id);
+  const strategy = createRunningStrategy();
+  try {
+    await withMockedFetch({ rankingError: true }, () => withMockedDate('2026-09-09T00:05:00Z', async () => {
+      await service.evaluateRunningStrategies();
+      const logs = repo.listDecisionLogs(user.id, strategy.id);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].decision, 'ERROR');
+      assert.equal(logs[0].entryWindow, 'MORNING');
+      assert.equal(logs[0].evaluationSource, 'SCHEDULED');
+      assert.match(logs[0].reason, /랭킹 조회 실패/);
+      assert.equal(repo.getStrategy(user.id, strategy.id).status, 'RUNNING');
+    }));
+  } finally {
+    repo.stopStrategy(user.id, strategy.id);
+    for (const s of running) db.prepare("UPDATE kr_rank_strategies SET status = 'RUNNING' WHERE id = ?").run(s.id);
+  }
 });

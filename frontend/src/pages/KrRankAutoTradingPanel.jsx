@@ -567,7 +567,7 @@ function DecisionLogTable({ list, onLoadMore }) {
   return (
     <section className="subsection">
       <h4>판단 로그</h4>
-      <p className="helper">랭킹 조회·종목 선택·매수/매도·보유 평가 기록입니다. 스케줄러는 장 운영 시간(09:00~15:30) 안에서 30초마다 기록합니다.</p>
+      <p className="helper">후보별 제외 이유와 매수·매도 판단을 확인할 수 있습니다. ‘관망’에는 조건 미충족이나 체결 확인 대기가 포함됩니다. 증권사 주문 결과는 주문 이력에서 확인하세요. 할 일이 없는 대기 시간에는 기록을 추가하지 않습니다.</p>
       <div className="table-wrap">
         <table>
           <thead>
