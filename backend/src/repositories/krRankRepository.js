@@ -1059,6 +1059,16 @@ export function listDecisionLogs(userId, strategyId, { limit = 50, offset = 0 } 
   `).all(userId, strategyId, limit, offset).map(toDecisionLog);
 }
 
+export function getLatestEntryDecision(userId, strategyId, tradeDate, entryWindow) {
+  return toDecisionLog(getDb().prepare(`
+    SELECT * FROM kr_rank_decision_logs
+    WHERE user_id = ? AND strategy_id = ? AND entry_window = ?
+      AND created_at >= datetime(?, '-9 hours')
+      AND created_at < datetime(?, '+1 day', '-9 hours')
+    ORDER BY created_at DESC, id DESC LIMIT 1
+  `).get(userId, strategyId, entryWindow, tradeDate, tradeDate));
+}
+
 export function countDecisionLogs(userId, strategyId) {
   return getDb().prepare(
     'SELECT COUNT(*) AS n FROM kr_rank_decision_logs WHERE user_id = ? AND strategy_id = ?'

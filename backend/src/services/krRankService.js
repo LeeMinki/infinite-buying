@@ -224,9 +224,13 @@ export async function evaluateRunningStrategies() {
       await evaluateStrategy(strategy.userId, strategy.id, { scheduled: true });
     } catch (error) {
       // 일시적 오류로 전략을 ERROR(영구 정지)로 만들지 않는다. RUNNING을 유지해 다음 tick에 재시도.
-      repo.markEvaluation(strategy.userId, strategy.id, {
+      saveDecision(strategy.userId, strategy, {
         decision: 'ERROR',
-        errorMessage: error.message || '자동 평가에 실패했습니다.'
+        entryWindow: resolveEntryObservationWindow(new Date(), strategy)
+          || resolveEntryWindow(new Date(), strategy),
+        liveOrderEnabled: resolveLiveOrderEnabled(strategy.userId),
+        evaluationSource: 'SCHEDULED',
+        reason: error.message || '자동 평가에 실패했습니다.'
       });
     }
   }
@@ -339,6 +343,8 @@ async function evaluateUnlocked(userId, strategy, evaluationSource) {
     const log = repo.createDecisionLog(userId, {
       strategyId: strategy.id,
       decision: 'ERROR',
+      entryWindow: pendingEntry?.entryWindow
+        || resolveEntryWindow(new Date(), strategy),
       liveOrderEnabled,
       evaluationSource,
       reason: message
@@ -851,17 +857,22 @@ async function evaluateEntryPath(userId, strategy, {
   if (!entry?.selectedSymbol) {
     const minutesAfterWindowStart = kstNowMinutes() - ENTRY_WINDOWS[entryWindow].startMinutes;
     if (minutesAfterWindowStart >= ENTRY_SELECTION_WINDOW_MINUTES) {
+      // 자동 관찰에서 entry는 아직 없을 수 있다. 마지막 랭킹·판단을 보존해야
+      // 조건 탈락과 조회 장애를 단순한 "후보 없음"으로 덮어쓰지 않는다.
+      const lastObservation = repo.listObservations(strategy.id, tradeDate, entryWindow, { limit: 1 })[0];
+      const lastDecision = repo.getLatestEntryDecision(userId, strategy.id, tradeDate, entryWindow);
+      rankingSnapshot = lastObservation?.rankingSnapshot ?? rankingSnapshot;
       if (entry) {
         repo.finalizeEntryWithoutCandidate(entry.id, { status: 'NO_CANDIDATE', rankingSnapshot });
       } else {
         repo.createEntry(userId, {
           strategyId: strategy.id, tradeDate, entryWindow,
-          status: 'NO_CANDIDATE', rankingSnapshot: null, bought: false
+          status: 'NO_CANDIDATE', rankingSnapshot, bought: false
         });
       }
       return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource,
-        reason: `${label} 진입: 시작 후 ${ENTRY_SELECTION_WINDOW_MINUTES}분 동안 안정적으로 확인된 후보가 없어 늦은 추격 매수를 막고 이 구간을 종료합니다.`
+        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+        reason: `${label} 진입: 시작 후 ${ENTRY_SELECTION_WINDOW_MINUTES}분 동안 매수 후보 확인을 마치지 못해 이 구간을 종료합니다. 주문은 전송하지 않았습니다. ${lastDecision ? `마지막 판단: ${lastDecision.reason}` : '저장된 상세 판단이 없어 당시 탈락 원인을 확인할 수 없습니다.'}`
       });
     }
     // 랭킹 조회 실패는 전략 거절과 구분한다. 진입 기록을 만들지 않아 다음 tick에서 기술 오류만 재시도한다.
@@ -887,6 +898,7 @@ async function evaluateEntryPath(userId, strategy, {
       candidateLimit: BUY_FILTER_CANDIDATE_LIMIT
     });
     let filterResult = await pickFirstFilteredCandidate(userId, candidates, { trading, strategy, entryWindow });
+    filterResult.rejections = filterResult.rejections.map((r) => ({ ...r, mode: '기본 조건' }));
     let picked = filterResult.picked;
     let preparedBuyPlan = filterResult.buyPlan || null;
     let usedCoreFallback = false;
@@ -903,6 +915,7 @@ async function evaluateEntryPath(userId, strategy, {
         entryWindow,
         candidateCheckOptions: CORE_FALLBACK_BUY_FILTER_OPTIONS
       });
+      fallbackResult.rejections = fallbackResult.rejections.map((r) => ({ ...r, mode: '보완 조건' }));
       if (fallbackCandidates.length > 0) candidates = fallbackCandidates;
       if (fallbackResult.picked) {
         filterResult = fallbackResult;
@@ -942,12 +955,22 @@ async function evaluateEntryPath(userId, strategy, {
       const fluctuationBand = minFluctuationRate > 0
         ? `${(minFluctuationRate * 100).toFixed(0)}% 이상 ${(maxFluctuationRate * 100).toFixed(0)}% 미만`
         : `${(maxFluctuationRate * 100).toFixed(0)}% 미만`;
+      const currentCandidates = selectRankingCandidates(rankingSnapshot.slice(0, RAW_RANK_CANDIDATE_LIMIT), {
+        minFluctuationRate, maxFluctuationRate
+      });
+      const hasQueryFailure = filterResult.rejections.some((r) => r.technicalError);
+      const nextEvaluationNote = liveOrderEnabled && !env.krRankLiveEntryRetryEnabled
+        ? '이번 구간에서는 추가 매수 판단을 하지 않습니다.'
+        : '제한 시간 안에 다시 평가합니다.';
+      const rejectionDetails = filterResult.rejections.map((r) => {
+        const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
+        return `${r.mode} · ${nameLabel}: ${r.reason}`;
+      }).join(' / ');
       const reason = candidates.length === 0
-        ? `${label} 진입 관찰 중: 원본 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위 안에서 등락률 ${fluctuationBand}이고 지속적으로 확인된 매수 대상이 아직 없습니다. 제한 시간 안에 다시 평가합니다.`
-        : `${label} 진입 관찰 중: 관찰 랭킹 종합 후보 ${candidates.length}개가 현재 단기 흐름·거래대금·매수가능금액 검사에서 모두 제외됐습니다. 제한 시간 안에 다시 평가합니다. ${filterResult.rejections.map((r) => {
-            const nameLabel = r.name ? `${r.name}(${r.symbol})` : r.symbol;
-            return `${nameLabel}: ${r.reason}`;
-          }).join(' / ')}`;
+        ? `${label} 진입 관찰 중: 현재 랭킹 상위 ${RAW_RANK_CANDIDATE_LIMIT}위에서 상품·등락률 조건(${fluctuationBand}) 통과 ${currentCandidates.length}개, 최근 관찰 ${observationSnapshots.length}회에서 반복 출현 조건 통과 0개입니다. ${nextEvaluationNote}`
+        : hasQueryFailure
+          ? `${label} 진입 확인 지연: 후보 조회에 실패해 매수 판단을 완료하지 못했습니다. ${nextEvaluationNote} ${rejectionDetails}`
+          : `${label} 진입 관찰 중: 관찰 랭킹 종합 후보 ${candidates.length}개가 현재 단기 흐름·거래대금·매수가능금액 검사에서 모두 제외됐습니다. ${nextEvaluationNote} ${rejectionDetails}`;
       // time-split validation에서 rolling 재탐색 변형이 모두 PF<1이었다. live 사용자는 첫 판단을
       // 종결해 신규 규칙이 실제 돈으로 실행되지 않게 하고, 다음 tick부터 위 shadow 경로로
       // 실제 market-wide 랭킹만 계속 저장한다. DRY_RUN은 테스트·관찰을 위해 5분 평가를 유지한다.
@@ -961,13 +984,12 @@ async function evaluateEntryPath(userId, strategy, {
           });
         }
         return saveDecision(userId, strategy, {
-          decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
-          reason: `${label} 진입: 검증 전 신규 규칙의 실주문 재탐색은 잠그고 이후 5분 실제 랭킹만 shadow로 저장합니다.`
+          decision: hasQueryFailure ? 'ERROR' : 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot,
+          reason: `${reason} 검증 전 신규 규칙의 실주문 재탐색은 잠그고 이후 5분 실제 랭킹만 shadow로 저장합니다.`
         });
       }
       return saveDecision(userId, strategy, {
-        decision: 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason,
-        noLog: evaluationSource !== 'MANUAL'
+        decision: hasQueryFailure ? 'ERROR' : 'SKIP', entryWindow, liveOrderEnabled, evaluationSource, rankingSnapshot, reason
       });
     }
 
@@ -1898,7 +1920,7 @@ function checkOrderSafety({
 function saveDecision(userId, strategy, input) {
   const evaluationSource = input.evaluationSource || 'SCHEDULED';
   const decision = input.decision;
-  if (decision === 'SKIP' && evaluationSource !== 'MANUAL') {
+  if (decision === 'SKIP' && evaluationSource !== 'MANUAL' && input.noLog) {
     // 스케줄러 idle SKIP: last_decision은 보존하고 평가 시각만 갱신.
     repo.touchEvaluation(userId, strategy.id);
   } else {
@@ -2020,7 +2042,7 @@ async function pickFirstFilteredCandidate(userId, candidates, {
     try {
       candles = await getDomesticTodayMinuteCandles(userId, candidate.symbol);
     } catch (error) {
-      rejections.push({ symbol: candidate.symbol, name: candidate.name, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
+      rejections.push({ symbol: candidate.symbol, name: candidate.name, technicalError: true, reason: `분봉 조회 실패(${error.message || '알 수 없음'})` });
       continue;
     }
     const check = checkBuyCandidate(candles, {
@@ -2048,7 +2070,7 @@ async function pickFirstFilteredCandidate(userId, candidates, {
     try {
       buyPlan = await buildKrBuyPlan(trading, strategy, entryWindow, result.picked);
     } catch (error) {
-      rejections.push({ symbol: result.picked.symbol, name: result.picked.name, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
+      rejections.push({ symbol: result.picked.symbol, name: result.picked.name, technicalError: true, reason: `매수가능금액 확인 실패(${error.message || '알 수 없음'})` });
       continue;
     }
     if (buyPlan.quantity <= 0) {
